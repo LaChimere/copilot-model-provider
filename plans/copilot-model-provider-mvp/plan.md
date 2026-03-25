@@ -63,8 +63,8 @@ Mark each as **Verified** or **Unverified**.
 - [ ] Step 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
   - Current execution status:
     - `PR 1` is complete on branch `feat/pr1-foundation-scaffold` (`76db366`).
-    - the model-catalog slice is implemented on branch `feat/model-catalog-surface` and is pending review/merge.
-    - the non-streaming chat slice is still pending, so Step 1 remains open overall.
+    - the model-catalog slice has merged into `main`.
+    - the non-streaming chat slice is implemented on branch `feat/chat-execution-surface` and is pending review/merge, so Step 1 remains open overall.
   - Acceptance criteria:
     - the base scaffold, model catalog, and non-streaming chat path are merged in order
     - the shared app/runtime/test-harness contracts are stable enough for fan-out
@@ -170,6 +170,7 @@ Mark each as **Verified** or **Unverified**.
   - before: repo has no provider service or compatibility endpoints
   - current after `PR 1`: app scaffold, runtime/config contracts, internal health endpoint, and E2E harness boot path exist; public provider endpoints still do not
   - current after the model-catalog slice: `GET /v1/models` works through the app without runtime execution dependencies
+  - current after the non-streaming chat slice: `POST /v1/chat/completions` executes one stateless Copilot-backed request path and rejects streaming with the shared error envelope
   - after Step 1: `/v1/models` and non-streaming chat work, including running-app smoke paths
   - after Step 3: streaming + session resume work, including focused locking evidence
   - after Step 4: tool/MCP paths work on top of the converged branch

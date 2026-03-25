@@ -1,4 +1,4 @@
-"""Canonical internal data models for the provider scaffold."""
+"""Canonical internal data models for the provider service."""
 
 from __future__ import annotations
 
@@ -41,6 +41,28 @@ class CanonicalRequest(BaseModel):
     execution_mode: ExecutionMode = 'stateless'
 
 
+class CanonicalChatMessage(BaseModel):
+    """Normalized chat message used by the provider's internal execution path."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal['system', 'user', 'assistant']
+    content: str = Field(min_length=1)
+
+
+class CanonicalChatRequest(BaseModel):
+    """Canonical non-streaming chat request passed to runtime adapters."""
+
+    model_config = ConfigDict(frozen=True)
+
+    request_id: str | None = None
+    conversation_id: str | None = None
+    model_alias: str = Field(min_length=1)
+    execution_mode: ExecutionMode = 'stateless'
+    messages: list[CanonicalChatMessage] = Field(min_length=1)
+    stream: bool = False
+
+
 class ModelCatalogEntry(BaseModel):
     """Service-owned catalog entry used for public model listing and routing."""
 
@@ -74,6 +96,58 @@ class OpenAIModelListResponse(BaseModel):
     data: list[OpenAIModelCard]
 
 
+class OpenAIChatMessage(BaseModel):
+    """OpenAI-compatible chat message representation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal['system', 'user', 'assistant']
+    content: str = Field(min_length=1)
+
+
+class OpenAIChatCompletionRequest(BaseModel):
+    """OpenAI-compatible request body for non-streaming chat completions."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str = Field(min_length=1)
+    messages: list[OpenAIChatMessage] = Field(min_length=1)
+    stream: bool = False
+
+
+class OpenAIChatCompletionChoice(BaseModel):
+    """Single non-streaming choice in an OpenAI-compatible chat response."""
+
+    model_config = ConfigDict(frozen=True)
+
+    index: int = Field(ge=0)
+    message: OpenAIChatMessage
+    finish_reason: Literal['stop', 'length', 'content_filter', 'tool_calls']
+
+
+class OpenAIUsage(BaseModel):
+    """Token accounting returned by OpenAI-compatible chat responses."""
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+
+
+class OpenAIChatCompletionResponse(BaseModel):
+    """OpenAI-compatible response body for non-streaming chat completions."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1)
+    object: Literal['chat.completion'] = 'chat.completion'
+    created: int = Field(ge=0)
+    model: str = Field(min_length=1)
+    choices: list[OpenAIChatCompletionChoice] = Field(min_length=1)
+    usage: OpenAIUsage | None = None
+
+
 class ResolvedRoute(BaseModel):
     """Minimal route resolution contract for runtime selection."""
 
@@ -82,3 +156,15 @@ class ResolvedRoute(BaseModel):
     runtime: str = Field(min_length=1)
     session_mode: ExecutionMode = 'stateless'
     runtime_model_id: str | None = None
+
+
+class RuntimeCompletion(BaseModel):
+    """Normalized runtime completion returned from a backend adapter."""
+
+    model_config = ConfigDict(frozen=True)
+
+    output_text: str = Field(min_length=1)
+    finish_reason: Literal['stop', 'length', 'content_filter', 'tool_calls'] = 'stop'
+    provider_response_id: str | None = None
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
