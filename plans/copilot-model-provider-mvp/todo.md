@@ -46,11 +46,11 @@
     - captured in `plans/copilot-model-provider-mvp/design.md` and `plan.md`
 
 ### Implementation
-- [ ] Item 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
+- [x] Item 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
   - Current execution status:
     - `PR 1` completed on branch `feat/pr1-foundation-scaffold` (`76db366`)
-    - model-catalog slice merged into `main`
-    - non-streaming chat slice implemented on branch `feat/chat-execution-surface`; pending review/merge
+    - model-catalog slice merged into `main` as `7c4d12c`
+    - non-streaming chat slice merged into `main` as `1df9534`
   - Acceptance criteria:
     - base scaffold, `/v1/models`, and non-streaming chat land in order
     - shared contracts are stable enough for fan-out
@@ -59,13 +59,19 @@
     - foundation evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
     - model-catalog evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
     - non-streaming chat evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
-- [ ] Item 2: Fan out `feat/mvp-streaming-transport` and `feat/mvp-session-persistence`
+- [x] Item 2: Fan out `feat/mvp-streaming-transport` and `feat/mvp-session-persistence`
+  - Current execution status:
+    - streaming transport slice merged into `main` as `e78c081`
+    - session persistence slice merged into `main` as `f07c035`
+    - follow-up type-check/test cleanup landed on `main` as `4ceb451`
   - Acceptance criteria:
     - both branches respect branch/worktree boundaries
     - streaming-only and storage/locking-only scopes land without touching forbidden paths
     - both branches contribute owned modules/tests only
   - Evidence:
-    - pending execution
+    - PR #4 merged: `feat/mvp-streaming-transport` -> `main`
+    - PR #5 merged: `feat/mvp-session-persistence` -> `main`
+    - both branches passed branch-scoped validation before merge and review findings were resolved before landing
 - [ ] Item 3: Converge streaming and session branches
   - Acceptance criteria:
     - hot files are integrated by the convergence owner
@@ -116,9 +122,15 @@ Paste concise evidence here (commands + key lines).
   - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
   - `35 passed`
   - `Required test coverage of 90% reached. Total coverage: 95.81%`
+- streaming transport slice:
+  - merged as `e78c081` via PR #4
+  - branch-scoped validation and review-fix pass completed before merge
+- session persistence slice:
+  - merged as `f07c035` via PR #5
+  - branch-scoped validation completed before merge; post-merge type-check cleanup landed as `4ceb451`
 
 ## Result
 - Outcome:
-  - Serial foundation chain is implemented through the non-streaming chat slice; Item 1 remains open only until the current branch is reviewed and merged.
+  - Step 1 and Step 2 are complete on `main`; the next planned stage is convergence of streaming and session work.
 - Follow-ups (if any):
-  - After merge, branch into streaming transport and session persistence from the `PR 3` merge commit.
+  - Start the convergence branch for Step 3 and integrate the shared hot files plus combined streaming/resume validation.

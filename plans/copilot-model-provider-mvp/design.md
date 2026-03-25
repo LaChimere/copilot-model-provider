@@ -287,7 +287,7 @@ Final branch: tools + MCP + release-gate E2E
 
 ## PR 3: Non-streaming chat execution via Copilot runtime
 - Status:
-  - Implemented on branch `feat/chat-execution-surface`; pending review and merge.
+  - Merged into `main` as `1df9534`.
 - Goal:
   - Add the Copilot runtime adapter and support non-streaming `POST /v1/chat/completions` for the basic single-request path.
 - Likely directories/files:

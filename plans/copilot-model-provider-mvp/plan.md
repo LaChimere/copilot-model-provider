@@ -60,17 +60,21 @@ Mark each as **Verified** or **Unverified**.
   - rejected by the approved design
 
 ## Proposed Approach (checklist)
-- [ ] Step 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
+- [x] Step 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
   - Current execution status:
     - `PR 1` is complete on branch `feat/pr1-foundation-scaffold` (`76db366`).
-    - the model-catalog slice has merged into `main`.
-    - the non-streaming chat slice is implemented on branch `feat/chat-execution-surface` and is pending review/merge, so Step 1 remains open overall.
+    - the model-catalog slice merged into `main` as `7c4d12c`.
+    - the non-streaming chat slice merged into `main` as `1df9534`, so the serial foundation chain is complete.
   - Acceptance criteria:
     - the base scaffold, model catalog, and non-streaming chat path are merged in order
     - the shared app/runtime/test-harness contracts are stable enough for fan-out
     - lightweight E2E smoke exists for `/v1/models` and non-streaming chat
 
-- [ ] Step 2: Fan out two parallel branches from the `PR 3` merge commit
+- [x] Step 2: Fan out two parallel branches from the `PR 3` merge commit
+  - Current execution status:
+    - `feat/mvp-streaming-transport` merged into `main` as `e78c081`.
+    - `feat/mvp-session-persistence` merged into `main` as `f07c035`.
+    - post-merge test/type cleanup for the session branch landed on `main` as `4ceb451`.
   - Acceptance criteria:
     - `feat/mvp-streaming-transport` owns only the streaming transport scope
     - `feat/mvp-session-persistence` owns only the storage/locking scope
