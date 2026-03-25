@@ -49,14 +49,15 @@
 - [ ] Item 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
   - Current execution status:
     - `PR 1` completed on branch `feat/pr1-foundation-scaffold` (`76db366`)
-    - `PR 2` pending
-    - `PR 3` pending
+    - model-catalog slice implemented on branch `feat/model-catalog-surface`
+    - non-streaming chat slice pending
   - Acceptance criteria:
     - base scaffold, `/v1/models`, and non-streaming chat land in order
     - shared contracts are stable enough for fan-out
     - lightweight smoke tests exist for the running app
   - Evidence:
-    - `PR 1` evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
+    - foundation evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
+    - model-catalog evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
 - [ ] Item 2: Fan out `feat/mvp-streaming-transport` and `feat/mvp-session-persistence`
   - Acceptance criteria:
     - both branches respect branch/worktree boundaries
@@ -98,7 +99,7 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 ### Verification (Evidence)
 - [ ] Run lint/typecheck: `uv run ruff check . && uv run pyright && uv run ty check .` (attach output/excerpt)
 - [ ] Run unit tests: targeted `tests/unit/**` commands (attach output/excerpt)
-- [ ] Run integration/e2e or before/after check: targeted `tests/contract/**`, `tests/integration/**`, and incremental `tests/e2e/**` commands per step (attach proof)
+- [ ] Run integration/e2e or before/after check: targeted `tests/contract/**`, `tests/integration_tests/**`, and incremental `tests/integration_tests/**` commands per step (attach proof)
 - [ ] Confirm branch/worktree ownership boundaries were respected during fan-out and convergence
 - [ ] Capture logs/metrics if required
 

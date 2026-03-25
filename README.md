@@ -6,16 +6,32 @@ The goal is to expose a stable northbound API for multiple client styles while u
 
 ## Status
 
-This repository is currently in the **design + scaffold** stage.
+This repository is currently in the **early implementation** stage.
 
 Today it contains:
 
 - the canonical architecture/design document in `docs/design.md`
 - an approved MVP planning slug in `plans/copilot-model-provider-mvp/`
-- a Python `src/`-layout package skeleton
+- a FastAPI app scaffold with an internal health endpoint
+- a service-owned model catalog and OpenAI-compatible `GET /v1/models`
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
+- `pytest`-based unit, contract, and lightweight E2E coverage
 
-It does **not** yet contain the finished provider service. The current package entrypoint is still a placeholder CLI.
+It does **not** yet contain the finished provider service. The current package entrypoint is still a placeholder CLI, and chat execution is not implemented yet.
+
+## Current implemented surface
+
+Available today:
+
+- `GET /v1/models`
+- `GET /_internal/health`
+
+Not implemented yet:
+
+- `POST /v1/chat/completions`
+- streaming chat behavior
+- persistent session resume
+- tool / MCP execution
 
 ## What this project is trying to build
 
@@ -87,7 +103,11 @@ src/
   copilot_model_provider/
     __init__.py
     __main__.py
+    api/
     cli.py
+    config.py
+    core/
+    runtimes/
 
 tests/
 ```
@@ -120,6 +140,12 @@ uv run copilot-model-provider
 uv run ruff check .
 uv run pyright
 uv run ty check .
+```
+
+### Run tests
+
+```bash
+uv run pytest -q
 ```
 
 ## Planning and execution model

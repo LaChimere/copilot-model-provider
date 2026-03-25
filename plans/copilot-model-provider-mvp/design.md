@@ -218,7 +218,7 @@ Final branch: tools + MCP + release-gate E2E
   - `tests/unit_tests/test_cli.py`
   - `tests/unit_tests/test_errors.py`
   - `tests/unit_tests/test_runtime_base.py`
-  - `tests/e2e/harness.py`
+  - `tests/integration_tests/harness.py`
 - Dependencies:
   - none
 - Allowed changes:
@@ -248,6 +248,8 @@ Final branch: tools + MCP + release-gate E2E
   - safe to merge first because it establishes structure only and does not promise full provider behavior.
 
 ## PR 2: Model catalog and `GET /v1/models`
+- Status:
+  - Implemented on branch `feat/model-catalog-surface`; pending review and merge.
 - Goal:
   - Implement the service-owned model catalog and router metadata path, then expose `GET /v1/models` through the OpenAI-compatible facade.
 - Likely directories/files:
@@ -255,9 +257,9 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/core/catalog.py`
   - `src/copilot_model_provider/core/routing.py`
   - `src/copilot_model_provider/core/models.py`
-  - `tests/unit/test_catalog.py`
-  - `tests/contract/test_openai_models.py`
-  - `tests/e2e/test_models_smoke.py`
+  - `tests/unit_tests/test_catalog.py`
+  - `tests/contract_tests/test_openai_models.py`
+  - `tests/integration_tests/test_models_smoke.py`
 - Dependencies:
   - PR 1
 - Allowed changes:
@@ -279,7 +281,7 @@ Final branch: tools + MCP + release-gate E2E
   - `uv run ruff check .`
   - `uv run pyright`
   - `uv run ty check .`
-  - targeted unit + contract tests for models/catalog
+  - `uv run pytest -q`
 - Mergeability notes:
   - mergeable independently because it adds a read-only public capability and validates the first compatibility path.
 
@@ -291,9 +293,9 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/runtimes/copilot.py`
   - `src/copilot_model_provider/core/sessions.py`
   - `src/copilot_model_provider/core/errors.py`
-  - `tests/integration/test_copilot_runtime_chat.py`
+  - `tests/integration_tests/test_copilot_runtime_chat.py`
   - `tests/contract/test_openai_chat_non_streaming.py`
-  - `tests/e2e/test_non_streaming_chat.py`
+  - `tests/integration_tests/test_non_streaming_chat.py`
 - Dependencies:
   - PR 2
 - Allowed changes:
@@ -327,8 +329,8 @@ Final branch: tools + MCP + release-gate E2E
 - Likely directories/files:
   - `src/copilot_model_provider/streaming/sse.py`
   - `src/copilot_model_provider/streaming/translators.py`
-  - `tests/integration/test_streaming_chat.py`
-  - `tests/e2e/test_streaming_smoke.py`
+  - `tests/integration_tests/test_streaming_chat.py`
+  - `tests/integration_tests/test_streaming_smoke.py`
 - Dependencies:
   - PR 3
 - Allowed changes:
@@ -360,9 +362,9 @@ Final branch: tools + MCP + release-gate E2E
 - Likely directories/files:
   - `src/copilot_model_provider/storage/session_map.py`
   - `src/copilot_model_provider/storage/locks.py`
-  - `tests/integration/test_session_resume.py`
-  - `tests/integration/test_session_locking.py`
-  - `tests/e2e/test_resume_smoke.py`
+  - `tests/integration_tests/test_session_resume.py`
+  - `tests/integration_tests/test_session_locking.py`
+  - `tests/integration_tests/test_resume_smoke.py`
 - Dependencies:
   - PR 3
 - Allowed changes:
@@ -395,8 +397,8 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/api/openai_chat.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
   - `src/copilot_model_provider/core/sessions.py`
-  - `tests/e2e/harness.py`
-  - `tests/e2e/test_streaming_and_resume.py`
+  - `tests/integration_tests/harness.py`
+  - `tests/integration_tests/test_streaming_and_resume.py`
 - Dependencies:
   - Parallel branch A
   - Parallel branch B
@@ -433,9 +435,9 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/tools/mcp.py`
   - `src/copilot_model_provider/core/policies.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
-  - `tests/integration/test_tool_flow.py`
-  - `tests/integration/test_mcp_mount.py`
-  - `tests/e2e/**`
+  - `tests/integration_tests/test_tool_flow.py`
+  - `tests/integration_tests/test_mcp_mount.py`
+  - `tests/integration_tests/**`
 - Dependencies:
   - Convergence PR
 - Allowed changes:
@@ -477,7 +479,7 @@ Final branch: tools + MCP + release-gate E2E
     - `src/copilot_model_provider/api/openai_chat.py`
     - `src/copilot_model_provider/runtimes/copilot.py`
     - `src/copilot_model_provider/core/sessions.py`
-    - `tests/e2e/harness.py`
+    - `tests/integration_tests/harness.py`
   - parallelizing before those contracts settle would create constant rebasing and ambiguous ownership
 - Must stabilize first:
   - app/config boot path
@@ -489,9 +491,9 @@ Final branch: tools + MCP + release-gate E2E
 
 | Task name | Branch name | Worktree name | Owns | Must not touch | Depends on | Validation |
 |---|---|---|---|---|---|---|
-| Streaming transport | `feat/mvp-streaming-transport` | `wt-mvp-streaming-transport` | `src/copilot_model_provider/streaming/**`, `tests/integration/test_streaming_chat.py`, `tests/e2e/test_streaming_smoke.py` | `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs/lockfiles | Foundation chain merged | `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, targeted streaming tests |
-| Session persistence and locking | `feat/mvp-session-persistence` | `wt-mvp-session-persistence` | `src/copilot_model_provider/storage/**`, `tests/integration/test_session_resume.py`, `tests/integration/test_session_locking.py`, `tests/e2e/test_resume_smoke.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs/lockfiles | Foundation chain merged | `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, targeted session/locking tests |
-| Tool and MCP completion | `feat/mvp-tools-mcp` | `wt-mvp-tools-mcp` | `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/core/policies.py`, `tests/integration/test_tool_flow.py`, `tests/integration/test_mcp_mount.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/api/openai_models.py`, shared configs/lockfiles | Convergence PR merged | `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, targeted tool/MCP tests |
+| Streaming transport | `feat/mvp-streaming-transport` | `wt-mvp-streaming-transport` | `src/copilot_model_provider/streaming/**`, `tests/integration_tests/test_streaming_chat.py`, `tests/integration_tests/test_streaming_smoke.py` | `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs/lockfiles | Foundation chain merged | `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, targeted streaming tests |
+| Session persistence and locking | `feat/mvp-session-persistence` | `wt-mvp-session-persistence` | `src/copilot_model_provider/storage/**`, `tests/integration_tests/test_session_resume.py`, `tests/integration_tests/test_session_locking.py`, `tests/integration_tests/test_resume_smoke.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs/lockfiles | Foundation chain merged | `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, targeted session/locking tests |
+| Tool and MCP completion | `feat/mvp-tools-mcp` | `wt-mvp-tools-mcp` | `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/core/policies.py`, `tests/integration_tests/test_tool_flow.py`, `tests/integration_tests/test_mcp_mount.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/api/openai_models.py`, shared configs/lockfiles | Convergence PR merged | `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, targeted tool/MCP tests |
 
 Notes:
 - One agent = one branch = one worktree.
@@ -500,7 +502,7 @@ Notes:
   - `src/copilot_model_provider/api/openai_chat.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
   - `src/copilot_model_provider/core/sessions.py`
-  - `tests/e2e/harness.py`
+  - `tests/integration_tests/harness.py`
 - If those ownership boundaries cannot be respected in practice, the work should fall back to serial execution.
 
 ### Merge strategy
@@ -514,7 +516,7 @@ Notes:
   - `src/copilot_model_provider/api/openai_chat.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
   - `src/copilot_model_provider/core/sessions.py`
-  - `tests/e2e/harness.py`
+  - `tests/integration_tests/harness.py`
   - shared configs / lockfiles such as `pyproject.toml`, `uv.lock`, `pyrightconfig.json`, `ruff.toml`, `ty.toml`
 - Convergence owner:
   - lead integrator for the feature branch stack; should be a single agent/person, not shared ownership

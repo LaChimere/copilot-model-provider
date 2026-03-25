@@ -5,9 +5,12 @@ from __future__ import annotations
 import structlog
 from fastapi import FastAPI
 
+from .api.openai_models import install_openai_models_route
 from .config import ProviderSettings
+from .core.catalog import ModelCatalog, create_default_model_catalog
 from .core.errors import install_error_handlers
 from .core.models import InternalHealthResponse
+from .core.routing import ModelRouter
 from .runtimes.base import RuntimeAdapter, ScaffoldRuntimeAdapter
 
 _logger = structlog.get_logger(__name__)
@@ -17,18 +20,22 @@ def create_app(
     settings: ProviderSettings | None = None,
     *,
     runtime_adapter: RuntimeAdapter | None = None,
+    model_catalog: ModelCatalog | None = None,
+    model_router: ModelRouter | None = None,
 ) -> FastAPI:
     """Create the provider's FastAPI application scaffold.
 
     When callers do not provide explicit settings or a runtime adapter, this
     function resolves environment-backed defaults and installs the non-executing
-    scaffold runtime. The returned app intentionally exposes only internal
-    plumbing needed for PR 1, including typed state and the optional internal
-    health endpoint.
+    scaffold runtime. The returned app exposes the read-only model listing route
+    plus the internal plumbing needed for later runtime-backed phases, including
+    typed state and the optional internal health endpoint.
 
     Args:
         settings: Optional pre-built settings to bind onto the application.
         runtime_adapter: Optional runtime adapter to store in application state.
+        model_catalog: Optional pre-built service-owned model catalog.
+        model_router: Optional router for model listing and alias resolution.
 
     Returns:
         A configured ``FastAPI`` instance ready for later provider phases.
@@ -36,6 +43,11 @@ def create_app(
     """
     resolved_settings = settings or ProviderSettings.from_env()
     resolved_runtime = runtime_adapter or ScaffoldRuntimeAdapter()
+    resolved_router = model_router or ModelRouter(
+        model_catalog=model_catalog
+        or create_default_model_catalog(settings=resolved_settings)
+    )
+    resolved_catalog = resolved_router.model_catalog
 
     app = FastAPI(
         title=resolved_settings.app_name,
@@ -45,8 +57,11 @@ def create_app(
     )
     app.state.settings = resolved_settings
     app.state.runtime_adapter = resolved_runtime
+    app.state.model_catalog = resolved_catalog
+    app.state.model_router = resolved_router
 
     install_error_handlers(app)
+    install_openai_models_route(app, model_router=resolved_router)
 
     if resolved_settings.enable_internal_health:
         _install_internal_health_route(

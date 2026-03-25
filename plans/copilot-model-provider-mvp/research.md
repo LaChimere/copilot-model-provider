@@ -13,8 +13,8 @@
 
 ## Current Behavior
 - Observed behavior:
-  - The repository now contains the `PR 1` foundation scaffold: a FastAPI app factory, `pydantic-settings`-based configuration, core request/route/error models, a runtime adapter base layer, an internal-only health endpoint, and an E2E harness scaffold.
-  - There is still no OpenAI-compatible `GET /v1/models` or `POST /v1/chat/completions` behavior, no model catalog/router implementation, and no real Copilot runtime execution path yet.
+  - The repository now contains the foundation scaffold plus a service-owned model catalog, routing metadata, and an OpenAI-compatible `GET /v1/models` endpoint.
+  - There is still no `POST /v1/chat/completions` behavior, no real Copilot runtime execution path, and no streaming/session/tool integration yet.
 - Expected behavior:
   - The repository should evolve into an MVP service that exposes `GET /v1/models` and `POST /v1/chat/completions` over a `copilot-sdk` runtime adapter, while preserving room for stateful sessions, streaming, tools, MCP, and policy.
 - Scope affected (modules/endpoints/commands):
@@ -40,7 +40,7 @@ Include concrete evidence. Prefer copy/paste of relevant excerpts with context.
 - Logs / stack traces:
   - Current repo validation is green for `ruff`, `pyright`, `ty`, and the package entrypoints.
 - Failing tests (name + output excerpt):
-  - None at the time of this update; `PR 1` validation is green with `pytest` and the enforced coverage gate.
+  - None at the time of this update; validation is green with `pytest`, including unit, contract, and lightweight E2E smoke checks under the enforced coverage gate.
 - Metrics (numbers + method):
   - Not applicable yet; the service does not exist.
 - Repro steps (minimal):
@@ -56,15 +56,15 @@ List the most relevant files and what you learned.
   - provider-native session APIs and provider-native response-style APIs remain architecturally valuable, but are not required to ship first
   - real-client E2E must cover streaming, tool calls, session reuse, routing, and MCP
 - `pyproject.toml` — confirms the project is Python `src/` layout, depends on `github-copilot-sdk` and `structlog`, and already has a console entrypoint.
-- `pyproject.toml` — now also includes `fastapi`, `pydantic-settings`, `pytest`, `pytest-asyncio`, and `pytest-cov`, which means the base service slice has already standardized the current app/testing stack.
-- `src/copilot_model_provider/` — `PR 1` has landed the app/config/core/runtime seams, so later slices can build on real provider scaffolding instead of a placeholder package only.
-- `tests/` — unit tests and the E2E harness scaffold now exist, so later slices should extend the established test layout rather than inventing a new one.
+- `pyproject.toml` — now also includes `fastapi`, `pydantic-settings`, `pytest`, `pytest-asyncio`, `pytest-cov`, and `httpx`, which means the repo has standardized both in-process app testing and HTTP-level contract/smoke checks.
+- `src/copilot_model_provider/` — the app/config/core/runtime seams are in place, and the first public compatibility endpoint (`GET /v1/models`) is now wired through the app.
+- `tests/` — unit tests, contract tests, and the E2E harness scaffold now exist, so later slices should extend the established test layout rather than inventing a new one.
 - `AGENTS.md` — requires evidence-driven work, reviewable increments, and Gate 1 / Gate 2 when the work spans multiple components or includes multiple design options.
 - Hot files for parallel planning:
   - `src/copilot_model_provider/api/openai_chat.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
   - `src/copilot_model_provider/core/sessions.py`
-  - `tests/e2e/harness.py`
+  - `tests/integration_tests/harness.py`
   These are likely conflict hotspots because they sit on the convergence path for chat execution, streaming, session resume, and tool behavior.
 
 ## Hypotheses (ranked)
@@ -108,7 +108,7 @@ For each experiment:
     - `src/copilot_model_provider/api/openai_chat.py`
     - `src/copilot_model_provider/runtimes/copilot.py`
     - `src/copilot_model_provider/core/sessions.py`
-    - `tests/e2e/harness.py`
+    - `tests/integration_tests/harness.py`
   - The fan-out branches should contribute only owned modules and tests; they do not directly wire their work into the hot files above.
 - Unsafe parallel areas:
   - `PR 1` through `PR 3` should not be parallelized because they still define shared contracts.
