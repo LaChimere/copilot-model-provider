@@ -315,6 +315,27 @@ def test_copilot_runtime_adapter_denies_unknown_tools() -> None:
     assert 'not registered' in result.message
 
 
+def test_copilot_runtime_adapter_shares_default_mcp_registry_with_policy_engine() -> (
+    None
+):
+    """Verify that default MCP registration is visible to later policy checks."""
+    adapter = CopilotRuntimeAdapter()
+    adapter._mcp_registry.register(
+        MCPServerDefinition(
+            name='docs-api',
+            transport='http',
+            url='http://localhost:8123/mcp',
+        )
+    )
+
+    result = adapter._handle_permission_request(
+        _build_permission_request(kind='mcp', server_name='docs-api'),
+        {},
+    )
+
+    assert result.kind == 'approved'
+
+
 def test_copilot_runtime_adapter_honors_builtin_tool_allow_list() -> None:
     """Verify that built-in SDK tool requests follow the configured built-in policy."""
     adapter = CopilotRuntimeAdapter(

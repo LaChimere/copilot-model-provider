@@ -152,11 +152,11 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         self._timeout_seconds = timeout_seconds
         self._working_directory = working_directory
         self._tool_registry = tool_registry or ToolRegistry()
+        self._mcp_registry = mcp_registry or MCPRegistry()
         self._policy_engine = policy_engine or PolicyEngine(
             tool_registry=self._tool_registry,
-            mcp_registry=mcp_registry,
+            mcp_registry=self._mcp_registry,
         )
-        self._mcp_registry = mcp_registry or MCPRegistry()
         self._client: CopilotClientLike | None = None
 
     @override
