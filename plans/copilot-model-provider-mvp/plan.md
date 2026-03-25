@@ -81,7 +81,12 @@ Mark each as **Verified** or **Unverified**.
     - both branches respect their forbidden-path boundaries
     - both branches contribute owned modules/tests only and leave hot-file wiring to the convergence owner
 
-- [ ] Step 3: Converge streaming and session work under a single owner
+- [x] Step 3: Converge streaming and session work under a single owner
+  - Current execution status:
+    - the shared hot files are now integrated locally on `main`
+    - `/v1/chat/completions` now supports streaming SSE in addition to non-streaming behavior
+    - session persistence/resume and locking are now wired through the convergence path for session-backed routes
+    - the streaming setup cleanup issue found during review has been resolved locally
   - Acceptance criteria:
     - one convergence branch integrates the shared hot files
     - combined streaming + resumed-follow-up checks pass

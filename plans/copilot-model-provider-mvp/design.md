@@ -395,6 +395,8 @@ Final branch: tools + MCP + release-gate E2E
   - mergeable after PR 3 because it stays inside owned paths and defers hot-file integration to convergence.
 
 ## Convergence PR: Streaming and session integration
+- Status:
+  - Implemented locally on `main`; the shared hot files now integrate streaming SSE, session persistence/resume, and locking behavior, and local validation is green before Tool/MCP work begins.
 - Goal:
   - Integrate the streaming and session fan-out branches into the shared hot files and validate the combined resumed-follow-up behavior.
 - Likely directories/files:

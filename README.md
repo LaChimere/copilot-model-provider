@@ -14,25 +14,25 @@ Today it contains:
 - an approved MVP planning slug in `plans/copilot-model-provider-mvp/`
 - a FastAPI app scaffold with an internal health endpoint
 - a service-owned model catalog and OpenAI-compatible `GET /v1/models`
-- an OpenAI-compatible non-streaming `POST /v1/chat/completions`
-- a Copilot SDK-backed runtime adapter for ephemeral chat execution
+- an OpenAI-compatible `POST /v1/chat/completions` supporting non-streaming and streaming SSE behavior
+- session-backed convergence for routes configured as `sessional`, including persistent session resume and locking via `X-Copilot-Conversation-Id`
+- a Copilot SDK-backed runtime adapter for stateless and session-backed chat execution
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
 - `pytest`-based unit, contract, and lightweight integration coverage
 
-It does **not** yet contain the finished provider service. The current package entrypoint is still a placeholder CLI, and streaming, persistent session resume, and tool / MCP execution are not implemented yet.
+It does **not** yet contain the finished provider service. The current package entrypoint is still a placeholder CLI, and tool / MCP execution plus final release-gate E2E are not implemented yet.
 
 ## Current implemented surface
 
 Available today:
 
 - `GET /v1/models`
-- `POST /v1/chat/completions` (non-streaming only)
+- `POST /v1/chat/completions` (non-streaming and streaming SSE)
+- session-backed resume/locking behavior for routes configured as `sessional`
 - `GET /_internal/health`
 
 Not implemented yet:
 
-- streaming chat behavior
-- persistent session resume
 - tool / MCP execution
 
 ## What this project is trying to build

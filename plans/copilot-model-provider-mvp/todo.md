@@ -72,13 +72,19 @@
     - PR #4 merged: `feat/mvp-streaming-transport` -> `main`
     - PR #5 merged: `feat/mvp-session-persistence` -> `main`
     - both branches passed branch-scoped validation before merge and review findings were resolved before landing
-- [ ] Item 3: Converge streaming and session branches
+- [x] Item 3: Converge streaming and session branches
+  - Current execution status:
+    - the shared hot files are integrated locally on `main`
+    - streaming SSE, session persistence/resume, and locking behavior are now wired into `/v1/chat/completions`
+    - the review-found streaming setup cleanup leak was fixed before completion
   - Acceptance criteria:
     - hot files are integrated by the convergence owner
     - streaming + resumed-follow-up E2E passes
     - locking/ownership behavior is covered by focused tests
   - Evidence:
-    - pending execution
+    - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+    - `85 passed`
+    - `Required test coverage of 90% reached. Total coverage: 94.74%`
 - [ ] Item 4: Land `feat/mvp-tools-mcp`
   - Acceptance criteria:
     - server-approved tool and MCP flows succeed at the agreed MVP depth
@@ -128,9 +134,13 @@ Paste concise evidence here (commands + key lines).
 - session persistence slice:
   - merged as `f07c035` via PR #5
   - branch-scoped validation completed before merge; post-merge type-check cleanup landed as `4ceb451`
+- Step 3 convergence:
+  - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+  - `85 passed`
+  - `Required test coverage of 90% reached. Total coverage: 94.74%`
 
 ## Result
 - Outcome:
-  - Step 1 and Step 2 are complete on `main`; the next planned stage is convergence of streaming and session work.
+  - Step 1, Step 2, and Step 3 are complete locally on `main`; the next planned stage is Tool/MCP completion.
 - Follow-ups (if any):
-  - Start the convergence branch for Step 3 and integrate the shared hot files plus combined streaming/resume validation.
+  - Start Step 4 and layer Tool/MCP behavior on top of the converged chat/runtime path.
