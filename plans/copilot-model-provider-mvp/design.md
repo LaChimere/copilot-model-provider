@@ -249,7 +249,7 @@ Final branch: tools + MCP + release-gate E2E
 
 ## PR 2: Model catalog and `GET /v1/models`
 - Status:
-  - Implemented on branch `feat/model-catalog-surface`; pending review and merge.
+  - Merged into `main` from branch `feat/model-catalog-surface`.
 - Goal:
   - Implement the service-owned model catalog and router metadata path, then expose `GET /v1/models` through the OpenAI-compatible facade.
 - Likely directories/files:
@@ -286,24 +286,28 @@ Final branch: tools + MCP + release-gate E2E
   - mergeable independently because it adds a read-only public capability and validates the first compatibility path.
 
 ## PR 3: Non-streaming chat execution via Copilot runtime
+- Status:
+  - Implemented on branch `feat/chat-execution-surface`; pending review and merge.
 - Goal:
   - Add the Copilot runtime adapter and support non-streaming `POST /v1/chat/completions` for the basic single-request path.
 - Likely directories/files:
   - `src/copilot_model_provider/api/openai_chat.py`
+  - `src/copilot_model_provider/core/chat.py`
+  - `src/copilot_model_provider/core/models.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
-  - `src/copilot_model_provider/core/sessions.py`
-  - `src/copilot_model_provider/core/errors.py`
-  - `tests/integration_tests/test_copilot_runtime_chat.py`
-  - `tests/contract/test_openai_chat_non_streaming.py`
+  - `src/copilot_model_provider/runtimes/base.py`
+  - `tests/unit_tests/test_chat.py`
+  - `tests/unit_tests/test_copilot_runtime.py`
+  - `tests/contract_tests/test_openai_chat_non_streaming.py`
   - `tests/integration_tests/test_non_streaming_chat.py`
 - Dependencies:
   - PR 2
 - Allowed changes:
   - `CopilotRuntimeAdapter`
   - request normalization into canonical model
-  - ephemeral or internally managed session create/send path
+  - ephemeral session create/send/destroy path
   - non-streaming response translation
-  - structured logging with `structlog` for request/session lifecycle events
+  - route wiring plus deterministic fake-runtime coverage for HTTP and adapter tests
 - Prohibited changes:
   - SSE streaming
   - persistent conversation resume behavior across requests

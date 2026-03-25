@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
 from fastapi import FastAPI
 
+from .api.openai_chat import install_openai_chat_route
 from .api.openai_models import install_openai_models_route
 from .config import ProviderSettings
 from .core.catalog import ModelCatalog, create_default_model_catalog
 from .core.errors import install_error_handlers
 from .core.models import InternalHealthResponse
 from .core.routing import ModelRouter
-from .runtimes.base import RuntimeAdapter, ScaffoldRuntimeAdapter
+from .runtimes import CopilotRuntimeAdapter
+
+if TYPE_CHECKING:
+    from .runtimes.base import RuntimeAdapter
 
 _logger = structlog.get_logger(__name__)
 
@@ -26,10 +32,10 @@ def create_app(
     """Create the provider's FastAPI application scaffold.
 
     When callers do not provide explicit settings or a runtime adapter, this
-    function resolves environment-backed defaults and installs the non-executing
-    scaffold runtime. The returned app exposes the read-only model listing route
-    plus the internal plumbing needed for later runtime-backed phases, including
-    typed state and the optional internal health endpoint.
+    function resolves environment-backed defaults and installs the Copilot
+    runtime adapter for the first non-streaming execution slice. The returned
+    app exposes the model listing route, the OpenAI-compatible chat-completions
+    route, and the internal plumbing needed for later provider phases.
 
     Args:
         settings: Optional pre-built settings to bind onto the application.
@@ -42,7 +48,10 @@ def create_app(
 
     """
     resolved_settings = settings or ProviderSettings.from_env()
-    resolved_runtime = runtime_adapter or ScaffoldRuntimeAdapter()
+    resolved_runtime = runtime_adapter or CopilotRuntimeAdapter(
+        timeout_seconds=resolved_settings.runtime_timeout_seconds,
+        working_directory=resolved_settings.runtime_working_directory,
+    )
     resolved_router = model_router or ModelRouter(
         model_catalog=model_catalog
         or create_default_model_catalog(settings=resolved_settings)
@@ -62,6 +71,11 @@ def create_app(
 
     install_error_handlers(app)
     install_openai_models_route(app, model_router=resolved_router)
+    install_openai_chat_route(
+        app,
+        model_router=resolved_router,
+        runtime_adapter=resolved_runtime,
+    )
 
     if resolved_settings.enable_internal_health:
         _install_internal_health_route(

@@ -26,6 +26,8 @@ class ProviderSettings(BaseSettings):
     enable_internal_health: bool = True
     internal_health_path: str = '/_internal/health'
     default_runtime: str = 'copilot'
+    runtime_timeout_seconds: float = 60.0
+    runtime_working_directory: str | None = None
 
     @field_validator('internal_health_path')
     @classmethod
@@ -37,6 +39,20 @@ class ProviderSettings(BaseSettings):
         """Ensure the internal health route stays absolute for FastAPI routing."""
         if not value.startswith('/'):
             msg = 'internal_health_path must start with "/"'
+            raise ValueError(msg)
+
+        return value
+
+    @field_validator('runtime_timeout_seconds')
+    @classmethod
+    def _validate_runtime_timeout_seconds(
+        cls,
+        value: float,
+        _info: ValidationInfo,
+    ) -> float:
+        """Ensure the runtime request timeout stays strictly positive."""
+        if value <= 0:
+            msg = 'runtime_timeout_seconds must be greater than 0'
             raise ValueError(msg)
 
         return value

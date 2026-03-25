@@ -5,7 +5,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import override
 
-from copilot_model_provider.core.models import ResolvedRoute, RuntimeHealth
+from copilot_model_provider.core.errors import ProviderError
+from copilot_model_provider.core.models import (
+    CanonicalChatRequest,
+    ResolvedRoute,
+    RuntimeCompletion,
+    RuntimeHealth,
+)
 
 
 class RuntimeAdapter(ABC):
@@ -46,6 +52,25 @@ class RuntimeAdapter(ABC):
 
         """
 
+    @abstractmethod
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Execute a normalized non-streaming chat request.
+
+        Args:
+            request: The canonical request to execute.
+            route: The resolved runtime route for the requested model alias.
+
+        Returns:
+            A normalized runtime completion that the HTTP layer can translate
+            into the public OpenAI-compatible response shape.
+
+        """
+
 
 class ScaffoldRuntimeAdapter(RuntimeAdapter):
     """Non-executing runtime used during the scaffold phase."""
@@ -77,4 +102,33 @@ class ScaffoldRuntimeAdapter(RuntimeAdapter):
             runtime=self.runtime_name,
             available=False,
             detail='Scaffold only; runtime execution is not implemented yet.',
+        )
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Reject chat execution while the scaffold adapter is active.
+
+        Args:
+            request: The canonical request that the scaffold cannot execute.
+            route: The resolved route metadata for the request.
+
+        Returns:
+            This method never returns because the scaffold adapter is
+            intentionally non-executing.
+
+        Raises:
+            ProviderError: Always raised to make the missing execution support
+                explicit to HTTP callers.
+
+        """
+        del request, route
+        raise ProviderError(
+            code='runtime_not_available',
+            message='Chat execution is not available for the scaffold runtime.',
+            status_code=503,
         )

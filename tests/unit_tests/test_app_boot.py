@@ -45,6 +45,8 @@ def test_internal_health_route_is_optional() -> None:
 
     assert '/v1/models' in _route_paths(enabled_app)
     assert '/v1/models' in _route_paths(disabled_app)
+    assert '/v1/chat/completions' in _route_paths(enabled_app)
+    assert '/v1/chat/completions' in _route_paths(disabled_app)
     assert '/_internal/health' in _route_paths(enabled_app)
     assert '/_internal/health' not in _route_paths(disabled_app)
 
@@ -79,7 +81,7 @@ def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
 
 @pytest.mark.asyncio
 async def test_internal_health_handler_returns_scaffold_payload() -> None:
-    """Verify that the internal health handler returns scaffold runtime data."""
+    """Verify that the internal health handler reports lazy Copilot state."""
     app = create_app(settings=ProviderSettings(environment='test'))
     endpoint = _resolve_endpoint(app, '/_internal/health')
     response: InternalHealthResponse = await endpoint()
@@ -89,6 +91,7 @@ async def test_internal_health_handler_returns_scaffold_payload() -> None:
     assert response.environment == 'test'
     assert response.runtime.runtime == 'copilot'
     assert response.runtime.available is False
+    assert response.runtime.detail == 'Copilot client state: disconnected'
 
 
 def _resolve_endpoint(

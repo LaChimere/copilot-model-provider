@@ -49,8 +49,8 @@
 - [ ] Item 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
   - Current execution status:
     - `PR 1` completed on branch `feat/pr1-foundation-scaffold` (`76db366`)
-    - model-catalog slice implemented on branch `feat/model-catalog-surface`
-    - non-streaming chat slice pending
+    - model-catalog slice merged into `main`
+    - non-streaming chat slice implemented on branch `feat/chat-execution-surface`; pending review/merge
   - Acceptance criteria:
     - base scaffold, `/v1/models`, and non-streaming chat land in order
     - shared contracts are stable enough for fan-out
@@ -58,6 +58,7 @@
   - Evidence:
     - foundation evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
     - model-catalog evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
+    - non-streaming chat evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
 - [ ] Item 2: Fan out `feat/mvp-streaming-transport` and `feat/mvp-session-persistence`
   - Acceptance criteria:
     - both branches respect branch/worktree boundaries
@@ -111,10 +112,13 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 
 ## Evidence Log
 Paste concise evidence here (commands + key lines).
-- pending
+- non-streaming chat slice:
+  - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+  - `35 passed`
+  - `Required test coverage of 90% reached. Total coverage: 95.81%`
 
 ## Result
 - Outcome:
-  - Pending execution
+  - Serial foundation chain is implemented through the non-streaming chat slice; Item 1 remains open only until the current branch is reviewed and merged.
 - Follow-ups (if any):
-  - None yet
+  - After merge, branch into streaming transport and session persistence from the `PR 3` merge commit.
