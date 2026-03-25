@@ -97,17 +97,22 @@
     - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
     - `109 passed`
     - `Required test coverage of 90% reached. Total coverage: 94.21%`
-- [ ] Item 5: Final cleanup and MVP release-gate E2E
+- [x] Item 5: Final cleanup and MVP release-gate E2E
+  - Current execution status:
+    - release-gate integration coverage now validates alias advertisement, routed `runtime_model_id` selection, sessional alias enforcement, session persistence, and clean `model_not_found` responses for unknown aliases
+    - follow-up code review found no substantive issues to resolve
   - Acceptance criteria:
     - release-gate scenarios pass
     - no temporary scaffolding is left undocumented
   - Evidence:
-    - pending execution
+    - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+    - `113 passed`
+    - `Required test coverage of 90% reached. Total coverage: 94.48%`
 
 ### Acceptance Gate (before proposing PR)
-- [ ] All acceptance criteria above are met with evidence
-- [ ] Diff is consistent with approved plan (no scope creep, no missing pieces)
-- [ ] Applicable verification level executed
+- [x] All acceptance criteria above are met with evidence
+- [x] Diff is consistent with approved plan (no scope creep, no missing pieces)
+- [x] Applicable verification level executed
 
 If any check fails, follow the recovery flow defined in `AGENTS.md` (Verification rules → Acceptance criteria):
 1. Can fix directly → fix and re-verify
@@ -123,9 +128,9 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 - [ ] Capture logs/metrics if required
 
 ### Review / Packaging
-- [ ] Summarize changes (what/why)
-- [ ] Confirm no scope creep / unrelated cleanup
-- [ ] Check whether related docs need updating (use `refresh-related-docs` if behavior, config, or API changed)
+- [x] Summarize changes (what/why)
+- [x] Confirm no scope creep / unrelated cleanup
+- [x] Check whether related docs need updating (use `refresh-related-docs` if behavior, config, or API changed)
 - [ ] Prepare PR description / changelog notes (if applicable)
 
 ## Evidence Log
@@ -148,9 +153,13 @@ Paste concise evidence here (commands + key lines).
   - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
   - `109 passed`
   - `Required test coverage of 90% reached. Total coverage: 94.21%`
+- Step 5 release-gate coverage:
+  - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+  - `113 passed`
+  - `Required test coverage of 90% reached. Total coverage: 94.48%`
 
 ## Result
 - Outcome:
-  - Step 1 through Step 4 are complete locally on `main`; the next planned stage is final release-gate E2E and cleanup.
+  - Step 1 through Step 5 are complete locally on `main`; the MVP release-gate checklist is covered at the agreed minimum depth.
 - Follow-ups (if any):
-  - Start Step 5 and expand the remaining release-gate scenarios on top of the completed Tool/MCP path.
+  - None required for this MVP slug beyond normal commit/push/release handling.

@@ -6,7 +6,7 @@ The goal is to expose a stable northbound API for multiple client styles while u
 
 ## Status
 
-This repository is currently in the **early implementation** stage.
+This repository is currently in the **MVP implementation** stage.
 
 Today it contains:
 
@@ -19,10 +19,11 @@ Today it contains:
 - a Copilot SDK-backed runtime adapter for stateless and session-backed chat execution
 - basic server-approved tool mounting and policy-driven approval
 - basic MCP mounting for configured session launches
+- focused release-gate integration coverage for model alias routing and policy behavior
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
 - `pytest`-based unit, contract, and lightweight integration coverage
 
-It does **not** yet contain the finished provider service. The current package entrypoint is still a placeholder CLI, and final release-gate E2E plus remaining cleanup are not implemented yet.
+The current package entrypoint is still a placeholder CLI, but the MVP HTTP surface and minimum release-gate scenario coverage are now implemented locally on `main`.
 
 ## Current implemented surface
 
@@ -35,9 +36,15 @@ Available today:
 - basic MCP mounting for configured runtime sessions
 - `GET /_internal/health`
 
-Not implemented yet:
+Minimum release-gate coverage now includes:
 
-- final release-gate E2E coverage and cleanup
+- `/v1/models` alias advertisement
+- non-streaming chat
+- streaming SSE framing
+- session-backed resume/locking for routes configured as `sessional`
+- one server-approved tool path
+- one MCP-backed path
+- one routing/policy alias path
 
 ## What this project is trying to build
 
@@ -170,6 +177,7 @@ For the current MVP slug, the approved execution model is:
 5. finish release-gate E2E and cleanup
 
 The current plan describes this as **five execution phases implemented as seven mergeable branches**.
+All five phases are now implemented locally on `main`.
 
 ## Important documents
 

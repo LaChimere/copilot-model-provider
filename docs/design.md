@@ -656,8 +656,8 @@ This allows us to expose stateful behavior cleanly without forcing every concept
 
 Current implementation status:
 
-- basic tool support, basic MCP mounting, and policy-controlled approval are now implemented locally on `main`
-- the main remaining MVP work is release-gate E2E depth and final cleanup
+- basic tool support, basic MCP mounting, policy-controlled approval, and the remaining routing/policy release-gate scenario are all now implemented locally on `main`
+- the documented MVP release gate now has focused coverage for `/v1/models`, non-streaming chat, streaming, tool flow, persistent resume, and routing/policy behavior
 
 ### Out of scope
 

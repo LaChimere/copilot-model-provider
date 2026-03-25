@@ -435,7 +435,7 @@ Final branch: tools + MCP + release-gate E2E
 
 ## Final PR: Tool / MCP completion and MVP release gate
 - Status:
-  - Tool/MCP completion is now implemented locally on `main`: server-approved tools are mounted into SDK sessions, MCP servers are mounted through app/runtime configuration, and focused integration coverage validates both paths before the final release-gate cleanup stage.
+  - Tool/MCP completion and the minimum MVP release-gate coverage are now implemented locally on `main`: server-approved tools are mounted into SDK sessions, MCP servers are mounted through app/runtime configuration, and focused integration coverage now also validates the remaining routing/policy scenario through alias-based model routing.
 - Goal:
   - Complete the MVP’s tool and MCP story on top of the existing chat surface, remove temporary limitations that were only acceptable for earlier slices, and add the minimum release-gate E2E coverage.
 - Likely directories/files:
@@ -445,6 +445,7 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/runtimes/copilot.py`
   - `tests/integration_tests/test_tool_flow.py`
   - `tests/integration_tests/test_mcp_mount.py`
+  - `tests/integration_tests/test_routing_and_policy.py`
   - `tests/integration_tests/**`
 - Dependencies:
   - Convergence PR

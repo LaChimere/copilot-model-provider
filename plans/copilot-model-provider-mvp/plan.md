@@ -103,7 +103,10 @@ Mark each as **Verified** or **Unverified**.
     - at least one server-approved tool path succeeds
     - at least one MCP-backed path succeeds
 
-- [ ] Step 5: Final cleanup and MVP release-gate E2E
+- [x] Step 5: Final cleanup and MVP release-gate E2E
+  - Current execution status:
+    - release-gate integration coverage now validates model alias advertisement, routed `runtime_model_id` selection, sessional alias enforcement, session persistence, and clean `model_not_found` responses for unknown aliases
+    - follow-up review of the Step 5 diff found no substantive issues to resolve
   - Acceptance criteria:
     - the final cleanup owner expands and passes the MVP release-gate scenarios from `docs/design.md`
     - no temporary scaffolding is left undocumented

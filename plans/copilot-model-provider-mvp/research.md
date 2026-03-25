@@ -16,7 +16,7 @@
   - The repository now contains the foundation scaffold, a service-owned model catalog, routing metadata, an OpenAI-compatible `GET /v1/models` endpoint, and a `POST /v1/chat/completions` path that supports both non-streaming and streaming SSE behavior through the Copilot runtime adapter.
   - The Step 2 fan-out slices are merged, and the Step 3 convergence work is now implemented locally on `main`: the shared hot files wire in streaming transport, session persistence/resume, and locking behavior.
   - Step 4 is now also implemented locally on `main`: server-approved tool execution, MCP mounting, and policy-controlled permission handling are wired into runtime session creation and validated through focused integration coverage.
-  - The main remaining MVP work is final release-gate E2E and cleanup.
+  - Step 5 is now implemented locally on `main`: release-gate integration coverage validates model alias listing, routed `runtime_model_id` selection, sessional alias enforcement, session persistence, and clean `model_not_found` responses for unknown aliases.
 - Expected behavior:
   - The repository should evolve into an MVP service that exposes `GET /v1/models` and `POST /v1/chat/completions` over a `copilot-sdk` runtime adapter, while preserving room for stateful sessions, streaming, tools, MCP, and policy.
 - Scope affected (modules/endpoints/commands):
@@ -42,7 +42,7 @@ Include concrete evidence. Prefer copy/paste of relevant excerpts with context.
 - Logs / stack traces:
   - Current repo validation is green for `ruff`, `pyright`, `ty`, and the package entrypoints.
 - Failing tests (name + output excerpt):
-  - None at the time of this update; validation is green with `pytest`, including unit, contract, and lightweight E2E smoke checks under the enforced coverage gate.
+  - None at the time of this update; validation is green with `uv run pytest -q` (`113 passed`), and the enforced coverage gate remains satisfied at `94.48%`.
 - Metrics (numbers + method):
   - Not applicable yet; the service does not exist.
 - Repro steps (minimal):
