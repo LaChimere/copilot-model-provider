@@ -1,0 +1,147 @@
+line-length = 88
+indent-width = 4
+unsafe-fixes = false
+target-version = "py314"
+
+exclude = [
+  ".git",
+  ".venv",
+  "venv",
+  "env",
+  ".env",
+  "__pycache__",
+  ".agents",
+  "build",
+  "dist",
+  "docs",
+  "logs",
+  "plans",
+]
+
+[lint]
+select = [
+  # --- Core correctness (pycodestyle / Pyflakes) ---
+  "E4",       # pycodestyle: import-related errors (subset of E***).
+  "E7",       # pycodestyle: statement-related errors (subset of E***).
+  "E9",       # pycodestyle: syntax/indentation/parse errors (subset of E***).
+  "F",        # Pyflakes: undefined names, unused imports/variables, redefinitions, etc.
+  "W",        # pycodestyle: warnings (W***).
+
+  # --- Imports (ordering + hygiene + type-checking imports) ---
+  "I",        # isort: import sorting and grouping.
+  "TC",       # flake8-type-checking: move typing-only imports behind TYPE_CHECKING to reduce runtime deps/cycles.
+  "TCH",      # flake8-type-checking (legacy alias/rule-code set kept for compatibility with older configs).
+  "TID",      # flake8-tidy-imports: import hygiene rules (disciplines/bans certain import patterns).
+  "ICN",      # flake8-import-conventions: enforce conventional import aliases (e.g., numpy as np, pandas as pd).
+
+  # --- Docstrings & naming ---
+  "D",        # pydocstyle: docstring conventions (presence/formatting rules).
+  "N",        # pep8-naming: naming conventions for classes/functions/constants/etc.
+
+  # --- Modernization / upgrades ---
+  "UP",       # pyupgrade: suggests modern syntax/features compatible with target-version.
+
+  # --- Correctness & maintainability (bug patterns / simplification / returns / perf) ---
+  "B",        # flake8-bugbear: likely bugs and design problems.
+  "SIM",      # flake8-simplify: simplify conditionals/expressions for clarity.
+  "C4",       # flake8-comprehensions: prefer comprehensions; avoid unnecessary wrapping.
+  "PIE",      # flake8-pie: miscellaneous small improvements / more idiomatic patterns.
+  "RET",      # flake8-return: consistent/clear return patterns across branches.
+  "PERF",     # Perflint: performance anti-pattern checks (avoidable overhead).
+  "C90",      # mccabe: cyclomatic complexity checks.
+
+  # --- Exception handling ---
+  "BLE",      # flake8-blind-except: flags bare/overly broad exception handling.
+  "TRY",      # tryceratops: exception-handling best practices (raise-from, avoid overly broad except, etc.).
+  "EM",       # flake8-errmsg: exception message formatting / consistency rules.
+
+  # --- Typing / annotations ---
+  "ANN",      # flake8-annotations: enforce type annotations (parameters/returns/etc., depending on rule).
+
+  # --- Datetime / timezone safety ---
+  "DTZ",      # flake8-datetimez: timezone-aware datetime checks (naive vs aware pitfalls).
+
+  # --- Path handling (prefer pathlib) ---
+  "PTH",      # flake8-use-pathlib: encourage pathlib over os.path / legacy patterns.
+
+  # --- Strings ---
+  "ISC",      # flake8-implicit-str-concat: string concatenation pitfalls (implicit/explicit concat across literals).
+
+  # --- Builtins / API clarity ---
+  "A",        # flake8-builtins: flags shadowing Python builtins (e.g., list, id, dict).
+  "FBT",      # flake8-boolean-trap: discourages ambiguous boolean positional args ("bool trap").
+
+  # --- Testing (pytest style) ---
+  "PT",       # flake8-pytest-style: pytest-specific style and best-practice rules.
+
+  # --- Async correctness / best practices ---
+  "ASYNC",    # flake8-async: async/await best practices and footguns (framework-agnostic checks).
+
+  # --- Scientific stack (NumPy / pandas) ---
+  "NPY",      # NumPy-specific rules (array/scientific Python conventions and pitfalls).
+  "PD",       # pandas-vet: pandas/DataFrame best practices.
+
+  # --- Security ---
+  "S",        # flake8-bandit: security-oriented checks for common vulnerabilities/footguns.
+
+  # --- Logging best practices ---
+  "LOG",      # flake8-logging: logging best practices and usage patterns.
+  
+  # --- FastAPI ---
+  "FAST",     # FastAPI-specific rules.
+
+  # --- Ruff-specific rules (family + specific) ---
+  "RUF",      # Ruff-native rule family (general code-quality checks).
+  "RUF100",   # Ruff: unused-noqa (flags `# noqa` that no longer suppresses any diagnostic).
+
+  # --- Pylint-derived targeted rules ---
+  "PLW0406",  # Pylint: import-self (importing the current module from itself).
+  "PLC0415",  # Pylint: import-outside-top-level (imports inside functions/classes).
+  "PLR2004",  # Pylint: magic-value-comparison (unnamed numeric literals in comparisons).
+
+  # --- Encapsulation / boundaries ---
+  "SLF",      # flake8-self: private-member-access rules (family).
+  "SLF001",   # flake8-self: private-member-access (accessing single-underscore "private" members).
+
+  # --- Grep-style hygiene checks ---
+  "PGH",      # pygrep-hooks: grep-like checks for common hygiene/correctness footguns.
+  "ERA",      # eradicate: flags commented-out code (keeps codebase free of "dead code" in comments).
+
+  # --- API hygiene / refactor leftovers ---
+  "ARG",      # flake8-unused-arguments: flags unused function/method arguments (use `_`-prefixed names to intentionally ignore).
+]
+ignore = [
+  "D100",     # pydocstyle: ignore missing docstring in public module.
+  "D104",     # pydocstyle: ignore missing docstring in public package.
+  "D107",     # pydocstyle: ignore missing docstring in __init__.
+  "D203",     # pydocstyle: ignore "blank line before class docstring" requirement (style choice).
+  "D213",     # pydocstyle: ignore "multi-line summary starts on 2nd line" requirement (style choice).
+  "ANN401",   # flake8-annotations: allow `typing.Any` (ignore "disallow Any" rule).
+  "PTH123",   # flake8-use-pathlib: allow builtin `open()` instead of requiring `Path(...).open()`.
+  "FAST001",  # FastAPI: allow FastAPI route with redundant response_model argument
+]
+
+fixable = ["ALL"]  # Allow auto-fixes for all enabled rules (still constrained by unsafe-fixes=false).
+unfixable = []     # No rules are explicitly marked as unfixable.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$" # Treat these names as intentionally unused.
+
+[lint.per-file-ignores]
+"**/tests/**/*.py" = [
+  "ANN401",   # Allow `Any` in tests.
+  "ANN201",   # Allow missing return type annotations in tests.
+  "EM",       # Allow non-string exception messages in tests.
+  "PLC0415",  # Allow imports inside functions/classes in tests.
+  "PLR2004",  # Allow magic values in comparisons in tests.
+  "S101",     # Allow use of assert statements in tests.
+  "SLF001",   # Allow private member access in tests.
+  "TRY003",   # Allow broad exception handling in tests.
+]
+
+[format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+
+docstring-code-format = true
+docstring-code-line-length = "dynamic"

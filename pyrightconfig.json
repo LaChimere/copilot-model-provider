@@ -1,0 +1,41 @@
+{
+  // Runtime and analysis mode
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "standard",
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "src",
+    "tests"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    ".agents",
+    ".venv",
+    "docs",
+    "logs",
+    "plans"
+  ],
+  "extraPaths": [
+    "src"
+  ],
+  "strict": [
+    "src"
+  ],
+  "reportMissingTypeStubs": "information",
+  "reportImplicitOverride": "error",
+  "reportUntypedBaseClass": "error",
+  "reportUntypedClassDecorator": "error",
+  "reportUntypedFunctionDecorator": "error",
+  "reportUninitializedInstanceVariable": "warning",
+  "reportUnreachable": "warning",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownLambdaType": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUnknownParameterType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportUnusedFunction": "warning"
+}

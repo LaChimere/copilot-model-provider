@@ -1,0 +1,133 @@
+# Research Log
+
+> Purpose: capture facts, evidence, and unknowns before planning/implementation.
+> This is the review surface for understanding and diagnosis.
+
+## Task
+- Summary: Decompose the `copilot-model-provider` MVP into a sequence of small, mergeable PRs and define whether any part of that sequence can be parallelized safely across multiple agents.
+- Links (issue/PR/spec):
+  - `docs/design.md`
+  - `AGENTS.md`
+  - `.agents/templates/RESEARCH.md`
+  - `.agents/templates/DESIGN.md`
+
+## Current Behavior
+- Observed behavior:
+  - The repository currently contains a design baseline (`docs/design.md`), an `src/`-layout Python package skeleton, project tooling, and an empty `tests/` directory.
+  - There is no FastAPI application, no OpenAI-compatible endpoint surface, no runtime adapter, no routing/catalog implementation, and no E2E harness yet.
+- Expected behavior:
+  - The repository should evolve into an MVP service that exposes `GET /v1/models` and `POST /v1/chat/completions` over a `copilot-sdk` runtime adapter, while preserving room for stateful sessions, streaming, tools, MCP, and policy.
+- Scope affected (modules/endpoints/commands):
+  - `src/copilot_model_provider/**`
+  - `tests/**`
+  - `pyproject.toml`
+  - provider HTTP API surface
+
+## Environment
+- OS: Linux
+- Runtime/tool versions:
+  - Python `>=3.14` (`pyproject.toml`)
+  - runtime dependencies: `github-copilot-sdk`, `structlog`
+  - dev tooling: `ruff`, `pyright`, `ty`
+- Repro command(s):
+  - `uv run ruff check .`
+  - `uv run pyright`
+  - `uv run ty check .`
+  - `uv run python -m copilot_model_provider`
+
+## Evidence
+Include concrete evidence. Prefer copy/paste of relevant excerpts with context.
+- Logs / stack traces:
+  - Current repo validation is green for `ruff`, `pyright`, `ty`, and the package entrypoints.
+- Failing tests (name + output excerpt):
+  - None yet; there are no implementation tests beyond tooling validation.
+- Metrics (numbers + method):
+  - Not applicable yet; the service does not exist.
+- Repro steps (minimal):
+  1. Inspect repository root: `docs/`, `plans/`, `src/`, `tests/`, and project configs exist.
+  2. Read `docs/design.md`.
+  3. Confirm the current package only contains a CLI/package skeleton, not the provider implementation.
+
+## Code Reading Notes
+List the most relevant files and what you learned.
+- `docs/design.md` — canonical architecture and MVP scope. Key conclusions:
+  - the provider should be a compatibility gateway + canonical core + Copilot runtime adapter
+  - MVP northbound surface is `GET /v1/models` and `POST /v1/chat/completions`
+  - provider-native session APIs and provider-native response-style APIs remain architecturally valuable, but are not required to ship first
+  - real-client E2E must cover streaming, tool calls, session reuse, routing, and MCP
+- `pyproject.toml` — confirms the project is Python `src/` layout, depends on `github-copilot-sdk` and `structlog`, and already has a console entrypoint.
+- `src/copilot_model_provider/` — only package skeleton files exist today, so implementation can be staged cleanly without untangling legacy provider code.
+- `tests/` — currently empty, which means tests can be introduced alongside each implementation slice instead of retrofitting a pre-existing harness.
+- `AGENTS.md` — requires evidence-driven work, reviewable increments, and Gate 1 / Gate 2 when the work spans multiple components or includes multiple design options.
+- Hot files for parallel planning:
+  - `src/copilot_model_provider/api/openai_chat.py`
+  - `src/copilot_model_provider/runtimes/copilot.py`
+  - `src/copilot_model_provider/core/sessions.py`
+  - `tests/e2e/harness.py`
+  These are likely conflict hotspots because they sit on the convergence path for chat execution, streaming, session resume, and tool behavior.
+
+## Hypotheses (ranked)
+1. A base-contracts-first split will minimize churn and keep hot files stable while the service grows from skeleton to working gateway.
+2. `GET /v1/models` should ship before chat execution because it exercises the catalog/router boundary without depending on session, streaming, or tool semantics.
+3. Provider-native conversation APIs should be deferred until after MVP so the first PR sequence stays focused on the OpenAI-compatible compatibility path.
+
+## Experiments Run
+For each experiment:
+- Command / action: reviewed `docs/design.md` sections covering architecture, component design, API strategy, MVP scope, validation strategy, and suggested repository structure.
+  - Result: the document provides enough architectural evidence to derive a staged implementation plan.
+  - Interpretation: decomposition can be based on explicit repo artifacts rather than speculation.
+- Command / action: inspected repository structure and `pyproject.toml`.
+  - Result: the repo already has the standard Python package layout and dependencies needed for the first implementation slices.
+  - Interpretation: the base PR can focus on service scaffolding and contracts instead of package migration.
+- Command / action: confirmed with the user that provider-native session APIs are deferred until after MVP.
+  - Result: MVP scope is tighter and less ambiguous.
+  - Interpretation: the PR split can center on OpenAI-compatible models/chat, then layer stateful behavior internally before exposing any provider-native API.
+- Command / action: reviewed the first Gate 2 draft and refined the slug to resolve ambiguous assumptions and validation timing.
+  - Result: the decomposition now explicitly fixes the MVP scope decision, treats health/readiness as internal-only if present, chooses a local/file-backed starting point for session mapping abstraction, and introduces lightweight E2E earlier in the sequence.
+  - Interpretation: the split is more execution-ready and less likely to discover wire-compatibility problems too late.
+- Command / action: confirmed with the user that MVP tool support is limited to server-approved tools plus MCP.
+  - Result: the final open MVP scope question for tool support is resolved.
+  - Interpretation: the cleanup PR can target a narrower and more reviewable tool surface without adding caller-supplied tool schema support.
+- Command / action: reviewed the approved PR sequence through the `plan-parallel-work` lens.
+  - Result: safe multi-agent fan-out is limited; the foundation chain must stay serial until the first non-streaming chat path is stable.
+  - Interpretation: parallelism should be introduced only after shared runtime/API seams stop changing rapidly, with a designated convergence owner for the hot files.
+
+## Open Questions / Unknowns
+- Q1: None blocking the current MVP slug. The main conclusion from the parallel-work review is that early fan-out is unsafe, so parallelism should be intentionally delayed rather than forced.
+
+## Dependency / Conflict Analysis
+- Serial prerequisite chain:
+  - `PR 1` -> `PR 2` -> `PR 3` should remain serial because the application scaffold, catalog/router contract, and first chat/runtime path all stabilize shared seams used by every later slice.
+- Earliest safe fan-out point:
+  - After `PR 3` is merged, two lower-overlap branches can proceed in parallel:
+    - streaming transport work under `streaming/**`
+    - session persistence / locking work under `storage/**`
+- Convergence requirement:
+  - A single convergence owner must later integrate those branches into the hot files:
+    - `src/copilot_model_provider/api/openai_chat.py`
+    - `src/copilot_model_provider/runtimes/copilot.py`
+    - `src/copilot_model_provider/core/sessions.py`
+    - `tests/e2e/harness.py`
+  - The fan-out branches should contribute only owned modules and tests; they do not directly wire their work into the hot files above.
+- Unsafe parallel areas:
+  - `PR 1` through `PR 3` should not be parallelized because they still define shared contracts.
+  - Tool/MCP completion should not fan out until streaming/session convergence is complete, because `runtimes/copilot.py` and release-gate E2E remain shared integration surfaces.
+
+## Recommendation for Plan
+- Proposed direction:
+  - Use a staged base -> read-only metadata -> chat execution -> streaming/session hardening -> tools/MCP completion sequence.
+  - Keep tests with the code they validate.
+  - Keep provider-native session endpoints and provider-native response-style APIs out of the first sequence.
+  - Keep MVP tool support limited to server-approved tools plus MCP.
+  - Introduce lightweight E2E scaffolding early and expand it incrementally instead of deferring all running-app checks to the last PR.
+  - If multiple agents are used, keep `PR 1` through `PR 3` serial, then fan out streaming and session-persistence work into separate branches/worktrees, and assign a single convergence owner before Tool/MCP completion.
+  - Treat the plan as **five execution phases implemented through seven mergeable branches**: `PR 1`, `PR 2`, `PR 3`, streaming branch, session branch, convergence branch, and final Tool/MCP + release-gate branch.
+- Risks:
+  - session, streaming, and tool support touch overlapping files (`api/openai_chat.py`, `runtimes/copilot.py`, `core/sessions.py`), so the split must keep responsibilities crisp
+  - premature introduction of provider-native APIs would expand the surface faster than the runtime adapter is proven
+  - tool/MCP scope can still widen unexpectedly if post-MVP expansion pressure leaks into this first release
+  - parallel work started before the foundation chain is stable will create rebasing churn in the same hot files
+- Suggested verification level (L1/L2/L3):
+  - Base PR: L1
+  - Metadata and chat slices: L1 moving to L2 once HTTP endpoints exist, with lightweight E2E smoke beginning early
+  - Streaming / session / tool / MCP slices: L2 minimum, with targeted real-client style checks where feasible

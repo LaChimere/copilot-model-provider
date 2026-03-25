@@ -1,0 +1,38 @@
+[environment]
+python-version = "3.14"
+
+[src]
+exclude = [
+  ".git",
+  ".venv",
+  "venv",
+  "env",
+  ".env",
+  "__pycache__",
+  ".agents",
+  "build",
+  "dist",
+  "docs",
+  "logs",
+  "plans",
+]
+
+[terminal]
+error-on-warning = true
+
+[rules]
+call-non-callable = "error"
+deprecated = "error"
+invalid-context-manager = "error"
+invalid-method-override = "error"
+invalid-return-type = "error"
+invalid-type-arguments = "error"
+not-iterable = "error"
+not-subscriptable = "error"
+unresolved-attribute = "error"
+unresolved-import = "error"
+unsupported-operator = "error"
+
+redundant-cast = "warn"
+unused-ignore-comment = "warn"
+
