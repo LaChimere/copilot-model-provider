@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.135.2",
     "github-copilot-sdk>=0.2.0",
+    "pydantic-settings>=2.13.1",
     "structlog>=25.5.0",
 ]
 
@@ -15,6 +17,10 @@ copilot-model-provider = "copilot_model_provider.cli:main"
 [dependency-groups]
 dev = [
     "pyright>=1.1.408",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
     "ruff>=0.15.7",
     "ty>=0.0.25",
 ]
@@ -25,3 +31,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/copilot_model_provider"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit_tests"]
+addopts = "--cov=copilot_model_provider --cov-report=term-missing --cov-fail-under=90"

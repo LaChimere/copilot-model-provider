@@ -346,6 +346,9 @@ Use the appropriate skill automatically when the request matches:
 - Keep architecture decisions consistent with that document unless the user asks to revise the design.
 - Prefer Python ecosystem tooling already present in the repository.
 - Do not invent repository-wide process or file layout beyond what is needed for the requested change.
+- For Python code in this repository, every method/function must have a docstring.
+- Public methods/functions must have **detailed** docstrings that explain purpose plus relevant inputs, outputs, side effects, or constraints; one-line placeholder docstrings are not sufficient for public APIs.
+- Unit test coverage in this repository must stay at or above **90%**; changes that lower the enforced `pytest` coverage gate are not acceptable unless the user explicitly approves that policy change.
 
 ## Output style
 
