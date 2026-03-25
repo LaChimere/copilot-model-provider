@@ -10,7 +10,9 @@ from fastapi.routing import APIRoute
 
 from copilot_model_provider.app import create_app
 from copilot_model_provider.config import ProviderSettings
-from tests.e2e.harness import build_test_app
+from copilot_model_provider.core.catalog import create_default_model_catalog
+from copilot_model_provider.core.routing import ModelRouter
+from tests.integration_tests.harness import build_test_app
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -29,6 +31,7 @@ def test_create_app_returns_fastapi_application() -> None:
 
     assert isinstance(app, FastAPI)
     assert app.title == 'copilot-model-provider'
+    assert app.state.model_router.list_models_response().data
 
 
 def test_internal_health_route_is_optional() -> None:
@@ -40,16 +43,38 @@ def test_internal_health_route_is_optional() -> None:
         settings=ProviderSettings(enable_internal_health=False),
     )
 
+    assert '/v1/models' in _route_paths(enabled_app)
+    assert '/v1/models' in _route_paths(disabled_app)
     assert '/_internal/health' in _route_paths(enabled_app)
     assert '/_internal/health' not in _route_paths(disabled_app)
 
 
 def test_harness_builds_test_application() -> None:
-    """Verify that the E2E harness defaults the app to the test environment."""
+    """Verify that the integration harness defaults the app to the test environment."""
     app = build_test_app()
 
     assert isinstance(app, FastAPI)
     assert app.state.settings.environment == 'test'
+
+
+def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
+    """Verify that app state stays consistent when a custom router is supplied."""
+    settings = ProviderSettings()
+    explicit_catalog = create_default_model_catalog(settings=settings)
+    router_catalog = create_default_model_catalog(
+        settings=ProviderSettings(app_name='router-owned'),
+    )
+    router = ModelRouter(model_catalog=router_catalog)
+
+    app = create_app(
+        settings=settings,
+        model_catalog=explicit_catalog,
+        model_router=router,
+    )
+
+    assert app.state.model_router is router
+    assert app.state.model_catalog is router_catalog
+    assert app.state.model_router.model_catalog is app.state.model_catalog
 
 
 @pytest.mark.asyncio

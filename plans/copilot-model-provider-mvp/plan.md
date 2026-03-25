@@ -23,7 +23,7 @@
 - Timeline/rollout constraints (if any):
   - use staged, mergeable PRs rather than a single MVP branch
   - use one agent per branch and one branch per worktree
-  - keep `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, and `tests/e2e/harness.py` under convergence-owner control once fan-out begins
+  - keep `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, and `tests/integration_tests/harness.py` under convergence-owner control once fan-out begins
 
 ## Assumptions
 Mark each as **Verified** or **Unverified**.
@@ -63,7 +63,8 @@ Mark each as **Verified** or **Unverified**.
 - [ ] Step 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
   - Current execution status:
     - `PR 1` is complete on branch `feat/pr1-foundation-scaffold` (`76db366`).
-    - `PR 2` and `PR 3` are still pending, so Step 1 remains open overall.
+    - the model-catalog slice is implemented on branch `feat/model-catalog-surface` and is pending review/merge.
+    - the non-streaming chat slice is still pending, so Step 1 remains open overall.
   - Acceptance criteria:
     - the base scaffold, model catalog, and non-streaming chat path are merged in order
     - the shared app/runtime/test-harness contracts are stable enough for fan-out
@@ -111,12 +112,12 @@ Mark each as **Verified** or **Unverified**.
 
 | Task | Branch | Worktree | Owns | Must not touch |
 |---|---|---|---|---|
-| Streaming transport | `feat/mvp-streaming-transport` | `wt-mvp-streaming-transport` | `src/copilot_model_provider/streaming/**`, `tests/integration/test_streaming_chat.py`, `tests/e2e/test_streaming_smoke.py` | `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs |
-| Session persistence and locking | `feat/mvp-session-persistence` | `wt-mvp-session-persistence` | `src/copilot_model_provider/storage/**`, `tests/integration/test_session_resume.py`, `tests/integration/test_session_locking.py`, `tests/e2e/test_resume_smoke.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs |
-| Tool and MCP completion | `feat/mvp-tools-mcp` | `wt-mvp-tools-mcp` | `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/core/policies.py`, `tests/integration/test_tool_flow.py`, `tests/integration/test_mcp_mount.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/api/openai_models.py`, shared configs |
+| Streaming transport | `feat/mvp-streaming-transport` | `wt-mvp-streaming-transport` | `src/copilot_model_provider/streaming/**`, `tests/integration_tests/test_streaming_chat.py`, `tests/integration_tests/test_streaming_smoke.py` | `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs |
+| Session persistence and locking | `feat/mvp-session-persistence` | `wt-mvp-session-persistence` | `src/copilot_model_provider/storage/**`, `tests/integration_tests/test_session_resume.py`, `tests/integration_tests/test_session_locking.py`, `tests/integration_tests/test_resume_smoke.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, shared configs |
+| Tool and MCP completion | `feat/mvp-tools-mcp` | `wt-mvp-tools-mcp` | `src/copilot_model_provider/tools/**`, `src/copilot_model_provider/core/policies.py`, `tests/integration_tests/test_tool_flow.py`, `tests/integration_tests/test_mcp_mount.py` | `src/copilot_model_provider/streaming/**`, `src/copilot_model_provider/storage/**`, `src/copilot_model_provider/api/openai_models.py`, shared configs |
 
 - Convergence owner:
-  - one lead integrator owns final edits to `api/openai_chat.py`, `runtimes/copilot.py`, `core/sessions.py`, and `tests/e2e/harness.py`
+  - one lead integrator owns final edits to `api/openai_chat.py`, `runtimes/copilot.py`, `core/sessions.py`, and `tests/integration_tests/harness.py`
   - fan-out branches supply owned modules/tests; the convergence owner performs the actual hot-file integration
 - Final cleanup owner:
   - same lead integrator by default
@@ -142,8 +143,8 @@ Mark each as **Verified** or **Unverified**.
   - `src/copilot_model_provider/storage/locks.py`
   - `tests/unit/**`
   - `tests/contract/**`
-  - `tests/integration/**`
-  - `tests/e2e/**`
+  - `tests/integration_tests/**`
+  - `tests/integration_tests/**`
 - Public API / schema impacts:
   - adds OpenAI-compatible `GET /v1/models`
   - adds OpenAI-compatible `POST /v1/chat/completions`
@@ -168,6 +169,7 @@ Mark each as **Verified** or **Unverified**.
 - [ ] Before/after behavior proof:
   - before: repo has no provider service or compatibility endpoints
   - current after `PR 1`: app scaffold, runtime/config contracts, internal health endpoint, and E2E harness boot path exist; public provider endpoints still do not
+  - current after the model-catalog slice: `GET /v1/models` works through the app without runtime execution dependencies
   - after Step 1: `/v1/models` and non-streaming chat work, including running-app smoke paths
   - after Step 3: streaming + session resume work, including focused locking evidence
   - after Step 4: tool/MCP paths work on top of the converged branch
