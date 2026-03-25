@@ -17,10 +17,12 @@ Today it contains:
 - an OpenAI-compatible `POST /v1/chat/completions` supporting non-streaming and streaming SSE behavior
 - session-backed convergence for routes configured as `sessional`, including persistent session resume and locking via `X-Copilot-Conversation-Id`
 - a Copilot SDK-backed runtime adapter for stateless and session-backed chat execution
+- basic server-approved tool mounting and policy-driven approval
+- basic MCP mounting for configured session launches
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
 - `pytest`-based unit, contract, and lightweight integration coverage
 
-It does **not** yet contain the finished provider service. The current package entrypoint is still a placeholder CLI, and tool / MCP execution plus final release-gate E2E are not implemented yet.
+It does **not** yet contain the finished provider service. The current package entrypoint is still a placeholder CLI, and final release-gate E2E plus remaining cleanup are not implemented yet.
 
 ## Current implemented surface
 
@@ -29,11 +31,13 @@ Available today:
 - `GET /v1/models`
 - `POST /v1/chat/completions` (non-streaming and streaming SSE)
 - session-backed resume/locking behavior for routes configured as `sessional`
+- basic server-approved tool execution through the existing chat/runtime path
+- basic MCP mounting for configured runtime sessions
 - `GET /_internal/health`
 
 Not implemented yet:
 
-- tool / MCP execution
+- final release-gate E2E coverage and cleanup
 
 ## What this project is trying to build
 

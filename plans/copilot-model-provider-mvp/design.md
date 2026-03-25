@@ -434,6 +434,8 @@ Final branch: tools + MCP + release-gate E2E
   - mergeable because it is the explicitly owned convergence point for the hot files before Tool/MCP work begins.
 
 ## Final PR: Tool / MCP completion and MVP release gate
+- Status:
+  - Tool/MCP completion is now implemented locally on `main`: server-approved tools are mounted into SDK sessions, MCP servers are mounted through app/runtime configuration, and focused integration coverage validates both paths before the final release-gate cleanup stage.
 - Goal:
   - Complete the MVP’s tool and MCP story on top of the existing chat surface, remove temporary limitations that were only acceptable for earlier slices, and add the minimum release-gate E2E coverage.
 - Likely directories/files:

@@ -92,7 +92,12 @@ Mark each as **Verified** or **Unverified**.
     - combined streaming + resumed-follow-up checks pass
     - lock/ownership behavior is validated explicitly
 
-- [ ] Step 4: Land Tool/MCP completion on top of the convergence result
+- [x] Step 4: Land Tool/MCP completion on top of the convergence result
+  - Current execution status:
+    - server-approved tools are now mounted into SDK sessions through the existing chat/runtime path
+    - configured MCP servers are now mounted through app/runtime session creation
+    - permission handling is now policy-driven for both server-approved tools and registered MCP servers
+    - focused HTTP integration coverage now validates one server-approved tool path and one MCP-backed path
   - Acceptance criteria:
     - `feat/mvp-tools-mcp` is rebased on the convergence branch result
     - at least one server-approved tool path succeeds

@@ -15,7 +15,8 @@
 - Observed behavior:
   - The repository now contains the foundation scaffold, a service-owned model catalog, routing metadata, an OpenAI-compatible `GET /v1/models` endpoint, and a `POST /v1/chat/completions` path that supports both non-streaming and streaming SSE behavior through the Copilot runtime adapter.
   - The Step 2 fan-out slices are merged, and the Step 3 convergence work is now implemented locally on `main`: the shared hot files wire in streaming transport, session persistence/resume, and locking behavior.
-  - The main remaining MVP work is Tool/MCP completion, followed by final release-gate E2E and cleanup.
+  - Step 4 is now also implemented locally on `main`: server-approved tool execution, MCP mounting, and policy-controlled permission handling are wired into runtime session creation and validated through focused integration coverage.
+  - The main remaining MVP work is final release-gate E2E and cleanup.
 - Expected behavior:
   - The repository should evolve into an MVP service that exposes `GET /v1/models` and `POST /v1/chat/completions` over a `copilot-sdk` runtime adapter, while preserving room for stateful sessions, streaming, tools, MCP, and policy.
 - Scope affected (modules/endpoints/commands):

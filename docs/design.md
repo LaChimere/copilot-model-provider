@@ -654,6 +654,11 @@ This allows us to expose stateful behavior cleanly without forcing every concept
 - policy enforcement for built-in tools
 - sticky session routing or single shared CLI
 
+Current implementation status:
+
+- basic tool support, basic MCP mounting, and policy-controlled approval are now implemented locally on `main`
+- the main remaining MVP work is release-gate E2E depth and final cleanup
+
 ### Out of scope
 
 - complete Anthropic compatibility

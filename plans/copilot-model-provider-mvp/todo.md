@@ -85,12 +85,18 @@
     - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
     - `85 passed`
     - `Required test coverage of 90% reached. Total coverage: 94.74%`
-- [ ] Item 4: Land `feat/mvp-tools-mcp`
+- [x] Item 4: Land `feat/mvp-tools-mcp`
+  - Current execution status:
+    - server-approved tools are now mounted into SDK sessions and approved by policy
+    - configured MCP servers are now mounted into SDK sessions and approved by policy
+    - focused HTTP integration tests now validate both the server-approved tool path and the MCP-backed path
   - Acceptance criteria:
     - server-approved tool and MCP flows succeed at the agreed MVP depth
     - forbidden-path boundaries are respected
   - Evidence:
-    - pending execution
+    - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+    - `109 passed`
+    - `Required test coverage of 90% reached. Total coverage: 94.21%`
 - [ ] Item 5: Final cleanup and MVP release-gate E2E
   - Acceptance criteria:
     - release-gate scenarios pass
@@ -138,9 +144,13 @@ Paste concise evidence here (commands + key lines).
   - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
   - `85 passed`
   - `Required test coverage of 90% reached. Total coverage: 94.74%`
+- Step 4 Tool/MCP completion:
+  - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+  - `109 passed`
+  - `Required test coverage of 90% reached. Total coverage: 94.21%`
 
 ## Result
 - Outcome:
-  - Step 1, Step 2, and Step 3 are complete locally on `main`; the next planned stage is Tool/MCP completion.
+  - Step 1 through Step 4 are complete locally on `main`; the next planned stage is final release-gate E2E and cleanup.
 - Follow-ups (if any):
-  - Start Step 4 and layer Tool/MCP behavior on top of the converged chat/runtime path.
+  - Start Step 5 and expand the remaining release-gate scenarios on top of the completed Tool/MCP path.
