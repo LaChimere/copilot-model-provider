@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import override
+from typing import TYPE_CHECKING, override
 
 import pytest
+from copilot.generated.session_events import SessionEvent
 
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
@@ -12,8 +13,11 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
-from copilot_model_provider.runtimes.base import RuntimeAdapter
+from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
 from tests.integration_tests.harness import build_async_client
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 class _FakeChatRuntimeAdapter(RuntimeAdapter):
@@ -47,6 +51,43 @@ class _FakeChatRuntimeAdapter(RuntimeAdapter):
             provider_response_id='chatcmpl-contract',
             prompt_tokens=9,
             completion_tokens=6,
+        )
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Return a deterministic OpenAI-compatible stream for HTTP tests."""
+        del request, route
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield a minimal assistant streaming turn for contract validation."""
+            for event in (
+                SessionEvent.from_dict(
+                    {
+                        'id': '00000000-0000-0000-0000-000000000001',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.message_delta',
+                        'data': {'deltaContent': 'Hello'},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '00000000-0000-0000-0000-000000000002',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.turn_end',
+                        'data': {'reason': 'stop'},
+                    }
+                ),
+            ):
+                yield event
+
+        return RuntimeEventStream(
+            session_id=None,
+            events=_events(),
         )
 
 
@@ -86,22 +127,24 @@ async def test_post_chat_completions_returns_openai_compatible_payload() -> None
 
 
 @pytest.mark.asyncio
-async def test_post_chat_completions_rejects_streaming_requests() -> None:
-    """Verify that unsupported streaming requests use the shared error envelope."""
-    async with build_async_client(runtime_adapter=_FakeChatRuntimeAdapter()) as client:
-        response = await client.post(
+async def test_post_chat_completions_streams_openai_compatible_sse_frames() -> None:
+    """Verify that streaming requests emit OpenAI-compatible SSE frames."""
+    async with (
+        build_async_client(runtime_adapter=_FakeChatRuntimeAdapter()) as client,
+        client.stream(
+            'POST',
             '/v1/chat/completions',
             json={
                 'model': 'default',
                 'stream': True,
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
-        )
+        ) as response,
+    ):
+        payload = ''.join([chunk async for chunk in response.aiter_text()])
 
-    assert response.status_code == 400
-    assert response.json() == {
-        'error': {
-            'code': 'streaming_not_supported',
-            'message': 'Streaming chat completions are not implemented yet.',
-        }
-    }
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('text/event-stream')
+    assert '"object":"chat.completion.chunk"' in payload
+    assert '"content":"Hello"' in payload
+    assert 'data: [DONE]\n\n' in payload

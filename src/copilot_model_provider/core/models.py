@@ -57,6 +57,7 @@ class CanonicalChatRequest(BaseModel):
 
     request_id: str | None = None
     conversation_id: str | None = None
+    session_id: str | None = None
     model_alias: str = Field(min_length=1)
     execution_mode: ExecutionMode = 'stateless'
     messages: list[CanonicalChatMessage] = Field(min_length=1)
@@ -166,5 +167,6 @@ class RuntimeCompletion(BaseModel):
     output_text: str = Field(min_length=1)
     finish_reason: Literal['stop', 'length', 'content_filter', 'tool_calls'] = 'stop'
     provider_response_id: str | None = None
+    session_id: str | None = None
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)

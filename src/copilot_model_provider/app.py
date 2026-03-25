@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -15,9 +16,11 @@ from .core.errors import install_error_handlers
 from .core.models import InternalHealthResponse
 from .core.routing import ModelRouter
 from .runtimes import CopilotRuntimeAdapter
+from .storage import FileBackedSessionLockManager, FileBackedSessionMap
 
 if TYPE_CHECKING:
     from .runtimes.base import RuntimeAdapter
+    from .storage import SessionLockManager, SessionMap
 
 _logger = structlog.get_logger(__name__)
 
@@ -28,6 +31,8 @@ def create_app(
     runtime_adapter: RuntimeAdapter | None = None,
     model_catalog: ModelCatalog | None = None,
     model_router: ModelRouter | None = None,
+    session_map: SessionMap | None = None,
+    session_lock_manager: SessionLockManager | None = None,
 ) -> FastAPI:
     """Create the provider's FastAPI application scaffold.
 
@@ -42,6 +47,8 @@ def create_app(
         runtime_adapter: Optional runtime adapter to store in application state.
         model_catalog: Optional pre-built service-owned model catalog.
         model_router: Optional router for model listing and alias resolution.
+        session_map: Optional session persistence backend for session-backed chat.
+        session_lock_manager: Optional lock manager for session-backed chat.
 
     Returns:
         A configured ``FastAPI`` instance ready for later provider phases.
@@ -57,6 +64,16 @@ def create_app(
         or create_default_model_catalog(settings=resolved_settings)
     )
     resolved_catalog = resolved_router.model_catalog
+    resolved_session_map = session_map
+    resolved_session_lock_manager = session_lock_manager
+    if _catalog_requires_session_storage(model_catalog=resolved_catalog):
+        storage_root = _build_storage_root_directory(settings=resolved_settings)
+        if resolved_session_map is None:
+            resolved_session_map = FileBackedSessionMap(storage_root / 'session-map')
+        if resolved_session_lock_manager is None:
+            resolved_session_lock_manager = FileBackedSessionLockManager(
+                storage_root / 'locks'
+            )
 
     app = FastAPI(
         title=resolved_settings.app_name,
@@ -68,6 +85,8 @@ def create_app(
     app.state.runtime_adapter = resolved_runtime
     app.state.model_catalog = resolved_catalog
     app.state.model_router = resolved_router
+    app.state.session_map = resolved_session_map
+    app.state.session_lock_manager = resolved_session_lock_manager
 
     install_error_handlers(app)
     install_openai_models_route(app, model_router=resolved_router)
@@ -92,6 +111,19 @@ def create_app(
         runtime=resolved_runtime.runtime_name,
     )
     return app
+
+
+def _catalog_requires_session_storage(*, model_catalog: ModelCatalog) -> bool:
+    """Report whether any configured model route requires session persistence."""
+    return any(
+        entry.session_mode == 'sessional' for entry in model_catalog.list_entries()
+    )
+
+
+def _build_storage_root_directory(*, settings: ProviderSettings) -> Path:
+    """Build the default local storage directory for session-backed execution."""
+    working_directory = Path(settings.runtime_working_directory or '.').resolve()
+    return working_directory / '.copilot-model-provider-state'
 
 
 def _install_internal_health_route(

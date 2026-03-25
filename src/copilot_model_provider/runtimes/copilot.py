@@ -1,12 +1,17 @@
-"""Copilot SDK-backed runtime adapter for non-streaming chat execution."""
+"""Copilot SDK-backed runtime adapter for chat execution."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol, cast, override
 
 from copilot import CopilotClient, PermissionRequestResult
-from copilot.generated.session_events import PermissionRequest, SessionEvent
+from copilot.generated.session_events import (
+    PermissionRequest,
+    SessionEvent,
+    SessionEventType,
+)
 
 from copilot_model_provider.core.chat import render_prompt
 from copilot_model_provider.core.errors import ProviderError
@@ -16,7 +21,7 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
-from copilot_model_provider.runtimes.base import RuntimeAdapter
+from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
 
 if TYPE_CHECKING:
     from typing import Literal
@@ -24,6 +29,18 @@ if TYPE_CHECKING:
 
 class CopilotSessionLike(Protocol):
     """Typed subset of the Copilot session API used by this adapter."""
+
+    session_id: str
+
+    async def send(
+        self,
+        prompt: str,
+        *,
+        attachments: list[object] | None = None,
+        mode: Literal['enqueue', 'immediate'] | None = None,
+    ) -> str:
+        """Send a prompt without waiting for session completion."""
+        ...
 
     async def send_and_wait(
         self,
@@ -36,7 +53,15 @@ class CopilotSessionLike(Protocol):
         """Send a prompt and wait for the final assistant message."""
         ...
 
-    def destroy(self) -> None:
+    def on(self, handler: Callable[[SessionEvent], None]) -> Callable[[], None]:
+        """Subscribe to session events and return an unsubscribe callback."""
+        ...
+
+    async def disconnect(self) -> None:
+        """Disconnect local runtime resources without deleting the session."""
+        ...
+
+    async def destroy(self) -> None:
         """Tear down the session and release associated runtime resources."""
         ...
 
@@ -58,15 +83,30 @@ class CopilotClientLike(Protocol):
         """Start the underlying Copilot client when it is disconnected."""
         ...
 
-    def create_session(
+    async def create_session(
         self,
+        *,
+        on_permission_request: PermissionRequestHandler,
+        model: str | None = None,
+        session_id: str | None = None,
+        working_directory: str | None = None,
+        streaming: bool | None = None,
+        on_event: Callable[[SessionEvent], None] | None = None,
+    ) -> CopilotSessionLike:
+        """Create an ephemeral session used for one chat-completion request."""
+        ...
+
+    async def resume_session(
+        self,
+        session_id: str,
         *,
         on_permission_request: PermissionRequestHandler,
         model: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        on_event: Callable[[SessionEvent], None] | None = None,
     ) -> CopilotSessionLike:
-        """Create an ephemeral session used for one chat-completion request."""
+        """Resume an existing session for a follow-up request."""
         ...
 
 
@@ -141,12 +181,9 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 status_code=500,
             )
 
-        client = self._get_or_create_client()
-        self._ensure_client_started(client)
-        session = client.create_session(
-            on_permission_request=_deny_permission_requests,
-            model=route.runtime_model_id,
-            working_directory=self._working_directory,
+        session = await self._open_session(
+            route=route,
+            session_id=request.session_id,
             streaming=False,
         )
         try:
@@ -154,7 +191,10 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 render_prompt(request=request),
                 timeout=self._timeout_seconds,
             )
-            return _build_runtime_completion(event=event)
+            return _build_runtime_completion(
+                event=event,
+                session_id=session.session_id,
+            )
         except TimeoutError as error:
             raise ProviderError(
                 code='runtime_timeout',
@@ -170,7 +210,101 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 status_code=502,
             ) from error
         finally:
-            session.destroy()
+            await self._close_session(
+                session=session,
+                execution_mode=request.execution_mode,
+            )
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Execute a canonical streaming chat request through the Copilot SDK.
+
+        Args:
+            request: The canonical streaming request to execute.
+            route: The resolved model routing metadata.
+
+        Returns:
+            Runtime-owned session metadata and an async stream of Copilot SDK
+            events emitted for the requested assistant turn.
+
+        Raises:
+            ProviderError: If routing metadata is incomplete or the Copilot SDK
+                fails while preparing the streaming session.
+
+        """
+        session = await self._open_session(
+            route=route,
+            session_id=request.session_id,
+            streaming=True,
+        )
+        session_closed = False
+
+        async def _finalize_session() -> None:
+            """Close the Copilot session at most once."""
+            nonlocal session_closed
+            if session_closed:
+                return
+
+            session_closed = True
+            await self._close_session(
+                session=session,
+                execution_mode=request.execution_mode,
+            )
+
+        async def _event_stream() -> AsyncIterator[SessionEvent]:
+            """Yield SDK events for one assistant turn and close the session cleanly."""
+            queue: asyncio.Queue[SessionEvent] = asyncio.Queue()
+
+            def _handle_event(event: SessionEvent) -> None:
+                queue.put_nowait(event)
+
+            unsubscribe = session.on(_handle_event)
+            try:
+                await session.send(render_prompt(request=request))
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            queue.get(),
+                            timeout=self._timeout_seconds,
+                        )
+                    except TimeoutError as error:
+                        raise ProviderError(
+                            code='runtime_timeout',
+                            message=(
+                                'Timed out while waiting for Copilot streaming events.'
+                            ),
+                            status_code=504,
+                        ) from error
+
+                    yield event
+                    if event.type in {
+                        SessionEventType.ASSISTANT_TURN_END,
+                        SessionEventType.SESSION_ERROR,
+                        SessionEventType.SESSION_IDLE,
+                    }:
+                        break
+            except ProviderError:
+                raise
+            except Exception as error:
+                raise ProviderError(
+                    code='runtime_execution_failed',
+                    message=f'Copilot runtime execution failed: {error}',
+                    status_code=502,
+                ) from error
+            finally:
+                unsubscribe()
+                await _finalize_session()
+
+        return RuntimeEventStream(
+            session_id=session.session_id,
+            events=_event_stream(),
+            close=_finalize_session,
+        )
 
     def _get_or_create_client(self) -> CopilotClientLike:
         """Build the lazy Copilot client on first use and cache it afterwards."""
@@ -199,6 +333,65 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
 
         if state == 'disconnected':
             client.start()
+
+    async def _open_session(
+        self,
+        *,
+        route: ResolvedRoute,
+        session_id: str | None,
+        streaming: bool,
+    ) -> CopilotSessionLike:
+        """Open or resume a Copilot session for one request.
+
+        Args:
+            route: Resolved model routing metadata for the request.
+            session_id: Existing Copilot session identifier to resume, when any.
+            streaming: Whether the returned session should emit streaming events.
+
+        Returns:
+            A connected Copilot session ready for message execution.
+
+        Raises:
+            ProviderError: If routing metadata is incomplete.
+
+        """
+        if route.runtime_model_id is None:
+            raise ProviderError(
+                code='runtime_route_invalid',
+                message='Resolved route is missing a runtime model identifier.',
+                status_code=500,
+            )
+
+        client = self._get_or_create_client()
+        self._ensure_client_started(client)
+        if session_id is not None:
+            return await client.resume_session(
+                session_id,
+                on_permission_request=_deny_permission_requests,
+                model=route.runtime_model_id,
+                working_directory=self._working_directory,
+                streaming=streaming,
+            )
+
+        return await client.create_session(
+            on_permission_request=_deny_permission_requests,
+            model=route.runtime_model_id,
+            working_directory=self._working_directory,
+            streaming=streaming,
+        )
+
+    async def _close_session(
+        self,
+        *,
+        session: CopilotSessionLike,
+        execution_mode: str,
+    ) -> None:
+        """Close a Copilot session according to the request execution mode."""
+        if execution_mode == 'sessional':
+            await session.disconnect()
+            return
+
+        await session.destroy()
 
     @staticmethod
     def _build_default_client() -> CopilotClientLike:
@@ -236,11 +429,17 @@ def _to_optional_int(value: int | float | str | None) -> int | None:
     return int(value)
 
 
-def _build_runtime_completion(*, event: SessionEvent | None) -> RuntimeCompletion:
+def _build_runtime_completion(
+    *,
+    event: SessionEvent | None,
+    session_id: str | None,
+) -> RuntimeCompletion:
     """Translate a Copilot SDK session event into the runtime completion shape.
 
     Args:
         event: The final assistant-message event returned by ``send_and_wait``.
+        session_id: The active Copilot session identifier associated with the
+            completed assistant turn.
 
     Returns:
         A normalized ``RuntimeCompletion`` ready for HTTP response translation.
@@ -272,6 +471,7 @@ def _build_runtime_completion(*, event: SessionEvent | None) -> RuntimeCompletio
     return RuntimeCompletion(
         output_text=content,
         provider_response_id=getattr(data, 'message_id', None),
+        session_id=session_id,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
     )

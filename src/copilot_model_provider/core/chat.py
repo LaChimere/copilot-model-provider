@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from time import time
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     CanonicalChatMessage,
     CanonicalChatRequest,
@@ -17,39 +17,42 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
 )
 
+if TYPE_CHECKING:
+    from copilot_model_provider.core.models import ExecutionMode
+
 
 def normalize_openai_chat_request(
     *,
     request: OpenAIChatCompletionRequest,
+    request_id: str | None = None,
+    conversation_id: str | None = None,
+    execution_mode: ExecutionMode = 'stateless',
 ) -> CanonicalChatRequest:
     """Normalize an OpenAI-compatible chat request into the provider contract.
 
     Args:
         request: The validated HTTP request payload accepted by the compatibility
             route.
+        request_id: Optional request identifier propagated into the canonical
+            execution request.
+        conversation_id: Optional provider-managed conversation identifier used
+            when sessional execution is enabled for the resolved route.
+        execution_mode: Resolved execution mode for the target route.
 
     Returns:
         A ``CanonicalChatRequest`` suitable for runtime routing and execution.
 
-    Raises:
-        ProviderError: If the request asks for streaming, which is not part of
-            this execution slice.
-
     """
-    if request.stream:
-        raise ProviderError(
-            code='streaming_not_supported',
-            message='Streaming chat completions are not implemented yet.',
-            status_code=400,
-        )
-
     return CanonicalChatRequest(
+        request_id=request_id,
+        conversation_id=conversation_id,
         model_alias=request.model,
+        execution_mode=execution_mode,
         messages=[
             CanonicalChatMessage(role=message.role, content=message.content)
             for message in request.messages
         ],
-        stream=False,
+        stream=request.stream,
     )
 
 

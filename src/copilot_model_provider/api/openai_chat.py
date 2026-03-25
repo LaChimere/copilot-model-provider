@@ -1,8 +1,14 @@
-"""OpenAI-compatible non-streaming chat-completions endpoint."""
+"""OpenAI-compatible chat-completions endpoint."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import json
+from time import time
+from typing import TYPE_CHECKING, Annotated
+from uuid import uuid4
+
+from fastapi import Header
+from fastapi.responses import StreamingResponse
 
 from copilot_model_provider.core.chat import (
     build_openai_chat_completion_response,
@@ -12,12 +18,34 @@ from copilot_model_provider.core.models import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
 )
+from copilot_model_provider.core.sessions import (
+    ManagedExecutionSession,
+    persist_execution_session,
+    prepare_execution_session,
+    release_execution_session,
+)
+from copilot_model_provider.streaming.events import StreamingErrorEvent
+from copilot_model_provider.streaming.sse import (
+    encode_openai_chat_chunk,
+    encode_openai_done_event,
+    encode_sse_event,
+)
+from copilot_model_provider.streaming.translators import (
+    translate_session_event,
+    translate_stream_event_to_openai_chunks,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from fastapi import FastAPI
 
+    from copilot_model_provider.core.models import ResolvedRoute
     from copilot_model_provider.core.routing import ModelRouter
-    from copilot_model_provider.runtimes.base import RuntimeAdapter
+    from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
+    from copilot_model_provider.storage import SessionLockManager, SessionMap
+
+_CONVERSATION_ID_HEADER_NAME = 'X-Copilot-Conversation-Id'
 
 
 def install_openai_chat_route(
@@ -38,18 +66,55 @@ def install_openai_chat_route(
 
     async def _create_chat_completion(
         request: OpenAIChatCompletionRequest,
-    ) -> OpenAIChatCompletionResponse:
-        """Execute a non-streaming chat completion through the runtime adapter."""
-        canonical_request = normalize_openai_chat_request(request=request)
-        route = model_router.resolve_model(alias=canonical_request.model_alias)
-        completion = await runtime_adapter.complete_chat(
+        conversation_id_header: Annotated[
+            str | None,
+            Header(alias=_CONVERSATION_ID_HEADER_NAME),
+        ] = None,
+    ) -> OpenAIChatCompletionResponse | StreamingResponse:
+        """Execute a chat completion through the runtime adapter."""
+        request_id = uuid4().hex
+        route = model_router.resolve_model(alias=request.model)
+        canonical_request = normalize_openai_chat_request(
+            request=request,
+            request_id=request_id,
+            conversation_id=_normalize_optional_header_value(
+                value=conversation_id_header
+            ),
+            execution_mode=route.session_mode,
+        )
+        managed_session = await prepare_execution_session(
             request=canonical_request,
             route=route,
+            session_map=_resolve_session_map(app),
+            session_lock_manager=_resolve_session_lock_manager(app),
         )
-        return build_openai_chat_completion_response(
-            request=request,
-            completion=completion,
-        )
+        if managed_session.request.stream:
+            return await _create_streaming_chat_completion(
+                request=request,
+                runtime_adapter=runtime_adapter,
+                route=route,
+                managed_session=managed_session,
+                session_map=_resolve_session_map(app),
+            )
+
+        try:
+            completion = await runtime_adapter.complete_chat(
+                request=managed_session.request,
+                route=route,
+            )
+            persist_execution_session(
+                managed_session=managed_session,
+                session_map=_resolve_session_map(app),
+                runtime_name=route.runtime,
+                runtime_model_id=route.runtime_model_id,
+                session_id=completion.session_id,
+            )
+            return build_openai_chat_completion_response(
+                request=request,
+                completion=completion,
+            )
+        finally:
+            await release_execution_session(managed_session=managed_session)
 
     app.add_api_route(
         '/v1/chat/completions',
@@ -57,3 +122,105 @@ def install_openai_chat_route(
         methods=['POST'],
         response_model=OpenAIChatCompletionResponse,
     )
+
+
+async def _create_streaming_chat_completion(
+    *,
+    request: OpenAIChatCompletionRequest,
+    runtime_adapter: RuntimeAdapter,
+    route: ResolvedRoute,
+    managed_session: ManagedExecutionSession,
+    session_map: SessionMap | None,
+) -> StreamingResponse:
+    """Create a streaming OpenAI-compatible SSE response."""
+    runtime_stream: RuntimeEventStream | None = None
+    try:
+        runtime_stream = await runtime_adapter.stream_chat(
+            request=managed_session.request,
+            route=route,
+        )
+        persist_execution_session(
+            managed_session=managed_session,
+            session_map=session_map,
+            runtime_name=managed_session.route.runtime,
+            runtime_model_id=managed_session.route.runtime_model_id,
+            session_id=runtime_stream.session_id,
+        )
+        completion_id = f'chatcmpl-{uuid4().hex}'
+        created = int(time())
+    except Exception:
+        if runtime_stream is not None:
+            await _close_runtime_event_stream(runtime_stream=runtime_stream)
+        await release_execution_session(managed_session=managed_session)
+        raise
+
+    async def _frame_stream() -> AsyncIterator[str]:
+        """Yield OpenAI-compatible SSE frames for one streaming chat response."""
+        emit_role = True
+        try:
+            async for event in runtime_stream.events:
+                stream_event = translate_session_event(event=event)
+                if stream_event is None:
+                    continue
+
+                if isinstance(stream_event, StreamingErrorEvent):
+                    yield encode_sse_event(
+                        data=json.dumps(
+                            {
+                                'error': {
+                                    'code': stream_event.code,
+                                    'message': stream_event.message,
+                                }
+                            }
+                        )
+                    )
+                    return
+
+                chunks = translate_stream_event_to_openai_chunks(
+                    event=stream_event,
+                    completion_id=completion_id,
+                    model=request.model,
+                    emit_role=emit_role,
+                    created=created,
+                )
+                if chunks:
+                    emit_role = False
+
+                for chunk in chunks:
+                    yield encode_openai_chat_chunk(chunk=chunk)
+
+            yield encode_openai_done_event()
+        finally:
+            await release_execution_session(managed_session=managed_session)
+
+    return StreamingResponse(_frame_stream(), media_type='text/event-stream')
+
+
+def _normalize_optional_header_value(*, value: str | None) -> str | None:
+    """Normalize optional header values so blank strings behave like ``None``."""
+    if value is None:
+        return None
+
+    normalized_value = value.strip()
+    return normalized_value or None
+
+
+def _resolve_session_map(app: FastAPI) -> SessionMap | None:
+    """Return the session map stored on application state, when configured."""
+    return getattr(app.state, 'session_map', None)
+
+
+def _resolve_session_lock_manager(app: FastAPI) -> SessionLockManager | None:
+    """Return the session lock manager stored on application state, when configured."""
+    return getattr(app.state, 'session_lock_manager', None)
+
+
+async def _close_runtime_event_stream(*, runtime_stream: RuntimeEventStream) -> None:
+    """Close a runtime event stream before the HTTP response starts consuming it."""
+    if runtime_stream.close is not None:
+        await runtime_stream.close()
+        return
+
+    aclose = getattr(runtime_stream.events, 'aclose', None)
+    if aclose is not None:
+        await aclose()

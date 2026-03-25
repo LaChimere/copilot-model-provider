@@ -12,13 +12,20 @@ from copilot_model_provider.config import ProviderSettings
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from copilot_model_provider.core.catalog import ModelCatalog
+    from copilot_model_provider.core.routing import ModelRouter
     from copilot_model_provider.runtimes.base import RuntimeAdapter
+    from copilot_model_provider.storage import SessionLockManager, SessionMap
 
 
 def build_test_app(
     *,
     settings: ProviderSettings | None = None,
     runtime_adapter: RuntimeAdapter | None = None,
+    model_catalog: ModelCatalog | None = None,
+    model_router: ModelRouter | None = None,
+    session_map: SessionMap | None = None,
+    session_lock_manager: SessionLockManager | None = None,
 ) -> FastAPI:
     """Build the scaffold app with test-friendly defaults.
 
@@ -26,6 +33,11 @@ def build_test_app(
         settings: Optional settings override for specialized test scenarios.
         runtime_adapter: Optional runtime adapter override so tests can inject
             deterministic execution behavior.
+        model_catalog: Optional model catalog override for route/session-mode tests.
+        model_router: Optional model router override when tests need explicit routing.
+        session_map: Optional injected session map used by session-backed tests.
+        session_lock_manager: Optional injected session lock manager used by
+            session-backed tests.
 
     Returns:
         A FastAPI app configured the same way production code builds it, but
@@ -33,26 +45,49 @@ def build_test_app(
 
     """
     resolved_settings = settings or ProviderSettings(environment='test')
-    return create_app(settings=resolved_settings, runtime_adapter=runtime_adapter)
+    return create_app(
+        settings=resolved_settings,
+        runtime_adapter=runtime_adapter,
+        model_catalog=model_catalog,
+        model_router=model_router,
+        session_map=session_map,
+        session_lock_manager=session_lock_manager,
+    )
 
 
 def build_async_client(
     *,
     settings: ProviderSettings | None = None,
     runtime_adapter: RuntimeAdapter | None = None,
+    model_catalog: ModelCatalog | None = None,
+    model_router: ModelRouter | None = None,
+    session_map: SessionMap | None = None,
+    session_lock_manager: SessionLockManager | None = None,
 ) -> httpx.AsyncClient:
     """Build an async HTTP client bound directly to the in-process ASGI app.
 
     Args:
         settings: Optional settings override for the app under test.
         runtime_adapter: Optional runtime adapter override for deterministic
-            non-streaming chat execution.
+            chat execution.
+        model_catalog: Optional model catalog override for route/session-mode tests.
+        model_router: Optional model router override when tests need explicit routing.
+        session_map: Optional injected session map used by session-backed tests.
+        session_lock_manager: Optional injected session lock manager used by
+            session-backed tests.
 
     Returns:
         An ``httpx.AsyncClient`` configured with an ``ASGITransport`` so tests
         can exercise HTTP routes without starting an external server.
 
     """
-    app = build_test_app(settings=settings, runtime_adapter=runtime_adapter)
+    app = build_test_app(
+        settings=settings,
+        runtime_adapter=runtime_adapter,
+        model_catalog=model_catalog,
+        model_router=model_router,
+        session_map=session_map,
+        session_lock_manager=session_lock_manager,
+    )
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url='http://testserver')

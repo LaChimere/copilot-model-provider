@@ -10,9 +10,18 @@ from fastapi.routing import APIRoute
 
 from copilot_model_provider.app import create_app
 from copilot_model_provider.config import ProviderSettings
-from copilot_model_provider.core.catalog import create_default_model_catalog
+from copilot_model_provider.core.catalog import (
+    ModelCatalog,
+    create_default_model_catalog,
+)
+from copilot_model_provider.core.models import ModelCatalogEntry
 from copilot_model_provider.core.routing import ModelRouter
+from copilot_model_provider.storage import (
+    FileBackedSessionLockManager,
+    FileBackedSessionMap,
+)
 from tests.integration_tests.harness import build_test_app
+from tests.session_persistence_helpers import managed_scratch_directory
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -77,6 +86,35 @@ def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
     assert app.state.model_router is router
     assert app.state.model_catalog is router_catalog
     assert app.state.model_router.model_catalog is app.state.model_catalog
+
+
+def test_create_app_preserves_injected_session_primitives_for_sessional_routes() -> (
+    None
+):
+    """Verify that session-backed routes keep the injected storage primitives."""
+    model_catalog = ModelCatalog(
+        entries=(
+            ModelCatalogEntry(
+                alias='default',
+                runtime='copilot',
+                owned_by='test',
+                runtime_model_id='copilot-default',
+                session_mode='sessional',
+            ),
+        )
+    )
+    with managed_scratch_directory('unit-app-session-state') as scratch_directory:
+        session_map = FileBackedSessionMap(scratch_directory / 'session-map')
+        session_lock_manager = FileBackedSessionLockManager(scratch_directory / 'locks')
+        app = create_app(
+            settings=ProviderSettings(environment='test'),
+            model_catalog=model_catalog,
+            session_map=session_map,
+            session_lock_manager=session_lock_manager,
+        )
+
+    assert app.state.session_map is session_map
+    assert app.state.session_lock_manager is session_lock_manager
 
 
 @pytest.mark.asyncio
