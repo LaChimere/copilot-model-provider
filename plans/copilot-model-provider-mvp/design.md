@@ -202,6 +202,8 @@ Final branch: tools + MCP + release-gate E2E
   - it follows the repo’s desired base -> implementation -> integration progression and reduces churn in the same core files.
 
 ## PR 1: Base service scaffold and internal contracts
+- Status:
+  - Completed on branch `feat/pr1-foundation-scaffold` and committed as `76db366`.
 - Goal:
   - Introduce the FastAPI app skeleton, configuration loading, core data types/errors, runtime adapter interface, and dependency wiring with no real model execution yet.
 - Likely directories/files:
@@ -211,8 +213,11 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/core/errors.py`
   - `src/copilot_model_provider/runtimes/base.py`
   - `src/copilot_model_provider/__init__.py`
-  - `tests/unit/test_config.py`
-  - `tests/unit/test_app_boot.py`
+  - `tests/unit_tests/test_config.py`
+  - `tests/unit_tests/test_app_boot.py`
+  - `tests/unit_tests/test_cli.py`
+  - `tests/unit_tests/test_errors.py`
+  - `tests/unit_tests/test_runtime_base.py`
   - `tests/e2e/harness.py`
 - Dependencies:
   - none
@@ -238,7 +243,7 @@ Final branch: tools + MCP + release-gate E2E
   - `uv run ruff check .`
   - `uv run pyright`
   - `uv run ty check .`
-  - targeted unit tests for app/config
+  - `uv run pytest -q`
 - Mergeability notes:
   - safe to merge first because it establishes structure only and does not promise full provider behavior.
 

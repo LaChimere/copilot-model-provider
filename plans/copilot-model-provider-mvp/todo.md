@@ -47,12 +47,16 @@
 
 ### Implementation
 - [ ] Item 1: Land the serial foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
+  - Current execution status:
+    - `PR 1` completed on branch `feat/pr1-foundation-scaffold` (`76db366`)
+    - `PR 2` pending
+    - `PR 3` pending
   - Acceptance criteria:
     - base scaffold, `/v1/models`, and non-streaming chat land in order
     - shared contracts are stable enough for fan-out
     - lightweight smoke tests exist for the running app
   - Evidence:
-    - pending execution
+    - `PR 1` evidence: `uv run ruff check .`, `uv run pyright`, `uv run ty check .`, `uv run pytest -q`
 - [ ] Item 2: Fan out `feat/mvp-streaming-transport` and `feat/mvp-session-persistence`
   - Acceptance criteria:
     - both branches respect branch/worktree boundaries

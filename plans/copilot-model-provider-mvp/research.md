@@ -13,8 +13,8 @@
 
 ## Current Behavior
 - Observed behavior:
-  - The repository currently contains a design baseline (`docs/design.md`), an `src/`-layout Python package skeleton, project tooling, and an empty `tests/` directory.
-  - There is no FastAPI application, no OpenAI-compatible endpoint surface, no runtime adapter, no routing/catalog implementation, and no E2E harness yet.
+  - The repository now contains the `PR 1` foundation scaffold: a FastAPI app factory, `pydantic-settings`-based configuration, core request/route/error models, a runtime adapter base layer, an internal-only health endpoint, and an E2E harness scaffold.
+  - There is still no OpenAI-compatible `GET /v1/models` or `POST /v1/chat/completions` behavior, no model catalog/router implementation, and no real Copilot runtime execution path yet.
 - Expected behavior:
   - The repository should evolve into an MVP service that exposes `GET /v1/models` and `POST /v1/chat/completions` over a `copilot-sdk` runtime adapter, while preserving room for stateful sessions, streaming, tools, MCP, and policy.
 - Scope affected (modules/endpoints/commands):
@@ -40,7 +40,7 @@ Include concrete evidence. Prefer copy/paste of relevant excerpts with context.
 - Logs / stack traces:
   - Current repo validation is green for `ruff`, `pyright`, `ty`, and the package entrypoints.
 - Failing tests (name + output excerpt):
-  - None yet; there are no implementation tests beyond tooling validation.
+  - None at the time of this update; `PR 1` validation is green with `pytest` and the enforced coverage gate.
 - Metrics (numbers + method):
   - Not applicable yet; the service does not exist.
 - Repro steps (minimal):
@@ -56,8 +56,9 @@ List the most relevant files and what you learned.
   - provider-native session APIs and provider-native response-style APIs remain architecturally valuable, but are not required to ship first
   - real-client E2E must cover streaming, tool calls, session reuse, routing, and MCP
 - `pyproject.toml` — confirms the project is Python `src/` layout, depends on `github-copilot-sdk` and `structlog`, and already has a console entrypoint.
-- `src/copilot_model_provider/` — only package skeleton files exist today, so implementation can be staged cleanly without untangling legacy provider code.
-- `tests/` — currently empty, which means tests can be introduced alongside each implementation slice instead of retrofitting a pre-existing harness.
+- `pyproject.toml` — now also includes `fastapi`, `pydantic-settings`, `pytest`, `pytest-asyncio`, and `pytest-cov`, which means the base service slice has already standardized the current app/testing stack.
+- `src/copilot_model_provider/` — `PR 1` has landed the app/config/core/runtime seams, so later slices can build on real provider scaffolding instead of a placeholder package only.
+- `tests/` — unit tests and the E2E harness scaffold now exist, so later slices should extend the established test layout rather than inventing a new one.
 - `AGENTS.md` — requires evidence-driven work, reviewable increments, and Gate 1 / Gate 2 when the work spans multiple components or includes multiple design options.
 - Hot files for parallel planning:
   - `src/copilot_model_provider/api/openai_chat.py`
