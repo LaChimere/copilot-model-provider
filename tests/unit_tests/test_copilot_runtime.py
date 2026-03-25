@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import pytest
-from copilot.generated.session_events import SessionEvent
+from copilot.generated.session_events import PermissionRequest, SessionEvent
 
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
@@ -14,11 +14,13 @@ from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     ResolvedRoute,
 )
+from copilot_model_provider.core.policies import PolicyEngine, ToolPermissionPolicy
 from copilot_model_provider.runtimes.copilot import (
     CopilotClientLike,
     CopilotRuntimeAdapter,
     PermissionRequestHandler,
 )
+from copilot_model_provider.tools import ToolDefinition, ToolRegistry
 
 
 @dataclass
@@ -198,6 +200,22 @@ def _build_request(
     )
 
 
+def _build_permission_request(
+    *,
+    kind: str = 'custom-tool',
+    tool_name: str | None = None,
+    server_name: str | None = None,
+) -> PermissionRequest:
+    """Construct a deterministic permission request for runtime adapter tests."""
+    payload: dict[str, object] = {'kind': kind}
+    if tool_name is not None:
+        payload['toolName'] = tool_name
+    if server_name is not None:
+        payload['serverName'] = server_name
+
+    return PermissionRequest.from_dict(payload)
+
+
 @pytest.mark.asyncio
 async def test_copilot_runtime_adapter_executes_and_translates_completion() -> None:
     """Verify that the adapter starts the client, sends the prompt, and tears down."""
@@ -242,6 +260,67 @@ async def test_copilot_runtime_adapter_executes_and_translates_completion() -> N
     assert completion.session_id == 'copilot-session-1'
     assert completion.prompt_tokens == 12
     assert completion.completion_tokens == 5
+
+
+def test_copilot_runtime_adapter_approves_registered_server_tools() -> None:
+    """Verify that the runtime approves registered server-approved tool requests."""
+    tool_registry = ToolRegistry(
+        (
+            ToolDefinition(
+                name='search-docs',
+                description='Search provider documentation.',
+                input_schema={'type': 'object'},
+            ),
+        )
+    )
+    adapter = CopilotRuntimeAdapter(tool_registry=tool_registry)
+
+    result = adapter._handle_permission_request(
+        _build_permission_request(tool_name='search-docs'),
+        {},
+    )
+
+    assert result.kind == 'approved'
+    assert result.message is not None
+    assert 'server-approved' in result.message
+
+
+def test_copilot_runtime_adapter_denies_unknown_tools() -> None:
+    """Verify that unknown custom tools remain denied by the runtime policy."""
+    adapter = CopilotRuntimeAdapter()
+
+    result = adapter._handle_permission_request(
+        _build_permission_request(tool_name='unknown-tool'),
+        {},
+    )
+
+    assert result.kind == 'denied-by-rules'
+    assert result.message is not None
+    assert 'not registered' in result.message
+
+
+def test_copilot_runtime_adapter_honors_builtin_tool_allow_list() -> None:
+    """Verify that built-in SDK tool requests follow the configured built-in policy."""
+    adapter = CopilotRuntimeAdapter(
+        policy_engine=PolicyEngine(
+            tool_policy=ToolPermissionPolicy(
+                builtin_tool_policy='allow-listed',
+                allowed_builtin_tool_names=frozenset({'view'}),
+            )
+        )
+    )
+
+    allowed = adapter._handle_permission_request(
+        _build_permission_request(kind='read', tool_name='view'),
+        {},
+    )
+    denied = adapter._handle_permission_request(
+        _build_permission_request(kind='shell', tool_name='bash'),
+        {},
+    )
+
+    assert allowed.kind == 'approved'
+    assert denied.kind == 'denied-by-rules'
 
 
 @pytest.mark.asyncio

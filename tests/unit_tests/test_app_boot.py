@@ -15,11 +15,13 @@ from copilot_model_provider.core.catalog import (
     create_default_model_catalog,
 )
 from copilot_model_provider.core.models import ModelCatalogEntry
+from copilot_model_provider.core.policies import PolicyEngine
 from copilot_model_provider.core.routing import ModelRouter
 from copilot_model_provider.storage import (
     FileBackedSessionLockManager,
     FileBackedSessionMap,
 )
+from copilot_model_provider.tools import ToolDefinition, ToolRegistry
 from tests.integration_tests.harness import build_test_app
 from tests.session_persistence_helpers import managed_scratch_directory
 
@@ -66,6 +68,8 @@ def test_harness_builds_test_application() -> None:
 
     assert isinstance(app, FastAPI)
     assert app.state.settings.environment == 'test'
+    assert isinstance(app.state.tool_registry, ToolRegistry)
+    assert isinstance(app.state.policy_engine, PolicyEngine)
 
 
 def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
@@ -115,6 +119,29 @@ def test_create_app_preserves_injected_session_primitives_for_sessional_routes()
 
     assert app.state.session_map is session_map
     assert app.state.session_lock_manager is session_lock_manager
+
+
+def test_create_app_preserves_injected_tool_primitives() -> None:
+    """Verify that explicit tool registry and policy engine injections are preserved."""
+    tool_registry = ToolRegistry(
+        (
+            ToolDefinition(
+                name='search-docs',
+                description='Search provider documentation.',
+                input_schema={'type': 'object'},
+            ),
+        )
+    )
+    policy_engine = PolicyEngine(tool_registry=tool_registry)
+
+    app = create_app(
+        settings=ProviderSettings(environment='test'),
+        tool_registry=tool_registry,
+        policy_engine=policy_engine,
+    )
+
+    assert app.state.tool_registry is tool_registry
+    assert app.state.policy_engine is policy_engine
 
 
 @pytest.mark.asyncio

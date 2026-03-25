@@ -14,9 +14,11 @@ from .config import ProviderSettings
 from .core.catalog import ModelCatalog, create_default_model_catalog
 from .core.errors import install_error_handlers
 from .core.models import InternalHealthResponse
+from .core.policies import PolicyEngine
 from .core.routing import ModelRouter
 from .runtimes import CopilotRuntimeAdapter
 from .storage import FileBackedSessionLockManager, FileBackedSessionMap
+from .tools import ToolRegistry
 
 if TYPE_CHECKING:
     from .runtimes.base import RuntimeAdapter
@@ -33,6 +35,8 @@ def create_app(
     model_router: ModelRouter | None = None,
     session_map: SessionMap | None = None,
     session_lock_manager: SessionLockManager | None = None,
+    tool_registry: ToolRegistry | None = None,
+    policy_engine: PolicyEngine | None = None,
 ) -> FastAPI:
     """Create the provider's FastAPI application scaffold.
 
@@ -49,15 +53,25 @@ def create_app(
         model_router: Optional router for model listing and alias resolution.
         session_map: Optional session persistence backend for session-backed chat.
         session_lock_manager: Optional lock manager for session-backed chat.
+        tool_registry: Optional registry of provider-known tools for later
+            runtime permission handling.
+        policy_engine: Optional policy engine that decides whether runtime tool
+            permission requests can be approved automatically.
 
     Returns:
         A configured ``FastAPI`` instance ready for later provider phases.
 
     """
     resolved_settings = settings or ProviderSettings.from_env()
+    resolved_tool_registry = tool_registry or ToolRegistry()
+    resolved_policy_engine = policy_engine or PolicyEngine(
+        tool_registry=resolved_tool_registry
+    )
     resolved_runtime = runtime_adapter or CopilotRuntimeAdapter(
         timeout_seconds=resolved_settings.runtime_timeout_seconds,
         working_directory=resolved_settings.runtime_working_directory,
+        tool_registry=resolved_tool_registry,
+        policy_engine=resolved_policy_engine,
     )
     resolved_router = model_router or ModelRouter(
         model_catalog=model_catalog
@@ -87,6 +101,8 @@ def create_app(
     app.state.model_router = resolved_router
     app.state.session_map = resolved_session_map
     app.state.session_lock_manager = resolved_session_lock_manager
+    app.state.tool_registry = resolved_tool_registry
+    app.state.policy_engine = resolved_policy_engine
 
     install_error_handlers(app)
     install_openai_models_route(app, model_router=resolved_router)

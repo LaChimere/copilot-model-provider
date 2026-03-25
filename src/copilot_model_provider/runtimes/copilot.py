@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Protocol, cast, override
 from copilot import CopilotClient, PermissionRequestResult
 from copilot.generated.session_events import (
     PermissionRequest,
+    PermissionRequestKind,
     SessionEvent,
     SessionEventType,
 )
@@ -21,7 +22,9 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
+from copilot_model_provider.core.policies import PermissionDecision, PolicyEngine
 from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
+from copilot_model_provider.tools import ToolRegistry
 
 if TYPE_CHECKING:
     from typing import Literal
@@ -119,6 +122,8 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         client_factory: Callable[[], CopilotClientLike] | None = None,
         timeout_seconds: float = 60.0,
         working_directory: str | None = None,
+        tool_registry: ToolRegistry | None = None,
+        policy_engine: PolicyEngine | None = None,
     ) -> None:
         """Initialize the adapter with lazy Copilot client construction.
 
@@ -129,12 +134,20 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 assistant response.
             working_directory: Optional working directory forwarded into new
                 ephemeral Copilot sessions.
+            tool_registry: Registry of provider-known tools used by later
+                permission and session wiring.
+            policy_engine: Policy engine that decides whether runtime tool
+                permission requests can be approved automatically.
 
         """
         super().__init__(runtime_name='copilot')
         self._client_factory = client_factory or self._build_default_client
         self._timeout_seconds = timeout_seconds
         self._working_directory = working_directory
+        self._tool_registry = tool_registry or ToolRegistry()
+        self._policy_engine = policy_engine or PolicyEngine(
+            tool_registry=self._tool_registry
+        )
         self._client: CopilotClientLike | None = None
 
     @override
@@ -367,14 +380,14 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         if session_id is not None:
             return await client.resume_session(
                 session_id,
-                on_permission_request=_deny_permission_requests,
+                on_permission_request=self._handle_permission_request,
                 model=route.runtime_model_id,
                 working_directory=self._working_directory,
                 streaming=streaming,
             )
 
         return await client.create_session(
-            on_permission_request=_deny_permission_requests,
+            on_permission_request=self._handle_permission_request,
             model=route.runtime_model_id,
             working_directory=self._working_directory,
             streaming=streaming,
@@ -398,27 +411,78 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         """Construct the default lazy Copilot client for production usage."""
         return cast('CopilotClientLike', CopilotClient(auto_start=False))
 
+    def _handle_permission_request(
+        self,
+        request: PermissionRequest,
+        context: dict[str, str],
+    ) -> PermissionRequestResult:
+        """Return a policy-driven decision for one SDK permission request.
 
-def _deny_permission_requests(
+        Args:
+            request: Permission request emitted by the Copilot SDK.
+            context: Additional SDK context describing the pending approval.
+
+        Returns:
+            A ``PermissionRequestResult`` that either approves a known safe tool
+            request or denies the request with a deterministic policy reason.
+
+        """
+        decision = _evaluate_permission_request(
+            request=request,
+            context=context,
+            policy_engine=self._policy_engine,
+        )
+        if decision.allowed:
+            return PermissionRequestResult(kind='approved', message=decision.reason)
+
+        return PermissionRequestResult(kind='denied-by-rules', message=decision.reason)
+
+
+def _evaluate_permission_request(
     request: PermissionRequest,
     context: dict[str, str],
-) -> PermissionRequestResult:
-    """Return a deterministic denial for interactive permission requests.
+    *,
+    policy_engine: PolicyEngine,
+) -> PermissionDecision:
+    """Evaluate one SDK permission request against the configured policy engine.
 
     Args:
         request: The permission request emitted by the Copilot SDK.
         context: Additional request-scoped context from the SDK.
+        policy_engine: Policy evaluator used to approve or deny tool requests.
 
     Returns:
-        A ``PermissionRequestResult`` that explicitly denies interactive
-        approvals because this compatibility layer is serving plain HTTP calls.
+        A normalized ``PermissionDecision`` describing whether the request
+        should be approved automatically.
 
     """
-    del request, context
-    return PermissionRequestResult(
-        kind='denied-no-approval-rule-and-could-not-request-from-user',
-        message='Interactive permission requests are not supported by this API.',
+    del context
+    tool_name = _resolve_permission_tool_name(request=request)
+    if tool_name is None:
+        return PermissionDecision(
+            allowed=False,
+            reason='permission request does not map to an approved tool name',
+        )
+
+    return policy_engine.evaluate_tool_permission(
+        tool_name,
+        is_builtin=request.kind
+        not in {
+            PermissionRequestKind.CUSTOM_TOOL,
+            PermissionRequestKind.MCP,
+        },
     )
+
+
+def _resolve_permission_tool_name(*, request: PermissionRequest) -> str | None:
+    """Resolve the most specific tool-like identifier from a permission request."""
+    if request.tool_name:
+        return request.tool_name
+
+    if request.kind == PermissionRequestKind.MCP:
+        return request.server_name
+
+    return None
 
 
 def _to_optional_int(value: int | float | str | None) -> int | None:

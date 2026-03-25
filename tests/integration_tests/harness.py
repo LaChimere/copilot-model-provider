@@ -13,9 +13,11 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from copilot_model_provider.core.catalog import ModelCatalog
+    from copilot_model_provider.core.policies import PolicyEngine
     from copilot_model_provider.core.routing import ModelRouter
     from copilot_model_provider.runtimes.base import RuntimeAdapter
     from copilot_model_provider.storage import SessionLockManager, SessionMap
+    from copilot_model_provider.tools import ToolRegistry
 
 
 def build_test_app(
@@ -26,6 +28,8 @@ def build_test_app(
     model_router: ModelRouter | None = None,
     session_map: SessionMap | None = None,
     session_lock_manager: SessionLockManager | None = None,
+    tool_registry: ToolRegistry | None = None,
+    policy_engine: PolicyEngine | None = None,
 ) -> FastAPI:
     """Build the scaffold app with test-friendly defaults.
 
@@ -38,6 +42,10 @@ def build_test_app(
         session_map: Optional injected session map used by session-backed tests.
         session_lock_manager: Optional injected session lock manager used by
             session-backed tests.
+        tool_registry: Optional injected tool registry used by runtime permission
+            and future Tool/MCP tests.
+        policy_engine: Optional injected policy engine used by runtime permission
+            and future Tool/MCP tests.
 
     Returns:
         A FastAPI app configured the same way production code builds it, but
@@ -52,6 +60,8 @@ def build_test_app(
         model_router=model_router,
         session_map=session_map,
         session_lock_manager=session_lock_manager,
+        tool_registry=tool_registry,
+        policy_engine=policy_engine,
     )
 
 
@@ -63,6 +73,8 @@ def build_async_client(
     model_router: ModelRouter | None = None,
     session_map: SessionMap | None = None,
     session_lock_manager: SessionLockManager | None = None,
+    tool_registry: ToolRegistry | None = None,
+    policy_engine: PolicyEngine | None = None,
 ) -> httpx.AsyncClient:
     """Build an async HTTP client bound directly to the in-process ASGI app.
 
@@ -75,6 +87,10 @@ def build_async_client(
         session_map: Optional injected session map used by session-backed tests.
         session_lock_manager: Optional injected session lock manager used by
             session-backed tests.
+        tool_registry: Optional injected tool registry used by runtime permission
+            and future Tool/MCP tests.
+        policy_engine: Optional injected policy engine used by runtime permission
+            and future Tool/MCP tests.
 
     Returns:
         An ``httpx.AsyncClient`` configured with an ``ASGITransport`` so tests
@@ -88,6 +104,8 @@ def build_async_client(
         model_router=model_router,
         session_map=session_map,
         session_lock_manager=session_lock_manager,
+        tool_registry=tool_registry,
+        policy_engine=policy_engine,
     )
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url='http://testserver')
