@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,9 @@ from copilot_model_provider.storage import (
     SessionLockTimeoutError,
 )
 from tests.session_persistence_helpers import managed_scratch_directory
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _FakeClock:
@@ -159,10 +163,20 @@ def test_file_backed_session_lock_manager_inspect_tolerates_disappearing_lock_fi
         lock_path.write_text('{"conversation_id":"conversation-1"}\n', encoding='utf-8')
         original_read_text = type(lock_path).read_text
 
-        def _read_text(path: object, *args: object, **kwargs: object) -> str:
+        def _read_text(
+            path: Path,
+            encoding: str | None = None,
+            errors: str | None = None,
+            newline: str | None = None,
+        ) -> str:
             if path == lock_path:
                 raise FileNotFoundError
-            return original_read_text(path, *args, **kwargs)
+            return original_read_text(
+                path,
+                encoding=encoding,
+                errors=errors,
+                newline=newline,
+            )
 
         monkeypatch.setattr(type(lock_path), 'read_text', _read_text)
 
@@ -211,10 +225,20 @@ async def test_file_backed_session_lock_manager_release_tolerates_disappearing_l
         lock_path.write_text(record.model_dump_json(indent=2), encoding='utf-8')
         original_read_text = type(lock_path).read_text
 
-        def _read_text(path: object, *args: object, **kwargs: object) -> str:
+        def _read_text(
+            path: Path,
+            encoding: str | None = None,
+            errors: str | None = None,
+            newline: str | None = None,
+        ) -> str:
             if path == lock_path:
                 raise FileNotFoundError
-            return original_read_text(path, *args, **kwargs)
+            return original_read_text(
+                path,
+                encoding=encoding,
+                errors=errors,
+                newline=newline,
+            )
 
         monkeypatch.setattr(type(lock_path), 'read_text', _read_text)
 
