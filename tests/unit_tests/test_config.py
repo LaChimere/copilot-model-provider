@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from copilot_model_provider.config import ProviderSettings
+from copilot_model_provider.tools import MCPServerDefinition
 
 
 def test_defaults_are_stable() -> None:
@@ -21,6 +22,7 @@ def test_defaults_are_stable() -> None:
     assert settings.enable_internal_health is True
     assert settings.internal_health_path == '/_internal/health'
     assert settings.default_runtime == 'copilot'
+    assert settings.mcp_servers == ()
 
 
 def test_from_env_reads_overrides() -> None:
@@ -31,6 +33,9 @@ def test_from_env_reads_overrides() -> None:
         'COPILOT_MODEL_PROVIDER_ENABLE_INTERNAL_HEALTH': 'false',
         'COPILOT_MODEL_PROVIDER_INTERNAL_HEALTH_PATH': '/_healthz',
         'COPILOT_MODEL_PROVIDER_DEFAULT_RUNTIME': 'custom-runtime',
+        'COPILOT_MODEL_PROVIDER_MCP_SERVERS': (
+            '[{"name":"docs-api","transport":"http","url":"http://localhost:8123/mcp"}]'
+        ),
     }
 
     with patch.dict(os.environ, env, clear=False):
@@ -41,6 +46,8 @@ def test_from_env_reads_overrides() -> None:
     assert settings.enable_internal_health is False
     assert settings.internal_health_path == '/_healthz'
     assert settings.default_runtime == 'custom-runtime'
+    assert len(settings.mcp_servers) == 1
+    assert settings.mcp_servers[0].name == 'docs-api'
 
 
 def test_invalid_health_path_raises() -> None:
@@ -95,3 +102,22 @@ def test_from_env_rejects_invalid_environment_values() -> None:
         pytest.raises(ValidationError, match='environment'),
     ):
         ProviderSettings.from_env()
+
+
+def test_duplicate_mcp_server_names_are_rejected() -> None:
+    """Verify that MCP server configuration fails fast on duplicate names."""
+    with pytest.raises(ValidationError, match='mcp_servers'):
+        ProviderSettings(
+            mcp_servers=(
+                MCPServerDefinition(
+                    name='docs-api',
+                    transport='http',
+                    url='http://one',
+                ),
+                MCPServerDefinition(
+                    name='docs-api',
+                    transport='http',
+                    url='http://two',
+                ),
+            )
+        )

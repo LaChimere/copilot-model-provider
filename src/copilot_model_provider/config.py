@@ -7,6 +7,10 @@ from typing import ClassVar, Literal, Self
 from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .tools import (
+    MCPServerDefinition,  # noqa: TC001 - needed for pydantic model parsing
+)
+
 EnvironmentName = Literal['development', 'test', 'production']
 
 
@@ -28,6 +32,7 @@ class ProviderSettings(BaseSettings):
     default_runtime: str = 'copilot'
     runtime_timeout_seconds: float = 60.0
     runtime_working_directory: str | None = None
+    mcp_servers: tuple[MCPServerDefinition, ...] = ()
 
     @field_validator('internal_health_path')
     @classmethod
@@ -39,6 +44,21 @@ class ProviderSettings(BaseSettings):
         """Ensure the internal health route stays absolute for FastAPI routing."""
         if not value.startswith('/'):
             msg = 'internal_health_path must start with "/"'
+            raise ValueError(msg)
+
+        return value
+
+    @field_validator('mcp_servers')
+    @classmethod
+    def _validate_mcp_servers(
+        cls,
+        value: tuple[MCPServerDefinition, ...],
+        _info: ValidationInfo,
+    ) -> tuple[MCPServerDefinition, ...]:
+        """Ensure configured MCP server names stay unique."""
+        names = [server.name for server in value]
+        if len(set(names)) != len(names):
+            msg = 'mcp_servers must use unique server names'
             raise ValueError(msg)
 
         return value

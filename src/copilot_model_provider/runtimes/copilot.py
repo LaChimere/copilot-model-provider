@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Protocol, cast, override
 
 from copilot import CopilotClient, PermissionRequestResult
@@ -24,7 +24,7 @@ from copilot_model_provider.core.models import (
 )
 from copilot_model_provider.core.policies import PermissionDecision, PolicyEngine
 from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
-from copilot_model_provider.tools import ToolRegistry
+from copilot_model_provider.tools import MCPRegistry, ToolRegistry
 
 if TYPE_CHECKING:
     from typing import Literal
@@ -94,6 +94,7 @@ class CopilotClientLike(Protocol):
         session_id: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        mcp_servers: Mapping[str, object] | None = None,
         on_event: Callable[[SessionEvent], None] | None = None,
     ) -> CopilotSessionLike:
         """Create an ephemeral session used for one chat-completion request."""
@@ -107,6 +108,7 @@ class CopilotClientLike(Protocol):
         model: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        mcp_servers: Mapping[str, object] | None = None,
         on_event: Callable[[SessionEvent], None] | None = None,
     ) -> CopilotSessionLike:
         """Resume an existing session for a follow-up request."""
@@ -124,6 +126,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         working_directory: str | None = None,
         tool_registry: ToolRegistry | None = None,
         policy_engine: PolicyEngine | None = None,
+        mcp_registry: MCPRegistry | None = None,
     ) -> None:
         """Initialize the adapter with lazy Copilot client construction.
 
@@ -138,6 +141,8 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 permission and session wiring.
             policy_engine: Policy engine that decides whether runtime tool
                 permission requests can be approved automatically.
+            mcp_registry: Registry of MCP servers forwarded into new and resumed
+                Copilot sessions.
 
         """
         super().__init__(runtime_name='copilot')
@@ -148,6 +153,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         self._policy_engine = policy_engine or PolicyEngine(
             tool_registry=self._tool_registry
         )
+        self._mcp_registry = mcp_registry or MCPRegistry()
         self._client: CopilotClientLike | None = None
 
     @override
@@ -377,6 +383,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
 
         client = self._get_or_create_client()
         self._ensure_client_started(client)
+        mcp_servers = self._mcp_registry.sdk_server_configs() or None
         if session_id is not None:
             return await client.resume_session(
                 session_id,
@@ -384,6 +391,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 model=route.runtime_model_id,
                 working_directory=self._working_directory,
                 streaming=streaming,
+                mcp_servers=mcp_servers,
             )
 
         return await client.create_session(
@@ -391,6 +399,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
             model=route.runtime_model_id,
             working_directory=self._working_directory,
             streaming=streaming,
+            mcp_servers=mcp_servers,
         )
 
     async def _close_session(

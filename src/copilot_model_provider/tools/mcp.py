@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MCPTransport = str
+
+if TYPE_CHECKING:
+    from copilot.types import MCPLocalServerConfig, MCPRemoteServerConfig
+
+    type MCPSDKServerConfig = MCPLocalServerConfig | MCPRemoteServerConfig
 
 
 class MCPServerDefinition(BaseModel):
@@ -16,6 +23,10 @@ class MCPServerDefinition(BaseModel):
         command: Executable used for ``stdio`` transports.
         args: Command-line arguments forwarded to ``command``.
         env: Extra environment variables passed to the launched process.
+        headers: Optional HTTP headers for remote MCP mounts.
+        tools: Optional allow-list of tools exposed through this server mount.
+        cwd: Optional working directory for ``stdio`` transports.
+        timeout_seconds: Optional startup/request timeout forwarded to the SDK.
         url: Base URL used for HTTP-backed MCP transports.
 
     """
@@ -27,6 +38,10 @@ class MCPServerDefinition(BaseModel):
     command: str | None = None
     args: tuple[str, ...] = ()
     env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    tools: tuple[str, ...] = ()
+    cwd: str | None = None
+    timeout_seconds: int | None = None
     url: str | None = None
 
     @model_validator(mode='after')
@@ -39,6 +54,9 @@ class MCPServerDefinition(BaseModel):
             if self.url is not None:
                 msg = 'stdio MCP servers must not define a url'
                 raise ValueError(msg)
+            if self.headers:
+                msg = 'stdio MCP servers must not define HTTP headers'
+                raise ValueError(msg)
         elif self.transport == 'http':
             if self.url is None:
                 msg = 'http MCP servers must define a url'
@@ -46,11 +64,49 @@ class MCPServerDefinition(BaseModel):
             if self.command is not None:
                 msg = 'http MCP servers must not define a command'
                 raise ValueError(msg)
+            if self.cwd is not None:
+                msg = 'http MCP servers must not define a cwd'
+                raise ValueError(msg)
         else:
             msg = f'Unsupported MCP transport "{self.transport}"'
             raise ValueError(msg)
 
         return self
+
+    def to_sdk_config(self) -> MCPLocalServerConfig | MCPRemoteServerConfig:
+        """Translate this server definition into the SDK's session config shape.
+
+        Returns:
+            A typed dictionary matching the ``copilot-sdk`` ``mcp_servers``
+            argument expected by ``create_session()`` and ``resume_session()``.
+
+        """
+        if self.transport == 'stdio':
+            config: dict[str, object] = {
+                'command': self.command,
+                'args': list(self.args),
+                'tools': list(self.tools),
+            }
+            if self.env:
+                config['env'] = self.env
+            if self.cwd is not None:
+                config['cwd'] = self.cwd
+            if self.timeout_seconds is not None:
+                config['timeout'] = self.timeout_seconds
+
+            return cast('MCPLocalServerConfig', config)
+
+        config: dict[str, object] = {
+            'type': self.transport,
+            'url': self.url,
+            'tools': list(self.tools),
+        }
+        if self.headers:
+            config['headers'] = self.headers
+        if self.timeout_seconds is not None:
+            config['timeout'] = self.timeout_seconds
+
+        return cast('MCPRemoteServerConfig', config)
 
 
 class MCPRegistry:
@@ -117,3 +173,17 @@ class MCPRegistry:
 
         """
         return tuple(self._servers.values())
+
+    def sdk_server_configs(
+        self,
+    ) -> dict[str, MCPLocalServerConfig | MCPRemoteServerConfig]:
+        """Return the SDK-ready ``mcp_servers`` mapping for every registered server.
+
+        Returns:
+            A dictionary keyed by server name where each value matches the
+            ``copilot-sdk`` local or remote MCP server configuration shape.
+
+        """
+        return {
+            server.name: server.to_sdk_config() for server in self._servers.values()
+        }

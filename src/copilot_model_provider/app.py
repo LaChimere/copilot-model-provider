@@ -18,7 +18,7 @@ from .core.policies import PolicyEngine
 from .core.routing import ModelRouter
 from .runtimes import CopilotRuntimeAdapter
 from .storage import FileBackedSessionLockManager, FileBackedSessionMap
-from .tools import ToolRegistry
+from .tools import MCPRegistry, ToolRegistry
 
 if TYPE_CHECKING:
     from .runtimes.base import RuntimeAdapter
@@ -37,6 +37,7 @@ def create_app(
     session_lock_manager: SessionLockManager | None = None,
     tool_registry: ToolRegistry | None = None,
     policy_engine: PolicyEngine | None = None,
+    mcp_registry: MCPRegistry | None = None,
 ) -> FastAPI:
     """Create the provider's FastAPI application scaffold.
 
@@ -57,6 +58,8 @@ def create_app(
             runtime permission handling.
         policy_engine: Optional policy engine that decides whether runtime tool
             permission requests can be approved automatically.
+        mcp_registry: Optional registry of MCP server mounts forwarded into new
+            Copilot sessions when Step 4 wiring is enabled.
 
     Returns:
         A configured ``FastAPI`` instance ready for later provider phases.
@@ -67,11 +70,13 @@ def create_app(
     resolved_policy_engine = policy_engine or PolicyEngine(
         tool_registry=resolved_tool_registry
     )
+    resolved_mcp_registry = mcp_registry or MCPRegistry(resolved_settings.mcp_servers)
     resolved_runtime = runtime_adapter or CopilotRuntimeAdapter(
         timeout_seconds=resolved_settings.runtime_timeout_seconds,
         working_directory=resolved_settings.runtime_working_directory,
         tool_registry=resolved_tool_registry,
         policy_engine=resolved_policy_engine,
+        mcp_registry=resolved_mcp_registry,
     )
     resolved_router = model_router or ModelRouter(
         model_catalog=model_catalog
@@ -103,6 +108,7 @@ def create_app(
     app.state.session_lock_manager = resolved_session_lock_manager
     app.state.tool_registry = resolved_tool_registry
     app.state.policy_engine = resolved_policy_engine
+    app.state.mcp_registry = resolved_mcp_registry
 
     install_error_handlers(app)
     install_openai_models_route(app, model_router=resolved_router)

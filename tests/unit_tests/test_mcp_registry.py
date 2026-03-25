@@ -15,11 +15,13 @@ def test_mcp_registry_preserves_registration_order() -> None:
         transport='stdio',
         command='node',
         args=('dist/server.js',),
+        tools=('read_file',),
     )
     docs_server = MCPServerDefinition(
         name='docs-api',
         transport='http',
         url='http://localhost:8123/mcp',
+        headers={'Authorization': 'Bearer token'},
     )
 
     registry.register(filesystem_server)
@@ -58,3 +60,47 @@ def test_mcp_server_definition_requires_transport_specific_fields() -> None:
 
     with pytest.raises(ValueError, match='must define a url'):
         MCPServerDefinition(name='docs-api', transport='http')
+
+
+def test_mcp_registry_builds_sdk_server_configs() -> None:
+    """Verify that MCP registry entries translate into SDK session config payloads."""
+    registry = MCPRegistry(
+        (
+            MCPServerDefinition(
+                name='filesystem',
+                transport='stdio',
+                command='node',
+                args=('dist/server.js',),
+                env={'NODE_ENV': 'test'},
+                tools=('read_file',),
+                cwd='/workspace',
+                timeout_seconds=30,
+            ),
+            MCPServerDefinition(
+                name='docs-api',
+                transport='http',
+                url='http://localhost:8123/mcp',
+                headers={'Authorization': 'Bearer token'},
+                tools=('search_docs',),
+                timeout_seconds=45,
+            ),
+        )
+    )
+
+    assert registry.sdk_server_configs() == {
+        'filesystem': {
+            'command': 'node',
+            'args': ['dist/server.js'],
+            'env': {'NODE_ENV': 'test'},
+            'tools': ['read_file'],
+            'cwd': '/workspace',
+            'timeout': 30,
+        },
+        'docs-api': {
+            'type': 'http',
+            'url': 'http://localhost:8123/mcp',
+            'headers': {'Authorization': 'Bearer token'},
+            'tools': ['search_docs'],
+            'timeout': 45,
+        },
+    }

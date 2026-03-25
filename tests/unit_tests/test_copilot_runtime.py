@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytest
 from copilot.generated.session_events import PermissionRequest, SessionEvent
@@ -20,7 +20,15 @@ from copilot_model_provider.runtimes.copilot import (
     CopilotRuntimeAdapter,
     PermissionRequestHandler,
 )
-from copilot_model_provider.tools import ToolDefinition, ToolRegistry
+from copilot_model_provider.tools import (
+    MCPRegistry,
+    MCPServerDefinition,
+    ToolDefinition,
+    ToolRegistry,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 @dataclass
@@ -145,6 +153,7 @@ class _FakeClient:
         session_id: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        mcp_servers: Mapping[str, object] | None = None,
         on_event: Any = None,
     ) -> _FakeSession:
         """Record session creation arguments and return the fake session."""
@@ -155,6 +164,7 @@ class _FakeClient:
                 'session_id': session_id,
                 'working_directory': working_directory,
                 'streaming': streaming,
+                'mcp_servers': mcp_servers,
                 'on_event': on_event,
             }
         )
@@ -168,6 +178,7 @@ class _FakeClient:
         model: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        mcp_servers: Mapping[str, object] | None = None,
         on_event: Any = None,
     ) -> _FakeSession:
         """Record resumed-session arguments and return the fake session."""
@@ -178,6 +189,7 @@ class _FakeClient:
                 'model': model,
                 'working_directory': working_directory,
                 'streaming': streaming,
+                'mcp_servers': mcp_servers,
                 'on_event': on_event,
             }
         )
@@ -321,6 +333,50 @@ def test_copilot_runtime_adapter_honors_builtin_tool_allow_list() -> None:
 
     assert allowed.kind == 'approved'
     assert denied.kind == 'denied-by-rules'
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_adapter_passes_registered_mcp_servers_to_sdk() -> None:
+    """Verify that configured MCP mounts are forwarded into SDK session creation."""
+    session = _FakeSession(
+        event=_FakeEvent(
+            data=_FakeEventData(
+                content='Hi from Copilot',
+                message_id='chatcmpl-fake',
+            )
+        )
+    )
+    client = _FakeClient(session=session)
+    adapter = CopilotRuntimeAdapter(
+        client_factory=lambda: cast('CopilotClientLike', client),
+        mcp_registry=MCPRegistry(
+            (
+                MCPServerDefinition(
+                    name='docs-api',
+                    transport='http',
+                    url='http://localhost:8123/mcp',
+                    tools=('search_docs',),
+                ),
+            )
+        ),
+    )
+
+    await adapter.complete_chat(
+        request=_build_request(),
+        route=ResolvedRoute(
+            runtime='copilot',
+            session_mode='stateless',
+            runtime_model_id='copilot-default',
+        ),
+    )
+
+    assert client.create_session_calls[0]['mcp_servers'] == {
+        'docs-api': {
+            'type': 'http',
+            'url': 'http://localhost:8123/mcp',
+            'tools': ['search_docs'],
+        }
+    }
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,12 @@ from copilot_model_provider.storage import (
     FileBackedSessionLockManager,
     FileBackedSessionMap,
 )
-from copilot_model_provider.tools import ToolDefinition, ToolRegistry
+from copilot_model_provider.tools import (
+    MCPRegistry,
+    MCPServerDefinition,
+    ToolDefinition,
+    ToolRegistry,
+)
 from tests.integration_tests.harness import build_test_app
 from tests.session_persistence_helpers import managed_scratch_directory
 
@@ -142,6 +147,26 @@ def test_create_app_preserves_injected_tool_primitives() -> None:
 
     assert app.state.tool_registry is tool_registry
     assert app.state.policy_engine is policy_engine
+
+
+def test_create_app_preserves_injected_mcp_registry() -> None:
+    """Verify that explicit MCP registry injections are preserved on app state."""
+    mcp_registry = MCPRegistry(
+        (
+            MCPServerDefinition(
+                name='docs-api',
+                transport='http',
+                url='http://localhost:8123/mcp',
+            ),
+        )
+    )
+
+    app = create_app(
+        settings=ProviderSettings(environment='test'),
+        mcp_registry=mcp_registry,
+    )
+
+    assert app.state.mcp_registry is mcp_registry
 
 
 @pytest.mark.asyncio
