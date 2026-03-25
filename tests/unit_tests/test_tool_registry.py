@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from copilot.types import ToolInvocation, ToolResult
 
 from copilot_model_provider.tools import ToolDefinition, ToolRegistry
 
@@ -71,3 +72,27 @@ def test_tool_registry_reports_server_approved_tools_only() -> None:
     )
 
     assert registry.approved_tool_names() == ('search-docs',)
+
+
+def test_tool_registry_builds_sdk_tools_for_executable_definitions() -> None:
+    """Verify that executable tool definitions become SDK ``Tool`` objects."""
+
+    def _handler(invocation: ToolInvocation) -> ToolResult:
+        """Return a deterministic tool result for the registry test."""
+        return ToolResult(text_result_for_llm=str(invocation.arguments))
+
+    registry = ToolRegistry(
+        (
+            ToolDefinition(
+                name='search-docs',
+                description='Search provider documentation.',
+                input_schema={'type': 'object'},
+                handler=_handler,
+            ),
+        )
+    )
+
+    sdk_tool = registry.sdk_tools()[0]
+
+    assert sdk_tool.name == 'search-docs'
+    assert sdk_tool.skip_permission is True

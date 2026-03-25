@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
+from copilot.generated.session_events import PermissionRequest
 
+from copilot_model_provider.core.policies import PolicyEngine
 from copilot_model_provider.runtimes.copilot import (
     CopilotClientLike,
     CopilotRuntimeAdapter,
@@ -44,6 +46,18 @@ async def test_http_chat_route_forwards_mcp_mounts_into_runtime_sessions() -> No
                 ),
             )
         ),
+        policy_engine=PolicyEngine(
+            mcp_registry=MCPRegistry(
+                (
+                    MCPServerDefinition(
+                        name='docs-api',
+                        transport='http',
+                        url='http://localhost:8123/mcp',
+                        tools=('search_docs',),
+                    ),
+                )
+            )
+        ),
     )
 
     async with build_async_client(runtime_adapter=runtime_adapter) as http_client:
@@ -55,11 +69,18 @@ async def test_http_chat_route_forwards_mcp_mounts_into_runtime_sessions() -> No
             },
         )
 
+    create_session_call = client.create_session_calls[0]
+
     assert response.status_code == 200
-    assert client.create_session_calls[0]['mcp_servers'] == {
+    assert create_session_call['mcp_servers'] == {
         'docs-api': {
             'type': 'http',
             'url': 'http://localhost:8123/mcp',
             'tools': ['search_docs'],
         }
     }
+    permission_result = create_session_call['on_permission_request'](
+        PermissionRequest.from_dict({'kind': 'mcp', 'serverName': 'docs-api'}),
+        {},
+    )
+    assert permission_result.kind == 'approved'

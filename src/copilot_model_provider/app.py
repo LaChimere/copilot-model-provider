@@ -67,10 +67,11 @@ def create_app(
     """
     resolved_settings = settings or ProviderSettings.from_env()
     resolved_tool_registry = tool_registry or ToolRegistry()
-    resolved_policy_engine = policy_engine or PolicyEngine(
-        tool_registry=resolved_tool_registry
-    )
     resolved_mcp_registry = mcp_registry or MCPRegistry(resolved_settings.mcp_servers)
+    resolved_policy_engine = policy_engine or PolicyEngine(
+        tool_registry=resolved_tool_registry,
+        mcp_registry=resolved_mcp_registry,
+    )
     resolved_runtime = runtime_adapter or CopilotRuntimeAdapter(
         timeout_seconds=resolved_settings.runtime_timeout_seconds,
         working_directory=resolved_settings.runtime_working_directory,

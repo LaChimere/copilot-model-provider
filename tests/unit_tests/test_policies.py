@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from copilot_model_provider.core.policies import PolicyEngine, ToolPermissionPolicy
-from copilot_model_provider.tools import ToolDefinition, ToolRegistry
+from copilot_model_provider.tools import (
+    MCPRegistry,
+    MCPServerDefinition,
+    ToolDefinition,
+    ToolRegistry,
+)
 
 
 def test_policy_engine_allows_registered_server_approved_tools() -> None:
@@ -85,3 +90,23 @@ def test_policy_engine_supports_allow_listed_builtin_tools() -> None:
 
     assert engine.can_approve_tool('view', is_builtin=True) is True
     assert engine.can_approve_tool('bash', is_builtin=True) is False
+
+
+def test_policy_engine_allows_registered_mcp_servers() -> None:
+    """Verify that registered MCP mounts are approved by the default policy."""
+    engine = PolicyEngine(
+        mcp_registry=MCPRegistry(
+            (
+                MCPServerDefinition(
+                    name='docs-api',
+                    transport='http',
+                    url='http://localhost:8123/mcp',
+                ),
+            )
+        )
+    )
+
+    decision = engine.evaluate_mcp_server_permission('docs-api')
+
+    assert decision.allowed is True
+    assert 'registered' in decision.reason

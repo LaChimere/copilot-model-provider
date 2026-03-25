@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from copilot_model_provider.tools import ToolRegistry
+from copilot_model_provider.tools import MCPRegistry, ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +30,10 @@ class ToolPermissionPolicy(BaseModel):
             runtime commit surfaces those names through permission requests.
         allowed_builtin_tool_names: Stable built-in tool names allowed when
             ``builtin_tool_policy`` is ``allow-listed``.
+        allow_registered_mcp_servers: Enables automatic approval for MCP server
+            mounts that are explicitly present in the configured registry.
+        allowed_mcp_server_names: Explicit allow-list for MCP server names.
+        denied_mcp_server_names: Explicit deny-list for MCP server names.
 
     """
 
@@ -40,6 +44,9 @@ class ToolPermissionPolicy(BaseModel):
     denied_tool_names: frozenset[str] = Field(default_factory=frozenset)
     builtin_tool_policy: str = 'deny-all'
     allowed_builtin_tool_names: frozenset[str] = Field(default_factory=frozenset)
+    allow_registered_mcp_servers: bool = True
+    allowed_mcp_server_names: frozenset[str] = Field(default_factory=frozenset)
+    denied_mcp_server_names: frozenset[str] = Field(default_factory=frozenset)
 
 
 class PolicyEngine:
@@ -56,6 +63,7 @@ class PolicyEngine:
         self,
         *,
         tool_registry: ToolRegistry | None = None,
+        mcp_registry: MCPRegistry | None = None,
         tool_policy: ToolPermissionPolicy | None = None,
     ) -> None:
         """Initialize the engine with optional registry and policy inputs.
@@ -63,11 +71,14 @@ class PolicyEngine:
         Args:
             tool_registry: Registry used to resolve provider-known tool
                 metadata during policy checks.
+            mcp_registry: Registry used to resolve provider-known MCP servers
+                during permission checks for MCP-backed tool usage.
             tool_policy: Declarative approval policy; when omitted, the engine
                 uses the repository's MVP defaults.
 
         """
         self._tool_registry = tool_registry or ToolRegistry()
+        self._mcp_registry = mcp_registry or MCPRegistry()
         self._tool_policy = tool_policy or ToolPermissionPolicy()
 
     def evaluate_tool_permission(
@@ -141,6 +152,43 @@ class PolicyEngine:
             tool_name,
             is_builtin=is_builtin,
         ).allowed
+
+    def evaluate_mcp_server_permission(self, server_name: str) -> PermissionDecision:
+        """Evaluate whether the named MCP server should be approved automatically.
+
+        Args:
+            server_name: Stable MCP server name emitted by the runtime request.
+
+        Returns:
+            A ``PermissionDecision`` describing whether the registered MCP
+            server may be used automatically for the current request.
+
+        """
+        if server_name in self._tool_policy.denied_mcp_server_names:
+            return PermissionDecision(
+                allowed=False,
+                reason='MCP server is explicitly denied by policy',
+            )
+
+        if server_name in self._tool_policy.allowed_mcp_server_names:
+            return PermissionDecision(
+                allowed=True,
+                reason='MCP server is explicitly allowed by policy',
+            )
+
+        if (
+            self._tool_policy.allow_registered_mcp_servers
+            and self._mcp_registry.get_server(server_name) is not None
+        ):
+            return PermissionDecision(
+                allowed=True,
+                reason='MCP server is registered and allowed by policy',
+            )
+
+        return PermissionDecision(
+            allowed=False,
+            reason='MCP server is not registered',
+        )
 
     def _evaluate_builtin_tool(self, tool_name: str) -> PermissionDecision:
         """Evaluate approval for a built-in SDK tool."""

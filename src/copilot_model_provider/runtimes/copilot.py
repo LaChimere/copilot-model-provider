@@ -94,6 +94,7 @@ class CopilotClientLike(Protocol):
         session_id: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        tools: tuple[object, ...] | None = None,
         mcp_servers: Mapping[str, object] | None = None,
         on_event: Callable[[SessionEvent], None] | None = None,
     ) -> CopilotSessionLike:
@@ -108,6 +109,7 @@ class CopilotClientLike(Protocol):
         model: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        tools: tuple[object, ...] | None = None,
         mcp_servers: Mapping[str, object] | None = None,
         on_event: Callable[[SessionEvent], None] | None = None,
     ) -> CopilotSessionLike:
@@ -151,7 +153,8 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         self._working_directory = working_directory
         self._tool_registry = tool_registry or ToolRegistry()
         self._policy_engine = policy_engine or PolicyEngine(
-            tool_registry=self._tool_registry
+            tool_registry=self._tool_registry,
+            mcp_registry=mcp_registry,
         )
         self._mcp_registry = mcp_registry or MCPRegistry()
         self._client: CopilotClientLike | None = None
@@ -383,6 +386,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
 
         client = self._get_or_create_client()
         self._ensure_client_started(client)
+        tools = self._tool_registry.sdk_tools() or None
         mcp_servers = self._mcp_registry.sdk_server_configs() or None
         if session_id is not None:
             return await client.resume_session(
@@ -391,6 +395,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 model=route.runtime_model_id,
                 working_directory=self._working_directory,
                 streaming=streaming,
+                tools=tools,
                 mcp_servers=mcp_servers,
             )
 
@@ -399,6 +404,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
             model=route.runtime_model_id,
             working_directory=self._working_directory,
             streaming=streaming,
+            tools=tools,
             mcp_servers=mcp_servers,
         )
 
@@ -466,6 +472,15 @@ def _evaluate_permission_request(
 
     """
     del context
+    if request.kind == PermissionRequestKind.MCP:
+        if request.server_name is None:
+            return PermissionDecision(
+                allowed=False,
+                reason='permission request does not include an MCP server name',
+            )
+
+        return policy_engine.evaluate_mcp_server_permission(request.server_name)
+
     tool_name = _resolve_permission_tool_name(request=request)
     if tool_name is None:
         return PermissionDecision(
@@ -475,11 +490,7 @@ def _evaluate_permission_request(
 
     return policy_engine.evaluate_tool_permission(
         tool_name,
-        is_builtin=request.kind
-        not in {
-            PermissionRequestKind.CUSTOM_TOOL,
-            PermissionRequestKind.MCP,
-        },
+        is_builtin=request.kind != PermissionRequestKind.CUSTOM_TOOL,
     )
 
 
@@ -487,9 +498,6 @@ def _resolve_permission_tool_name(*, request: PermissionRequest) -> str | None:
     """Resolve the most specific tool-like identifier from a permission request."""
     if request.tool_name:
         return request.tool_name
-
-    if request.kind == PermissionRequestKind.MCP:
-        return request.server_name
 
     return None
 

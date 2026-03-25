@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from copilot.types import Tool, ToolInvocation, ToolResult
 from pydantic import BaseModel, ConfigDict, Field
 
 ToolSource = str
 ToolPermissionMode = str
+ToolExecutionHandler = Callable[[ToolInvocation], ToolResult]
 
 
 class ToolDefinition(BaseModel):
@@ -25,7 +29,7 @@ class ToolDefinition(BaseModel):
 
     """
 
-    model_config = ConfigDict(extra='forbid', frozen=True)
+    model_config = ConfigDict(extra='forbid', frozen=True, arbitrary_types_allowed=True)
 
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -33,6 +37,31 @@ class ToolDefinition(BaseModel):
     source: ToolSource = 'server'
     permission_mode: ToolPermissionMode = 'server-approved'
     override_builtin: bool = False
+    handler: ToolExecutionHandler | None = None
+
+    def to_sdk_tool(self) -> Tool:
+        """Translate this provider tool definition into an SDK ``Tool`` object.
+
+        Returns:
+            A ``copilot-sdk`` ``Tool`` value that can be passed directly into
+            session creation or session resume calls.
+
+        Raises:
+            ValueError: If the tool definition has no executable handler.
+
+        """
+        if self.handler is None:
+            msg = f'Tool "{self.name}" cannot be mounted without a handler'
+            raise ValueError(msg)
+
+        return Tool(
+            name=self.name,
+            description=self.description,
+            handler=self.handler,
+            parameters=self.input_schema or None,
+            overrides_built_in_tool=self.override_builtin,
+            skip_permission=self.permission_mode == 'server-approved',
+        )
 
 
 class ToolRegistry:
@@ -123,3 +152,16 @@ class ToolRegistry:
 
         """
         return tuple(tool.name for tool in self.list_server_approved_tools())
+
+    def sdk_tools(self) -> tuple[Tool, ...]:
+        """Build SDK-ready tool objects for every registered executable tool.
+
+        Returns:
+            A tuple of ``copilot-sdk`` ``Tool`` objects that can be forwarded
+            into session creation or session resume calls.
+
+        Raises:
+            ValueError: If a registered tool is missing its executable handler.
+
+        """
+        return tuple(tool.to_sdk_tool() for tool in self._tools.values())

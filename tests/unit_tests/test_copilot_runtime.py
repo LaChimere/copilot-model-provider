@@ -153,6 +153,7 @@ class _FakeClient:
         session_id: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        tools: tuple[object, ...] | None = None,
         mcp_servers: Mapping[str, object] | None = None,
         on_event: Any = None,
     ) -> _FakeSession:
@@ -164,6 +165,7 @@ class _FakeClient:
                 'session_id': session_id,
                 'working_directory': working_directory,
                 'streaming': streaming,
+                'tools': tools,
                 'mcp_servers': mcp_servers,
                 'on_event': on_event,
             }
@@ -178,6 +180,7 @@ class _FakeClient:
         model: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
+        tools: tuple[object, ...] | None = None,
         mcp_servers: Mapping[str, object] | None = None,
         on_event: Any = None,
     ) -> _FakeSession:
@@ -189,6 +192,7 @@ class _FakeClient:
                 'model': model,
                 'working_directory': working_directory,
                 'streaming': streaming,
+                'tools': tools,
                 'mcp_servers': mcp_servers,
                 'on_event': on_event,
             }
@@ -335,6 +339,30 @@ def test_copilot_runtime_adapter_honors_builtin_tool_allow_list() -> None:
     assert denied.kind == 'denied-by-rules'
 
 
+def test_copilot_runtime_adapter_approves_registered_mcp_servers() -> None:
+    """Verify that MCP permission requests are approved for registered servers."""
+    mcp_registry = MCPRegistry(
+        (
+            MCPServerDefinition(
+                name='docs-api',
+                transport='http',
+                url='http://localhost:8123/mcp',
+            ),
+        )
+    )
+    adapter = CopilotRuntimeAdapter(
+        mcp_registry=mcp_registry,
+        policy_engine=PolicyEngine(mcp_registry=mcp_registry),
+    )
+
+    result = adapter._handle_permission_request(
+        _build_permission_request(kind='mcp', server_name='docs-api'),
+        {},
+    )
+
+    assert result.kind == 'approved'
+
+
 @pytest.mark.asyncio
 async def test_copilot_runtime_adapter_passes_registered_mcp_servers_to_sdk() -> None:
     """Verify that configured MCP mounts are forwarded into SDK session creation."""
@@ -377,6 +405,54 @@ async def test_copilot_runtime_adapter_passes_registered_mcp_servers_to_sdk() ->
             'tools': ['search_docs'],
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_adapter_passes_registered_tools_to_sdk() -> None:
+    """Verify that registered executable tools are forwarded into SDK sessions."""
+
+    def _handler(invocation: Any) -> Any:
+        """Return a deterministic payload for the fake runtime test."""
+        return {'query': invocation.arguments}
+
+    session = _FakeSession(
+        event=_FakeEvent(
+            data=_FakeEventData(
+                content='Hi from Copilot',
+                message_id='chatcmpl-fake',
+            )
+        )
+    )
+    client = _FakeClient(session=session)
+    tool_registry = ToolRegistry(
+        (
+            ToolDefinition(
+                name='search-docs',
+                description='Search provider documentation.',
+                input_schema={'type': 'object'},
+                handler=_handler,
+            ),
+        )
+    )
+    adapter = CopilotRuntimeAdapter(
+        client_factory=lambda: cast('CopilotClientLike', client),
+        tool_registry=tool_registry,
+        policy_engine=PolicyEngine(tool_registry=tool_registry),
+    )
+
+    await adapter.complete_chat(
+        request=_build_request(),
+        route=ResolvedRoute(
+            runtime='copilot',
+            session_mode='stateless',
+            runtime_model_id='copilot-default',
+        ),
+    )
+
+    tools = client.create_session_calls[0]['tools']
+    assert tools is not None
+    assert len(tools) == 1
+    assert tools[0].name == 'search-docs'
 
 
 @pytest.mark.asyncio
