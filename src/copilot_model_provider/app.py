@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from .api.openai_chat import install_openai_chat_route
 from .api.openai_models import install_openai_models_route
+from .api.openai_responses import install_openai_responses_route
 from .config import ProviderSettings
 from .core.catalog import ModelCatalog, create_default_model_catalog
 from .core.errors import install_error_handlers
@@ -115,6 +116,11 @@ def create_app(
     install_error_handlers(app)
     install_openai_models_route(app, model_router=resolved_router)
     install_openai_chat_route(
+        app,
+        model_router=resolved_router,
+        runtime_adapter=resolved_runtime,
+    )
+    install_openai_responses_route(
         app,
         model_router=resolved_router,
         runtime_adapter=resolved_runtime,
