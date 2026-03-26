@@ -52,6 +52,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Keep uv available in the final image so runtime debugging and uv-backed launch
+# overrides still work without depending on the builder stage filesystem.
+COPY --from=uv-binary /uv /uvx /bin/
+
 # Create a dedicated runtime user and a writable working directory for session data.
 RUN groupadd --system --gid 10001 copilot-model-provider \
     && useradd --system --uid 10001 --gid copilot-model-provider \
