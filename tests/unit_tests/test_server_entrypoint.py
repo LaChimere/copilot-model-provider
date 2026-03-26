@@ -37,7 +37,7 @@ def test_build_server_command_uses_factory_import_path_and_bind_settings() -> No
     """Verify that the formal entrypoint builds the canonical uvicorn command."""
     command = server.build_server_command(
         settings=ProviderSettings(
-            server_host='0.0.0.0',  # noqa: S104 - intentional container bind-all case
+            server_host='0.0.0.0',  # noqa: S104 - intentional bind-all case
             server_port=9000,
         )
     )
@@ -47,7 +47,7 @@ def test_build_server_command_uses_factory_import_path_and_bind_settings() -> No
         'copilot_model_provider.app:create_app',
         '--factory',
         '--host',
-        '0.0.0.0',  # noqa: S104 - intentional container bind-all case
+        '0.0.0.0',  # noqa: S104 - intentional bind-all case
         '--port',
         '9000',
     )
@@ -62,9 +62,8 @@ def test_server_main_execs_uvicorn_with_resolved_settings(
     def fake_from_env(_cls: type[ProviderSettings]) -> ProviderSettings:
         """Return deterministic startup settings for the server entrypoint test."""
         return ProviderSettings(
-            server_host='0.0.0.0',  # noqa: S104 - intentional container bind-all case
+            server_host='0.0.0.0',  # noqa: S104 - intentional bind-all case
             server_port=8080,
-            runtime_cli_url='http://copilot-cli.internal:3000',
         )
 
     monkeypatch.setattr(
@@ -95,7 +94,7 @@ def test_server_main_execs_uvicorn_with_resolved_settings(
         'copilot_model_provider.app:create_app',
         '--factory',
         '--host',
-        '0.0.0.0',  # noqa: S104 - intentional container bind-all case
+        '0.0.0.0',  # noqa: S104 - intentional bind-all case
         '--port',
         '8080',
     )

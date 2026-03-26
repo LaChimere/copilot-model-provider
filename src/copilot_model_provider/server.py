@@ -23,14 +23,7 @@ _ASGI_SERVER_REQUIREMENT: Final[str] = (
 
 
 def build_startup_guidance_fields() -> dict[str, str]:
-    """Build the structured startup-guidance fields for service entrypoints.
-
-    Returns:
-        A structured mapping describing the service-first entrypoint guidance,
-        including the summary, external ASGI server requirement, and example
-        startup commands.
-
-    """
+    """Build the structured startup-guidance fields for service entrypoints."""
     return {
         'summary': _SERVICE_SUMMARY,
         'asgi_server_requirement': _ASGI_SERVER_REQUIREMENT,
@@ -43,14 +36,7 @@ def build_startup_guidance_fields() -> dict[str, str]:
 
 
 def build_startup_guidance() -> str:
-    """Build startup guidance for the package's thin service entrypoint.
-
-    Returns:
-        A human-readable message that explains the package's service-first
-        operating model and shows the supported import paths for starting the
-        ASGI application with an external server such as ``uvicorn``.
-
-    """
+    """Build startup guidance for the package's thin service entrypoint."""
     fields = build_startup_guidance_fields()
     return (
         f'{fields["summary"]}\n'
@@ -65,16 +51,7 @@ def build_startup_guidance() -> str:
 
 
 def build_server_command(*, settings: ProviderSettings) -> tuple[str, ...]:
-    """Build the uvicorn command used by the package entrypoint.
-
-    Args:
-        settings: Validated provider settings controlling bind host and port.
-
-    Returns:
-        The complete argv tuple for launching the service through uvicorn using
-        the application's factory import path.
-
-    """
+    """Build the uvicorn command used by the package entrypoint."""
     return (
         UVICORN_EXECUTABLE_NAME,
         ASGI_FACTORY_IMPORT_PATH,
@@ -87,15 +64,7 @@ def build_server_command(*, settings: ProviderSettings) -> tuple[str, ...]:
 
 
 def _resolve_uvicorn_executable() -> str:
-    """Resolve the installed uvicorn executable path for process replacement.
-
-    Returns:
-        The absolute path to the installed ``uvicorn`` executable.
-
-    Raises:
-        RuntimeError: If ``uvicorn`` is not available on ``PATH``.
-
-    """
+    """Resolve the installed uvicorn executable path for process replacement."""
     executable_path = shutil.which(UVICORN_EXECUTABLE_NAME)
     if executable_path is None:
         msg = (
@@ -108,24 +77,12 @@ def _resolve_uvicorn_executable() -> str:
 
 
 def _exec_server_command(*, executable_path: str, command: tuple[str, ...]) -> None:
-    """Replace the current process with the configured uvicorn server process.
-
-    Args:
-        executable_path: Absolute path to the resolved ``uvicorn`` executable.
-        command: Complete argv tuple returned by ``build_server_command``.
-
-    """
+    """Replace the current process with the configured uvicorn server process."""
     os.execv(executable_path, command)  # noqa: S606 - formal process entrypoint
 
 
 def main() -> None:
-    """Start the provider through the formal external ASGI server entrypoint.
-
-    The package entrypoint resolves environment-backed settings, builds the
-    canonical uvicorn command for the app factory, logs the startup contract,
-    and then replaces the current process with the external ASGI server.
-
-    """
+    """Start the provider through the formal external ASGI server entrypoint."""
     settings = ProviderSettings.from_env()
     command = build_server_command(settings=settings)
     executable_path = _resolve_uvicorn_executable()
@@ -135,10 +92,6 @@ def main() -> None:
         executable=UVICORN_EXECUTABLE_NAME,
         host=settings.server_host,
         port=settings.server_port,
-        runtime_connection_mode=(
-            'external_server' if settings.runtime_cli_url is not None else 'subprocess'
-        ),
-        cli_url_configured=settings.runtime_cli_url is not None,
         factory_import_path=ASGI_FACTORY_IMPORT_PATH,
     )
     _exec_server_command(executable_path=executable_path, command=command)

@@ -31,7 +31,7 @@ class _FakeResponsesRuntimeAdapter(RuntimeAdapter):
     @override
     def default_route(self) -> ResolvedRoute:
         """Return a default stateless route for the fake runtime."""
-        return ResolvedRoute(runtime='copilot', session_mode='stateless')
+        return ResolvedRoute(runtime='copilot')
 
     @override
     async def check_health(self) -> RuntimeHealth:
@@ -189,15 +189,14 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_responses_extracts_bearer_token_and_session_header() -> None:
-    """Verify that auth and Codex session headers map into the canonical request."""
+async def test_post_responses_extracts_bearer_token() -> None:
+    """Verify that auth headers map into the canonical runtime request."""
     runtime_adapter = _FakeResponsesRuntimeAdapter()
     async with build_async_client(runtime_adapter=runtime_adapter) as client:
         response = await client.post(
             '/v1/responses',
             headers={
                 'Authorization': 'Bearer github-token-123',
-                'session_id': 'codex-session-123',
             },
             json={
                 'model': 'default',
@@ -208,9 +207,6 @@ async def test_post_responses_extracts_bearer_token_and_session_header() -> None
     assert response.status_code == 200
     assert runtime_adapter.last_request is not None
     assert runtime_adapter.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
-    assert runtime_adapter.last_request.auth_subject is not None
-    assert 'github-token-123' not in runtime_adapter.last_request.auth_subject
-    assert runtime_adapter.last_request.conversation_id == 'codex-session-123'
 
 
 @pytest.mark.asyncio

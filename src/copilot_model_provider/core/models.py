@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
-ExecutionMode = Literal['stateless', 'sessional']
 
 
 class RuntimeHealth(BaseModel):
@@ -39,7 +36,6 @@ class CanonicalRequest(BaseModel):
     request_id: str | None = None
     conversation_id: str | None = None
     model_alias: str | None = None
-    execution_mode: ExecutionMode = 'stateless'
 
 
 class CanonicalChatMessage(BaseModel):
@@ -52,33 +48,16 @@ class CanonicalChatMessage(BaseModel):
 
 
 class CanonicalChatRequest(BaseModel):
-    """Canonical non-streaming chat request passed to runtime adapters."""
+    """Canonical chat request passed to runtime adapters."""
 
     model_config = ConfigDict(frozen=True)
 
     request_id: str | None = None
     conversation_id: str | None = None
-    session_id: str | None = None
     runtime_auth_token: str | None = None
-    auth_subject: str | None = None
     model_alias: str = Field(min_length=1)
-    execution_mode: ExecutionMode = 'stateless'
     messages: list[CanonicalChatMessage] = Field(min_length=1)
     stream: bool = False
-
-
-def build_bearer_token_subject(*, token: str) -> str:
-    """Build a non-reversible subject fingerprint for a bearer token.
-
-    Args:
-        token: Runtime bearer token extracted from the HTTP request.
-
-    Returns:
-        A stable SHA-256-based subject identifier suitable for session binding
-        without persisting the raw bearer token itself.
-
-    """
-    return f'github-bearer-sha256:{sha256(token.encode("utf-8")).hexdigest()}'
 
 
 class ModelCatalogEntry(BaseModel):
@@ -91,7 +70,6 @@ class ModelCatalogEntry(BaseModel):
     owned_by: str = Field(min_length=1)
     runtime_model_id: str = Field(min_length=1)
     created: int = Field(ge=0, default=0)
-    session_mode: ExecutionMode = 'stateless'
 
 
 class OpenAIModelCard(BaseModel):
@@ -394,7 +372,6 @@ class ResolvedRoute(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     runtime: str = Field(min_length=1)
-    session_mode: ExecutionMode = 'stateless'
     runtime_model_id: str | None = None
 
 

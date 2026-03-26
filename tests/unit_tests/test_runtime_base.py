@@ -14,14 +14,13 @@ def test_scaffold_runtime_exposes_canonical_name() -> None:
     assert adapter.runtime_name == 'copilot'
 
 
-def test_scaffold_runtime_default_route_is_stateless() -> None:
-    """Verify that the scaffold adapter resolves to the stateless placeholder route."""
+def test_scaffold_runtime_default_route_is_placeholder() -> None:
+    """Verify that the scaffold adapter resolves to the placeholder route."""
     adapter = ScaffoldRuntimeAdapter()
 
     route = adapter.default_route()
 
     assert route.runtime == 'copilot'
-    assert route.session_mode == 'stateless'
     assert route.runtime_model_id is None
 
 

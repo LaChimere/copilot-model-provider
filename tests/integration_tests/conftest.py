@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import socket
 import subprocess
 import time
@@ -14,6 +13,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from tests.runtime_support import resolve_github_token
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -24,7 +25,6 @@ _CONTAINER_PORT = 8000
 _READY_TIMEOUT_SECONDS = 90.0
 _REQUEST_TIMEOUT = httpx.Timeout(180.0)
 _DOCKER_EXECUTABLE = which('docker')
-_GH_EXECUTABLE = which('gh')
 
 
 def _require_executable(*, path: str | None, name: str) -> str:
@@ -80,21 +80,8 @@ def _resolve_github_token() -> str:
         pytest.SkipTest: If no usable GitHub auth token is available.
 
     """
-    for variable_name in ('GITHUB_TOKEN', 'GH_TOKEN'):
-        token = os.environ.get(variable_name, '').strip()
-        if token:
-            return token
-
-    gh_executable = _require_executable(path=_GH_EXECUTABLE, name='gh')
-    token_result = subprocess.run(  # noqa: S603
-        [gh_executable, 'auth', 'token'],
-        cwd=_REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    token = token_result.stdout.strip()
-    if token_result.returncode != 0 or not token:
+    token = resolve_github_token()
+    if token is None:
         pytest.skip(
             'Container-backed integration tests require a real GitHub auth token '
             'via GITHUB_TOKEN/GH_TOKEN or `gh auth token`.'

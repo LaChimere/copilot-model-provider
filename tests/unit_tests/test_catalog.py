@@ -62,7 +62,6 @@ def test_router_resolves_known_alias_into_runtime_route() -> None:
     route = router.resolve_model(alias='fast')
 
     assert route.runtime == 'copilot'
-    assert route.session_mode == 'stateless'
     assert route.runtime_model_id == 'copilot-fast'
 
 

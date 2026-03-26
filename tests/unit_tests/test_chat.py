@@ -14,8 +14,8 @@ from copilot_model_provider.core.models import (
 )
 
 
-def test_normalize_openai_chat_request_preserves_stream_and_session_metadata() -> None:
-    """Verify that normalization retains request/session metadata for convergence."""
+def test_normalize_openai_chat_request_preserves_stream_and_request_metadata() -> None:
+    """Verify that normalization retains request metadata for execution."""
     canonical_request = normalize_openai_chat_request(
         request=OpenAIChatCompletionRequest(
             model='default',
@@ -24,12 +24,10 @@ def test_normalize_openai_chat_request_preserves_stream_and_session_metadata() -
         ),
         request_id='request-1',
         conversation_id='conversation-1',
-        execution_mode='sessional',
     )
 
     assert canonical_request.request_id == 'request-1'
     assert canonical_request.conversation_id == 'conversation-1'
-    assert canonical_request.execution_mode == 'sessional'
     assert canonical_request.stream is True
     assert canonical_request.messages[0].content == 'Hello'
 

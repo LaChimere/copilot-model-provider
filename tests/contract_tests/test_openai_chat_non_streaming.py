@@ -31,7 +31,7 @@ class _FakeChatRuntimeAdapter(RuntimeAdapter):
     @override
     def default_route(self) -> ResolvedRoute:
         """Return a default stateless route for the fake runtime."""
-        return ResolvedRoute(runtime='copilot', session_mode='stateless')
+        return ResolvedRoute(runtime='copilot')
 
     @override
     async def check_health(self) -> RuntimeHealth:
@@ -132,9 +132,7 @@ async def test_post_chat_completions_returns_openai_compatible_payload() -> None
 
 
 @pytest.mark.asyncio
-async def test_post_chat_completions_extracts_bearer_token_without_persisting_raw_header() -> (
-    None
-):
+async def test_post_chat_completions_extracts_bearer_token() -> None:
     """Verify that bearer auth is normalized onto the canonical runtime request."""
     runtime_adapter = _FakeChatRuntimeAdapter()
     async with build_async_client(runtime_adapter=runtime_adapter) as client:
@@ -150,8 +148,6 @@ async def test_post_chat_completions_extracts_bearer_token_without_persisting_ra
     assert response.status_code == 200
     assert runtime_adapter.last_request is not None
     assert runtime_adapter.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
-    assert runtime_adapter.last_request.auth_subject is not None
-    assert 'github-token-123' not in runtime_adapter.last_request.auth_subject
 
 
 @pytest.mark.asyncio

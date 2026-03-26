@@ -4,16 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from copilot.generated.session_events import SessionEventType
+
 from copilot_model_provider.core.errors import ProviderError
 
 if TYPE_CHECKING:
     from copilot.generated.session_events import SessionEvent
-    from fastapi import FastAPI
 
     from copilot_model_provider.runtimes.base import RuntimeEventStream
-    from copilot_model_provider.storage import SessionLockManager, SessionMap
-
-from copilot.generated.session_events import SessionEventType
 
 
 def normalize_optional_header_value(*, value: str | None) -> str | None:
@@ -62,34 +60,6 @@ def normalize_bearer_token(*, value: str | None) -> str | None:
         )
 
     return normalized_token
-
-
-def resolve_session_map(app: FastAPI) -> SessionMap | None:
-    """Return the configured session map stored on application state.
-
-    Args:
-        app: FastAPI application that owns the current request lifecycle.
-
-    Returns:
-        The configured session map when session-backed execution is enabled,
-        otherwise ``None``.
-
-    """
-    return getattr(app.state, 'session_map', None)
-
-
-def resolve_session_lock_manager(app: FastAPI) -> SessionLockManager | None:
-    """Return the configured session lock manager stored on application state.
-
-    Args:
-        app: FastAPI application that owns the current request lifecycle.
-
-    Returns:
-        The configured session lock manager when session-backed execution is
-        enabled, otherwise ``None``.
-
-    """
-    return getattr(app.state, 'session_lock_manager', None)
 
 
 async def close_runtime_event_stream(*, runtime_stream: RuntimeEventStream) -> None:

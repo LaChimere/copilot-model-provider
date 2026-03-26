@@ -83,6 +83,5 @@ class ModelRouter:
 
         return ResolvedRoute(
             runtime=entry.runtime,
-            session_mode=entry.session_mode,
             runtime_model_id=entry.runtime_model_id,
         )

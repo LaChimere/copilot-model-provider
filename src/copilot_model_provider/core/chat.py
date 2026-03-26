@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from time import time
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from copilot_model_provider.core.models import (
@@ -17,16 +16,12 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
 )
 
-if TYPE_CHECKING:
-    from copilot_model_provider.core.models import ExecutionMode
-
 
 def normalize_openai_chat_request(
     *,
     request: OpenAIChatCompletionRequest,
     request_id: str | None = None,
     conversation_id: str | None = None,
-    execution_mode: ExecutionMode = 'stateless',
 ) -> CanonicalChatRequest:
     """Normalize an OpenAI-compatible chat request into the provider contract.
 
@@ -35,9 +30,8 @@ def normalize_openai_chat_request(
             route.
         request_id: Optional request identifier propagated into the canonical
             execution request.
-        conversation_id: Optional provider-managed conversation identifier used
-            when sessional execution is enabled for the resolved route.
-        execution_mode: Resolved execution mode for the target route.
+        conversation_id: Optional client-supplied conversation identifier kept as
+            request metadata without enabling provider-side session state.
 
     Returns:
         A ``CanonicalChatRequest`` suitable for runtime routing and execution.
@@ -47,7 +41,6 @@ def normalize_openai_chat_request(
         request_id=request_id,
         conversation_id=conversation_id,
         model_alias=request.model,
-        execution_mode=execution_mode,
         messages=[
             CanonicalChatMessage(role=message.role, content=message.content)
             for message in request.messages
@@ -60,7 +53,7 @@ def render_prompt(*, request: CanonicalChatRequest) -> str:
     """Render a canonical chat request into a prompt for the Copilot runtime.
 
     Args:
-        request: The normalized stateless chat request.
+        request: The normalized chat request.
 
     Returns:
         A plain-text prompt that preserves role boundaries while making the next

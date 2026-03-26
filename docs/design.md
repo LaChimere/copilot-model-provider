@@ -11,7 +11,7 @@ We want a **general-purpose model provider** built on top of `copilot-sdk` that 
 - IDE integrations
 - internal platform services
 
-The provider should offer a stable northbound API while using `copilot-sdk` as the primary **agent runtime and model execution substrate**, rather than treating it as a thin stateless completion library.
+The provider should offer a stable northbound API while using `copilot-sdk` as the primary **agent runtime and model execution substrate**. The current implementation on `main` intentionally ships a thinner stateless OpenAI-compatible provider than the broader design space explored below.
 
 ## 2. Executive Summary
 
@@ -26,7 +26,11 @@ At a high level:
 3. **Southbound runtime adapters**
    translate canonical requests to runtime-specific execution engines. The first and primary adapter is `copilot-sdk`.
 
-The most important design choice is to model **sessions, tools, streaming events, and policy** as first-class concepts. This follows the architecture and operating model of the official `copilot-sdk`, which is deeply session-oriented and agent-oriented rather than purely stateless completion-oriented. [R1][R2][R6][R7]
+The broader design space makes **sessions, tools, streaming events, and policy** first-class concepts. The current repository implementation keeps only the thin stateless subset needed for `/v1/models`, `/v1/chat/completions`, `/v1/responses`, streaming, and request-scoped bearer passthrough. [R1][R2][R6][R7]
+
+> **Current implementation note**
+>
+> The code currently shipped on `main` does **not** implement provider-side session persistence/resume, auth-subject session binding, server-approved tools/MCP control planes, or external CLI runtime mode. References to those capabilities below should be read as design options or deferred directions unless a section explicitly says they are implemented.
 
 ### 2.1 Feasibility and compatibility boundaries
 
@@ -583,32 +587,27 @@ Without shared storage, use sticky routing instead.
 
 ### 9.4 Containerized backend deployment
 
-For production-oriented deployment, follow the official backend-services guidance and treat the SDK as a client that connects to an independently managed **headless Copilot CLI server** over `cliUrl`, rather than spawning a child CLI process inside request handling. [R3]
+For production-oriented deployment, use the repository's current subprocess-backed service baseline. The broader external-CLI topology remains a design option, but it is not part of the current shipped implementation. [R3]
 
-This repository's current packaging baseline now exposes that contract through `ProviderSettings.runtime_cli_url` (environment variable: `COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL`), `ProviderSettings.server_host`, and `ProviderSettings.server_port`. The repository now includes a production-image baseline (`Dockerfile`, `.dockerignore`) and a formal package entrypoint (`copilot-model-provider`) that starts the FastAPI app through `uvicorn` and `copilot_model_provider.app:create_app --factory`.
+This repository's current packaging baseline exposes a subprocess-backed service entrypoint through `ProviderSettings.server_host` and `ProviderSettings.server_port`. The repository includes a production-image baseline (`Dockerfile`, `.dockerignore`) and a formal package entrypoint (`copilot-model-provider`) that starts the FastAPI app through `uvicorn` and `copilot_model_provider.app:create_app --factory`.
 
 Recommended default container topology for this repository:
 
 - one provider API container with a formal ASGI server entrypoint
-- one headless Copilot CLI container or sidecar
-- private network connectivity only between the API and the CLI
-- a persistent volume for the CLI session-state directory
+- subprocess-backed Copilot execution inside the provider container
 - request-scoped GitHub bearer-token passthrough, plus secret injection for any BYOK credentials
 
 Image/startup smoke for the current baseline is:
 
 - `docker build -t copilot-model-provider:step6-smoke .`
-- `docker run -p 18080:8000 -e COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL=http://copilot-cli.internal:3000 copilot-model-provider:step6-smoke`
+- `docker run -p 18080:8000 copilot-model-provider:step6-smoke`
 - `GET /_internal/health` returns `200 OK`
 
 Important operational implications:
 
 - do **not** rely on interactive CLI login or system keychain state inside a production image
-- for a single replica, a local persistent volume can be enough for CLI session state
-- for multiple replicas, choose either sticky routing or shared storage for CLI session state [R4]
-- if the provider API itself maintains session maps or locks, move those off node-local files before claiming multi-replica production readiness
-- subject-bound session resume is now enforced by storing only an auth-subject fingerprint derived from the presented bearer token, never the raw token itself
-- readiness should cover both provider health and CLI reachability, while keeping the CLI transport internal-only
+- use request-scoped bearer passthrough or other explicit secret injection for runtime credentials
+- readiness should cover provider health and subprocess-backed runtime startup
 
 ## 10. Security Considerations
 
@@ -632,16 +631,13 @@ Provider design recommendation:
 - do **not** build a separate service-owned identity system for the MVP baseline
 - keep any optional caller auth layer separate from runtime credential passthrough
 - store BYOK secrets in a secret manager
-- never persist raw GitHub bearer tokens or API keys in session storage
-- sessional resume is now bound to the stored bearer-token subject fingerprint so one caller cannot resume another caller's Copilot session
-- switching auth mode (anonymous vs bearer) or switching bearer tokens should start a new conversation ID rather than attempting to resume the old conversation
+- never persist raw GitHub bearer tokens or API keys in provider-managed storage
 - in production containers, prefer request-scoped GitHub bearer-token passthrough and injected BYOK credentials over interactive logged-in-user credentials [R1][R3][R5]
 
 Current implementation caveat:
 
 - request-scoped GitHub bearer-token passthrough is implemented for subprocess-backed Copilot clients
-- when `runtime_cli_url` points to an external headless CLI server, the provider rejects request-scoped GitHub bearer-token passthrough explicitly because the current `github-copilot-sdk` surface exposes `github_token` only on `SubprocessConfig`, not on `ExternalServerConfig`
-- operator guidance: use subprocess mode for per-request GitHub bearer tokens; reserve `runtime_cli_url` for pre-authenticated or service-scoped external CLI deployments
+- the provider currently stays stateless at its own layer and does not persist conversation/session mappings between requests
 
 This is especially important because the official docs note that BYOK provider credentials are **not persisted** and must be re-supplied on resume. [R5][R7]
 
@@ -698,17 +694,13 @@ This allows us to expose stateful behavior cleanly without forcing every concept
 - thin OpenAI-compatible `/v1/responses`
 - canonical model catalog
 - Copilot runtime adapter
-- session create/resume mapping
 - streaming translation
-- basic tool support
-- basic MCP mounting
-- policy enforcement for built-in tools
-- sticky session routing or single shared CLI
+- request-scoped bearer passthrough through subprocess-backed Copilot clients
+- containerized deployment baseline
 
 Current implementation status:
 
-- basic tool support, basic MCP mounting, policy-controlled approval, and the remaining routing/policy release-gate scenario are all now implemented on `main`
-- the documented MVP release gate now has focused coverage for `/v1/models`, non-streaming chat, streaming, tool flow, persistent resume, and routing/policy behavior
+- the documented release gate now has focused coverage for `/v1/models`, non-streaming chat, streaming, thin `/v1/responses`, and Docker-backed black-box execution
 - containerized deployment and the production-oriented packaging baseline are now implemented on `main`
 - the thin `/v1/responses` compatibility surface is also implemented on `main` and validated against Docker-backed Codex traffic
 
@@ -1001,14 +993,10 @@ src/
       openai_models.py
       openai_chat.py
       openai_responses.py
-      provider_conversations.py
     core/
       models.py
-      events.py
       routing.py
-      policies.py
       catalog.py
-      sessions.py
       errors.py
       responses.py
     runtimes/
@@ -1018,12 +1006,6 @@ src/
       sse.py
       translators.py
       responses.py
-    tools/
-      registry.py
-      mcp.py
-    storage/
-      session_map.py
-      locks.py
 ```
 
 ## 15. Open Questions

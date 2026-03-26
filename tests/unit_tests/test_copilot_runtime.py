@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any, cast
 
 import pytest
-from copilot import ExternalServerConfig, SubprocessConfig
+from copilot import SubprocessConfig
 from copilot.generated.session_events import PermissionRequest, SessionEvent
 
 from copilot_model_provider.core.errors import ProviderError
@@ -15,21 +15,11 @@ from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     ResolvedRoute,
 )
-from copilot_model_provider.core.policies import PolicyEngine, ToolPermissionPolicy
 from copilot_model_provider.runtimes.copilot import (
     CopilotClientLike,
     CopilotRuntimeAdapter,
     PermissionRequestHandler,
 )
-from copilot_model_provider.tools import (
-    MCPRegistry,
-    MCPServerDefinition,
-    ToolDefinition,
-    ToolRegistry,
-)
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 
 @dataclass
@@ -68,7 +58,6 @@ class _FakeSession:
         self._error = error
         self.prompt: str | None = None
         self.timeout: float | None = None
-        self.destroyed = False
         self.disconnected = False
         self._handlers: list[Any] = []
 
@@ -118,12 +107,8 @@ class _FakeSession:
         return _unsubscribe
 
     async def disconnect(self) -> None:
-        """Track that the adapter disconnects sessional sessions."""
+        """Track that the adapter tears the session down after each request."""
         self.disconnected = True
-
-    async def destroy(self) -> None:
-        """Track that the adapter always tears the session down."""
-        self.destroyed = True
 
 
 class _FakeClient:
@@ -136,7 +121,6 @@ class _FakeClient:
         self.started = False
         self.stopped = False
         self.create_session_calls: list[dict[str, Any]] = []
-        self.resume_session_calls: list[dict[str, Any]] = []
 
     def get_state(self) -> str:
         """Return the current fake lifecycle state."""
@@ -157,11 +141,8 @@ class _FakeClient:
         *,
         on_permission_request: PermissionRequestHandler,
         model: str | None = None,
-        session_id: str | None = None,
         working_directory: str | None = None,
         streaming: bool | None = None,
-        tools: tuple[object, ...] | None = None,
-        mcp_servers: Mapping[str, object] | None = None,
         on_event: Any = None,
     ) -> _FakeSession:
         """Record session creation arguments and return the fake session."""
@@ -169,38 +150,8 @@ class _FakeClient:
             {
                 'on_permission_request': on_permission_request,
                 'model': model,
-                'session_id': session_id,
                 'working_directory': working_directory,
                 'streaming': streaming,
-                'tools': tools,
-                'mcp_servers': mcp_servers,
-                'on_event': on_event,
-            }
-        )
-        return self._session
-
-    async def resume_session(
-        self,
-        session_id: str,
-        *,
-        on_permission_request: PermissionRequestHandler,
-        model: str | None = None,
-        working_directory: str | None = None,
-        streaming: bool | None = None,
-        tools: tuple[object, ...] | None = None,
-        mcp_servers: Mapping[str, object] | None = None,
-        on_event: Any = None,
-    ) -> _FakeSession:
-        """Record resumed-session arguments and return the fake session."""
-        self.resume_session_calls.append(
-            {
-                'session_id': session_id,
-                'on_permission_request': on_permission_request,
-                'model': model,
-                'working_directory': working_directory,
-                'streaming': streaming,
-                'tools': tools,
-                'mcp_servers': mcp_servers,
                 'on_event': on_event,
             }
         )
@@ -209,38 +160,16 @@ class _FakeClient:
 
 def _build_request(
     *,
-    session_id: str | None = None,
     runtime_auth_token: str | None = None,
-    auth_subject: str | None = None,
-    execution_mode: Literal['stateless', 'sessional'] = 'stateless',
     stream: bool = False,
 ) -> CanonicalChatRequest:
     """Construct a stable canonical request used by runtime adapter tests."""
     return CanonicalChatRequest(
-        session_id=session_id,
         runtime_auth_token=runtime_auth_token,
-        auth_subject=auth_subject,
         model_alias='default',
-        execution_mode=execution_mode,
         messages=[CanonicalChatMessage(role='user', content='Hello')],
         stream=stream,
     )
-
-
-def _build_permission_request(
-    *,
-    kind: str = 'custom-tool',
-    tool_name: str | None = None,
-    server_name: str | None = None,
-) -> PermissionRequest:
-    """Construct a deterministic permission request for runtime adapter tests."""
-    payload: dict[str, object] = {'kind': kind}
-    if tool_name is not None:
-        payload['toolName'] = tool_name
-    if server_name is not None:
-        payload['serverName'] = server_name
-
-    return PermissionRequest.from_dict(payload)
 
 
 @pytest.mark.asyncio
@@ -267,13 +196,12 @@ async def test_copilot_runtime_adapter_executes_and_translates_completion() -> N
         request=_build_request(),
         route=ResolvedRoute(
             runtime='copilot',
-            session_mode='stateless',
             runtime_model_id='copilot-default',
         ),
     )
 
     assert client.started is True
-    assert session.destroyed is True
+    assert session.disconnected is True
     assert session.timeout == 15.0
     assert session.prompt == 'User: Hello\n\nAssistant:'
     assert len(client.create_session_calls) == 1
@@ -289,41 +217,17 @@ async def test_copilot_runtime_adapter_executes_and_translates_completion() -> N
     assert completion.completion_tokens == 5
 
 
-def test_copilot_runtime_adapter_approves_registered_server_tools() -> None:
-    """Verify that the runtime approves registered server-approved tool requests."""
-    tool_registry = ToolRegistry(
-        (
-            ToolDefinition(
-                name='search-docs',
-                description='Search provider documentation.',
-                input_schema={'type': 'object'},
-            ),
-        )
-    )
-    adapter = CopilotRuntimeAdapter(tool_registry=tool_registry)
-
-    result = adapter._handle_permission_request(
-        _build_permission_request(tool_name='search-docs'),
-        {},
-    )
-
-    assert result.kind == 'approved'
-    assert result.message is not None
-    assert 'server-approved' in result.message
-
-
 def test_copilot_runtime_adapter_defaults_to_subprocess_mode() -> None:
-    """Verify that the adapter reports subprocess mode when no CLI URL is set."""
+    """Verify that the adapter reports subprocess mode."""
     adapter = CopilotRuntimeAdapter()
 
     assert adapter.connection_mode == 'subprocess'
-    assert adapter.external_cli_url is None
 
 
-def test_copilot_runtime_adapter_builds_external_server_client_when_cli_url_is_set(
+def test_copilot_runtime_adapter_builds_default_client_without_external_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify that the default client connects to an external CLI when configured."""
+    """Verify that the default client uses the SDK default configuration."""
     captured_arguments: dict[str, object] = {}
 
     class _CapturedClient:
@@ -344,14 +248,10 @@ def test_copilot_runtime_adapter_builds_external_server_client_when_cli_url_is_s
         _CapturedClient,
     )
 
-    adapter = CopilotRuntimeAdapter(cli_url='http://copilot-cli.internal:3000')
+    adapter = CopilotRuntimeAdapter()
     adapter._get_or_create_client()
 
-    assert adapter.connection_mode == 'external_server'
-    assert adapter.external_cli_url == 'http://copilot-cli.internal:3000'
-    assert captured_arguments['config'] == ExternalServerConfig(
-        url='http://copilot-cli.internal:3000'
-    )
+    assert captured_arguments['config'] is None
     assert captured_arguments['auto_start'] is False
 
 
@@ -393,7 +293,7 @@ def test_copilot_runtime_adapter_builds_authenticated_subprocess_client(
 async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bearer_tokens() -> (
     None
 ):
-    """Verify that stateless bearer-token requests use a short-lived client."""
+    """Verify that bearer-token requests use a short-lived authenticated client."""
     default_client = _FakeClient(session=_FakeSession())
     authed_session = _FakeSession(
         event=_FakeEvent(data=_FakeEventData(content='Hi from authed client'))
@@ -410,11 +310,9 @@ async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bea
     completion = await adapter.complete_chat(
         request=_build_request(
             runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
-            auth_subject='github-bearer-sha256:abc',
         ),
         route=ResolvedRoute(
             runtime='copilot',
-            session_mode='stateless',
             runtime_model_id='copilot-default',
         ),
     )
@@ -426,253 +324,16 @@ async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bea
     assert completion.output_text == 'Hi from authed client'
 
 
-@pytest.mark.asyncio
-async def test_copilot_runtime_adapter_reuses_authenticated_client_for_sessional_bearer_requests() -> (
-    None
-):
-    """Verify that session-backed bearer requests reuse one cached client per subject."""
-    default_client = _FakeClient(session=_FakeSession())
-    authed_client = _FakeClient(
-        session=_FakeSession(event=_FakeEvent(data=_FakeEventData(content='Hi')))
-    )
-    captured_tokens: list[str] = []
-    adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', default_client),
-        authenticated_client_factory=lambda token: (
-            captured_tokens.append(token) or cast('CopilotClientLike', authed_client)
-        ),
-    )
-
-    first_completion = await adapter.complete_chat(
-        request=_build_request(
-            runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
-            auth_subject='github-bearer-sha256:abc',
-            execution_mode='sessional',
-        ),
-        route=ResolvedRoute(
-            runtime='copilot',
-            session_mode='sessional',
-            runtime_model_id='copilot-default',
-        ),
-    )
-    second_completion = await adapter.complete_chat(
-        request=_build_request(
-            runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
-            auth_subject='github-bearer-sha256:abc',
-            execution_mode='sessional',
-        ),
-        route=ResolvedRoute(
-            runtime='copilot',
-            session_mode='sessional',
-            runtime_model_id='copilot-default',
-        ),
-    )
-
-    assert captured_tokens == ['github-token-123']
-    assert authed_client.started is True
-    assert authed_client.stopped is False
-    assert len(authed_client.create_session_calls) == 2
-    assert first_completion.output_text == 'Hi'
-    assert second_completion.output_text == 'Hi'
-
-
-@pytest.mark.asyncio
-async def test_copilot_runtime_adapter_rejects_bearer_passthrough_for_external_server() -> (
-    None
-):
-    """Verify that external-server mode fails fast for request-scoped bearer auth."""
-    adapter = CopilotRuntimeAdapter(cli_url='http://copilot-cli.internal:3000')
-
-    with pytest.raises(
-        ProviderError,
-        match='not supported when runtime_cli_url points to an external',
-    ):
-        await adapter.complete_chat(
-            request=_build_request(
-                runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
-                auth_subject='github-bearer-sha256:abc',
-            ),
-            route=ResolvedRoute(
-                runtime='copilot',
-                session_mode='stateless',
-                runtime_model_id='copilot-default',
-            ),
-        )
-
-
-def test_copilot_runtime_adapter_denies_unknown_tools() -> None:
-    """Verify that unknown custom tools remain denied by the runtime policy."""
+def test_copilot_runtime_adapter_denies_runtime_permission_requests() -> None:
+    """Verify that the thin provider denies server-side permission requests."""
     adapter = CopilotRuntimeAdapter()
-
-    result = adapter._handle_permission_request(
-        _build_permission_request(tool_name='unknown-tool'),
+    result = adapter._deny_permission_request(
+        PermissionRequest.from_dict({'kind': 'custom-tool', 'toolName': 'bash'}),
         {},
     )
 
     assert result.kind == 'denied-by-rules'
-    assert result.message is not None
-    assert 'not registered' in result.message
-
-
-def test_copilot_runtime_adapter_shares_default_mcp_registry_with_policy_engine() -> (
-    None
-):
-    """Verify that default MCP registration is visible to later policy checks."""
-    adapter = CopilotRuntimeAdapter()
-    adapter._mcp_registry.register(
-        MCPServerDefinition(
-            name='docs-api',
-            transport='http',
-            url='http://localhost:8123/mcp',
-        )
-    )
-
-    result = adapter._handle_permission_request(
-        _build_permission_request(kind='mcp', server_name='docs-api'),
-        {},
-    )
-
-    assert result.kind == 'approved'
-
-
-def test_copilot_runtime_adapter_honors_builtin_tool_allow_list() -> None:
-    """Verify that built-in SDK tool requests follow the configured built-in policy."""
-    adapter = CopilotRuntimeAdapter(
-        policy_engine=PolicyEngine(
-            tool_policy=ToolPermissionPolicy(
-                builtin_tool_policy='allow-listed',
-                allowed_builtin_tool_names=frozenset({'view'}),
-            )
-        )
-    )
-
-    allowed = adapter._handle_permission_request(
-        _build_permission_request(kind='read', tool_name='view'),
-        {},
-    )
-    denied = adapter._handle_permission_request(
-        _build_permission_request(kind='shell', tool_name='bash'),
-        {},
-    )
-
-    assert allowed.kind == 'approved'
-    assert denied.kind == 'denied-by-rules'
-
-
-def test_copilot_runtime_adapter_approves_registered_mcp_servers() -> None:
-    """Verify that MCP permission requests are approved for registered servers."""
-    mcp_registry = MCPRegistry(
-        (
-            MCPServerDefinition(
-                name='docs-api',
-                transport='http',
-                url='http://localhost:8123/mcp',
-            ),
-        )
-    )
-    adapter = CopilotRuntimeAdapter(
-        mcp_registry=mcp_registry,
-        policy_engine=PolicyEngine(mcp_registry=mcp_registry),
-    )
-
-    result = adapter._handle_permission_request(
-        _build_permission_request(kind='mcp', server_name='docs-api'),
-        {},
-    )
-
-    assert result.kind == 'approved'
-
-
-@pytest.mark.asyncio
-async def test_copilot_runtime_adapter_passes_registered_mcp_servers_to_sdk() -> None:
-    """Verify that configured MCP mounts are forwarded into SDK session creation."""
-    session = _FakeSession(
-        event=_FakeEvent(
-            data=_FakeEventData(
-                content='Hi from Copilot',
-                message_id='chatcmpl-fake',
-            )
-        )
-    )
-    client = _FakeClient(session=session)
-    adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', client),
-        mcp_registry=MCPRegistry(
-            (
-                MCPServerDefinition(
-                    name='docs-api',
-                    transport='http',
-                    url='http://localhost:8123/mcp',
-                    tools=('search_docs',),
-                ),
-            )
-        ),
-    )
-
-    await adapter.complete_chat(
-        request=_build_request(),
-        route=ResolvedRoute(
-            runtime='copilot',
-            session_mode='stateless',
-            runtime_model_id='copilot-default',
-        ),
-    )
-
-    assert client.create_session_calls[0]['mcp_servers'] == {
-        'docs-api': {
-            'type': 'http',
-            'url': 'http://localhost:8123/mcp',
-            'tools': ['search_docs'],
-        }
-    }
-
-
-@pytest.mark.asyncio
-async def test_copilot_runtime_adapter_passes_registered_tools_to_sdk() -> None:
-    """Verify that registered executable tools are forwarded into SDK sessions."""
-
-    def _handler(invocation: Any) -> Any:
-        """Return a deterministic payload for the fake runtime test."""
-        return {'query': invocation.arguments}
-
-    session = _FakeSession(
-        event=_FakeEvent(
-            data=_FakeEventData(
-                content='Hi from Copilot',
-                message_id='chatcmpl-fake',
-            )
-        )
-    )
-    client = _FakeClient(session=session)
-    tool_registry = ToolRegistry(
-        (
-            ToolDefinition(
-                name='search-docs',
-                description='Search provider documentation.',
-                input_schema={'type': 'object'},
-                handler=_handler,
-            ),
-        )
-    )
-    adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', client),
-        tool_registry=tool_registry,
-        policy_engine=PolicyEngine(tool_registry=tool_registry),
-    )
-
-    await adapter.complete_chat(
-        request=_build_request(),
-        route=ResolvedRoute(
-            runtime='copilot',
-            session_mode='stateless',
-            runtime_model_id='copilot-default',
-        ),
-    )
-
-    tools = client.create_session_calls[0]['tools']
-    assert tools is not None
-    assert len(tools) == 1
-    assert tools[0].name == 'search-docs'
+    assert 'disabled' in cast('str', result.message)
 
 
 @pytest.mark.asyncio
@@ -688,7 +349,6 @@ async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_content() 
             request=_build_request(),
             route=ResolvedRoute(
                 runtime='copilot',
-                session_mode='stateless',
                 runtime_model_id='copilot-default',
             ),
         )
@@ -709,7 +369,6 @@ async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_event_data
             request=_build_request(),
             route=ResolvedRoute(
                 runtime='copilot',
-                session_mode='stateless',
                 runtime_model_id='copilot-default',
             ),
         )
@@ -736,42 +395,9 @@ async def test_copilot_runtime_adapter_raises_when_token_metadata_is_invalid() -
             request=_build_request(),
             route=ResolvedRoute(
                 runtime='copilot',
-                session_mode='stateless',
                 runtime_model_id='copilot-default',
             ),
         )
-
-
-@pytest.mark.asyncio
-async def test_copilot_runtime_adapter_resumes_and_disconnects_sessional_requests() -> (
-    None
-):
-    """Verify that sessional requests resume existing sessions without destroying them."""
-    session = _FakeSession(
-        session_id='copilot-session-resume',
-        event=_FakeEvent(data=_FakeEventData(content='Resumed response')),
-    )
-    client = _FakeClient(session=session)
-    adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', client)
-    )
-
-    completion = await adapter.complete_chat(
-        request=_build_request(
-            session_id='copilot-session-resume',
-            execution_mode='sessional',
-        ),
-        route=ResolvedRoute(
-            runtime='copilot',
-            session_mode='sessional',
-            runtime_model_id='copilot-default',
-        ),
-    )
-
-    assert client.resume_session_calls[0]['session_id'] == 'copilot-session-resume'
-    assert session.disconnected is True
-    assert session.destroyed is False
-    assert completion.session_id == 'copilot-session-resume'
 
 
 @pytest.mark.asyncio
@@ -807,7 +433,6 @@ async def test_copilot_runtime_adapter_streams_events_and_keeps_session_id() -> 
         request=_build_request(stream=True),
         route=ResolvedRoute(
             runtime='copilot',
-            session_mode='stateless',
             runtime_model_id='copilot-default',
         ),
     )
@@ -819,5 +444,4 @@ async def test_copilot_runtime_adapter_streams_events_and_keeps_session_id() -> 
         'assistant.turn_end',
     ]
     assert session.prompt == 'User: Hello\n\nAssistant:'
-    assert session.destroyed is True
-    assert session.disconnected is False
+    assert session.disconnected is True

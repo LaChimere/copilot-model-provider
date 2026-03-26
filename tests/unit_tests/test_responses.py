@@ -50,12 +50,10 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
         request=request,
         request_id='req-123',
         conversation_id='conversation-1',
-        execution_mode='sessional',
     )
 
     assert normalized.request_id == 'req-123'
     assert normalized.conversation_id == 'conversation-1'
-    assert normalized.execution_mode == 'sessional'
     assert normalized.stream is True
     assert [message.model_dump() for message in normalized.messages] == [
         {'role': 'system', 'content': 'Top-level instructions'},
@@ -75,7 +73,6 @@ def test_build_openai_responses_response_from_completion_maps_usage() -> None:
             completion_tokens=7,
         ),
         response_id=build_response_id(request_id='req-456'),
-        conversation_id='conversation-2',
         created_at=1_735_689_600,
     )
 
@@ -89,8 +86,7 @@ def test_build_openai_responses_response_from_completion_maps_usage() -> None:
         'output_tokens': 7,
         'total_tokens': 18,
     }
-    assert response.conversation is not None
-    assert response.conversation.model_dump() == {'id': 'conversation-2'}
+    assert response.conversation is None
 
 
 def test_build_openai_responses_response_from_text_can_render_in_progress_payload() -> (

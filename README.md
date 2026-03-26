@@ -2,7 +2,7 @@
 
 `copilot-model-provider` is a Python project for building a general-purpose model provider on top of [`github-copilot-sdk`](https://github.com/github/copilot-sdk).
 
-The goal is to expose a stable northbound API for multiple client styles while using `copilot-sdk` as the runtime substrate for sessions, streaming, tools, MCP, and model execution.
+The goal is to expose a stable northbound API for multiple client styles while using `copilot-sdk` as the runtime substrate for model execution, streaming, and request-scoped auth passthrough.
 
 ## Status
 
@@ -16,12 +16,9 @@ Today it contains:
 - a service-owned model catalog and OpenAI-compatible `GET /v1/models`
 - an OpenAI-compatible `POST /v1/chat/completions` supporting non-streaming and streaming SSE behavior
 - a thin OpenAI-compatible `POST /v1/responses` surface for Codex-style clients
-- session-backed convergence for routes configured as `sessional`, including persistent session resume and locking via `X-Copilot-Conversation-Id`
-- a Copilot SDK-backed runtime adapter for stateless and session-backed chat execution
-- basic server-approved tool mounting and policy-driven approval
-- basic MCP mounting for configured session launches
+- a Copilot SDK-backed runtime adapter for thin stateless chat execution
 - a container packaging baseline (`Dockerfile`, `.dockerignore`) plus a root `.env.example` for local token/config setup
-- focused release-gate integration coverage for model alias routing and policy behavior
+- focused release-gate integration coverage for models, chat, Responses, and Docker-backed end-to-end execution
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
 - `pytest`-based unit, contract, and lightweight integration coverage
 
@@ -34,9 +31,6 @@ Available today:
 - `GET /v1/models`
 - `POST /v1/chat/completions` (non-streaming and streaming SSE)
 - `POST /v1/responses` (thin OpenAI-compatible Responses surface)
-- session-backed resume/locking behavior for routes configured as `sessional`
-- basic server-approved tool execution through the existing chat/runtime path
-- basic MCP mounting for configured runtime sessions
 - `GET /_internal/health`
 
 Minimum release-gate coverage now includes:
@@ -44,10 +38,8 @@ Minimum release-gate coverage now includes:
 - `/v1/models` alias advertisement
 - non-streaming chat
 - streaming SSE framing
-- session-backed resume/locking for routes configured as `sessional`
-- one server-approved tool path
-- one MCP-backed path
-- one routing/policy alias path
+- thin `/v1/responses` compatibility
+- Docker-backed black-box integration coverage
 
 ## What this project is trying to build
 
@@ -56,20 +48,17 @@ At a high level, the target system is:
 1. a **northbound compatibility layer**
    for OpenAI-style clients first, with room for additional protocol facades later
 2. a **canonical core**
-   for request normalization, model catalog, routing, session lifecycle, policy, and event translation
+   for request normalization, model catalog, routing, and event translation
 3. a **Copilot runtime adapter**
    that uses `copilot-sdk` as the first execution backend
 
-The key architectural choice is that this project treats `copilot-sdk` as a **runtime kernel**, not as a thin stateless completion proxy.
+The key architectural choice is that this project treats `copilot-sdk` as the execution backend while keeping the current provider implementation intentionally **thin and stateless**.
 
-That means the design keeps these concepts first-class:
+That means the current implementation keeps these concepts first-class:
 
-- sessions
 - streaming events
-- tool execution
-- MCP integration
 - model routing
-- policy enforcement
+- request-scoped auth passthrough
 - observability
 
 ## MVP scope
@@ -81,15 +70,16 @@ In scope:
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - SSE streaming for chat completions
+- thin OpenAI-compatible `/v1/responses`
 - a service-owned model catalog
 - a Copilot runtime adapter
-- session create/resume mapping
-- basic server-approved tool support
-- basic MCP mounting
+- subprocess-backed request-scoped GitHub bearer-token passthrough
 
 Out of scope for the current MVP:
 
 - provider-native session APIs
+- server-side tool/MCP control planes
+- external CLI runtime mode
 - provider-native response-style API families beyond the thin OpenAI-compatible `/v1/responses` route
 - Anthropic-compatible facade
 - caller-supplied tool schemas
@@ -154,27 +144,15 @@ Both commands start the provider through `uvicorn` using the app factory entrypo
 
 ### Packaging-oriented runtime baseline
 
-For deployment-oriented setups, the provider can connect to an already managed headless Copilot CLI server instead of using the SDK's default subprocess mode.
+The current packaging baseline runs the provider as a normal ASGI service and lets the runtime adapter use the SDK's subprocess-backed execution mode.
 
 ```bash
 export COPILOT_MODEL_PROVIDER_SERVER_HOST=0.0.0.0
 export COPILOT_MODEL_PROVIDER_SERVER_PORT=8000
-export COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL=http://copilot-cli.internal:3000
 uv run copilot-model-provider
 ```
 
-When `COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL` is set, `ProviderSettings.runtime_cli_url` wires the default `CopilotRuntimeAdapter` through the SDK external-server configuration while keeping the provider as a thin API wrapper around Copilot-managed models.
-
-Request-scoped runtime auth uses the incoming `Authorization: Bearer ...` header. The provider never persists the raw bearer token; session-backed resume stores only a derived bearer-token subject fingerprint. That means one subject cannot resume another subject's Copilot session.
-
-In practice, conversation resume is bound to the original auth context. If you switch between anonymous and bearer-authenticated requests, or rotate to a different bearer token, start a new conversation ID instead of trying to resume the old one.
-
-Current limitation: the installed `github-copilot-sdk` exposes `github_token` injection only on `SubprocessConfig`, not on `ExternalServerConfig`. Because of that, request-scoped GitHub bearer-token passthrough currently works in subprocess-backed runtime mode, while `runtime_cli_url` + request-scoped GitHub bearer auth is rejected explicitly instead of silently mixing credentials.
-
-Use these deployment patterns today:
-
-- use the default subprocess-backed runtime when callers need to forward their own GitHub bearer tokens, including local Codex testing
-- use `runtime_cli_url` only when the external Copilot CLI server is already authenticated or otherwise managed as a service-scoped runtime, without per-request bearer passthrough
+Request-scoped runtime auth uses the incoming `Authorization: Bearer ...` header. The provider forwards that token into a short-lived subprocess-backed Copilot client for the request and never persists the raw bearer token.
 
 ### Local Codex / custom-provider baseline
 
@@ -186,9 +164,7 @@ See `.env.example` for the minimal local environment contract.
 
 ```bash
 docker build -t copilot-model-provider:local .
-docker run --rm -p 8000:8000 \
-  -e COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL=http://copilot-cli.internal:3000 \
-  copilot-model-provider:local
+docker run --rm -p 8000:8000 copilot-model-provider:local
 ```
 
 ### Lint and type-check
@@ -209,19 +185,7 @@ uv run pytest -q
 
 This repository follows an agent-driven, reviewable workflow defined in `AGENTS.md`.
 
-For the current MVP slug, the approved execution model is:
-
-1. land the serial foundation chain
-   - app/config/contracts
-   - `/v1/models`
-   - non-streaming chat
-2. fan out streaming and session-persistence work in parallel
-3. converge those branches under a single owner
-4. add Tool/MCP completion
-5. finish release-gate E2E and cleanup
-
-The current plan describes this as **five execution phases implemented as seven mergeable branches**.
-All five phases are now implemented locally on `main`, and the later packaging plus thin Responses/Codex follow-ons are also complete.
+The historical MVP slug includes broader session/tool/MCP branches, but the current implementation on `main` has been intentionally tightened back down to the thin stateless provider surface listed above.
 
 ## Important documents
 

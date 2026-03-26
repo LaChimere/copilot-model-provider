@@ -7,10 +7,6 @@ from typing import ClassVar, Literal, Self
 from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .tools import (
-    MCPServerDefinition,  # noqa: TC001 - needed for pydantic model parsing
-)
-
 EnvironmentName = Literal['development', 'test', 'production']
 MIN_SERVER_PORT = 1
 MAX_SERVER_PORT = 65535
@@ -36,8 +32,6 @@ class ProviderSettings(BaseSettings):
     default_runtime: str = 'copilot'
     runtime_timeout_seconds: float = 60.0
     runtime_working_directory: str | None = None
-    runtime_cli_url: str | None = None
-    mcp_servers: tuple[MCPServerDefinition, ...] = ()
 
     @field_validator('internal_health_path')
     @classmethod
@@ -82,21 +76,6 @@ class ProviderSettings(BaseSettings):
 
         return value
 
-    @field_validator('mcp_servers')
-    @classmethod
-    def _validate_mcp_servers(
-        cls,
-        value: tuple[MCPServerDefinition, ...],
-        _info: ValidationInfo,
-    ) -> tuple[MCPServerDefinition, ...]:
-        """Ensure configured MCP server names stay unique."""
-        names = [server.name for server in value]
-        if len(set(names)) != len(names):
-            msg = 'mcp_servers must use unique server names'
-            raise ValueError(msg)
-
-        return value
-
     @field_validator('runtime_timeout_seconds')
     @classmethod
     def _validate_runtime_timeout_seconds(
@@ -110,31 +89,6 @@ class ProviderSettings(BaseSettings):
             raise ValueError(msg)
 
         return value
-
-    @field_validator('runtime_cli_url')
-    @classmethod
-    def _validate_runtime_cli_url(
-        cls,
-        value: str | None,
-        _info: ValidationInfo,
-    ) -> str | None:
-        """Ensure the optional external CLI URL is either absent or non-empty.
-
-        The Copilot SDK accepts multiple URL forms for external servers
-        (``host:port``, ``http://host:port``, or just ``port``), so this
-        validator only normalizes surrounding whitespace and rejects empty
-        values instead of enforcing a stricter URL format.
-
-        """
-        if value is None:
-            return None
-
-        normalized_value = value.strip()
-        if not normalized_value:
-            msg = 'runtime_cli_url must not be empty when provided'
-            raise ValueError(msg)
-
-        return normalized_value
 
     @classmethod
     def from_env(cls) -> Self:

@@ -60,7 +60,7 @@ def create_default_model_catalog(*, settings: ProviderSettings) -> ModelCatalog:
 
     Returns:
         A ``ModelCatalog`` containing the stable public aliases served by the
-        application before runtime execution is implemented.
+        application.
 
     """
     return ModelCatalog(

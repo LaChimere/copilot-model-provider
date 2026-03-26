@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from time import time
-from typing import TYPE_CHECKING, Literal
+from typing import Literal, cast
 from uuid import uuid4
 
 from copilot_model_provider.core.models import (
@@ -17,6 +17,7 @@ from copilot_model_provider.core.models import (
     OpenAIResponsesCreatedEvent,
     OpenAIResponsesCreateRequest,
     OpenAIResponsesInputMessage,
+    OpenAIResponsesInputTextPart,
     OpenAIResponsesOutputItemAddedEvent,
     OpenAIResponsesOutputItemDoneEvent,
     OpenAIResponsesOutputMessage,
@@ -27,16 +28,12 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
 )
 
-if TYPE_CHECKING:
-    from copilot_model_provider.core.models import ExecutionMode
-
 
 def normalize_openai_responses_request(
     *,
     request: OpenAIResponsesCreateRequest,
     request_id: str | None = None,
     conversation_id: str | None = None,
-    execution_mode: ExecutionMode = 'stateless',
 ) -> CanonicalChatRequest:
     """Normalize an OpenAI Responses request into the provider chat contract.
 
@@ -44,13 +41,12 @@ def normalize_openai_responses_request(
         request: The validated HTTP payload accepted by ``POST /v1/responses``.
         request_id: Optional request identifier propagated into the canonical
             execution request.
-        conversation_id: Optional provider-managed conversation identifier used
-            when the resolved route executes in session-backed mode.
-        execution_mode: Resolved execution mode for the target public model alias.
+        conversation_id: Optional client-supplied conversation identifier kept as
+            request metadata without enabling provider-side session state.
 
     Returns:
-        A ``CanonicalChatRequest`` suitable for routing, session preparation, and
-        execution through the existing Copilot runtime path.
+        A ``CanonicalChatRequest`` suitable for routing and execution through the
+        existing Copilot runtime path.
 
     """
     messages: list[CanonicalChatMessage] = []
@@ -68,7 +64,6 @@ def normalize_openai_responses_request(
         request_id=request_id,
         conversation_id=conversation_id,
         model_alias=request.model,
-        execution_mode=execution_mode,
         messages=messages,
         stream=request.stream,
     )
@@ -122,8 +117,8 @@ def build_openai_responses_response_from_completion(
         request: The original validated Responses request body.
         completion: Normalized runtime output returned by the adapter.
         response_id: Public response identifier to expose northbound.
-        conversation_id: Optional provider-managed conversation identifier to
-            expose in the response metadata.
+        conversation_id: Optional client-supplied conversation identifier to
+            expose in response metadata.
         created_at: Optional Unix timestamp used for stable test assertions.
 
     Returns:
@@ -169,8 +164,8 @@ def build_openai_responses_response_from_text(
         output_text: Assistant text that should populate the completed output
             message. ``None`` keeps the ``output`` array empty.
         response_id: Public response identifier to expose northbound.
-        conversation_id: Optional provider-managed conversation identifier to
-            expose in the response metadata.
+        conversation_id: Optional client-supplied conversation identifier to
+            expose in response metadata.
         created_at: Optional Unix timestamp used for stable test assertions.
         completed_at: Optional Unix timestamp set when the response has reached
             terminal completion.
@@ -226,20 +221,7 @@ def build_openai_responses_created_event(
     conversation_id: str | None = None,
     created_at: int | None = None,
 ) -> OpenAIResponsesCreatedEvent:
-    """Build the initial streaming lifecycle event for one response stream.
-
-    Args:
-        request: The original validated Responses request body.
-        response_id: Public response identifier to expose northbound.
-        sequence_number: Monotonic event index for the stream.
-        conversation_id: Optional provider-managed conversation identifier to
-            expose in the response metadata.
-        created_at: Optional Unix timestamp used for stable test assertions.
-
-    Returns:
-        A ``response.created`` event with an ``in_progress`` response envelope.
-
-    """
+    """Build the initial streaming lifecycle event for one response stream."""
     return OpenAIResponsesCreatedEvent(
         sequence_number=sequence_number,
         response=build_openai_responses_response_from_text(
@@ -263,22 +245,7 @@ def build_openai_responses_completed_event(
     created_at: int | None = None,
     completed_at: int | None = None,
 ) -> OpenAIResponsesCompletedEvent:
-    """Build the terminal lifecycle event for one streamed response.
-
-    Args:
-        request: The original validated Responses request body.
-        response_id: Public response identifier to expose northbound.
-        output_text: Fully assembled assistant text produced by the stream.
-        sequence_number: Monotonic event index for the stream.
-        conversation_id: Optional provider-managed conversation identifier to
-            expose in the response metadata.
-        created_at: Optional Unix timestamp used for stable test assertions.
-        completed_at: Optional Unix timestamp used for stable test assertions.
-
-    Returns:
-        A ``response.completed`` event carrying the final response envelope.
-
-    """
+    """Build the terminal lifecycle event for one streamed response."""
     return OpenAIResponsesCompletedEvent(
         sequence_number=sequence_number,
         response=build_openai_responses_response_from_text(
@@ -301,60 +268,13 @@ def build_openai_responses_output_text_delta_event(
     output_index: int = 0,
     content_index: int = 0,
 ) -> OpenAIResponsesOutputTextDeltaEvent:
-    """Build one ``response.output_text.delta`` event for a streamed response.
-
-    Args:
-        response_id: Public response identifier emitted by the route.
-        text: Assistant text delta to expose in this event.
-        sequence_number: Monotonic event index for the stream.
-        output_index: Output-item index for the delta inside the response.
-        content_index: Content-part index for the delta inside the output item.
-
-    Returns:
-        A streaming event compatible with the minimal Codex-needed subset.
-
-    """
+    """Build one ``response.output_text.delta`` event for a streamed response."""
     return OpenAIResponsesOutputTextDeltaEvent(
         sequence_number=sequence_number,
         item_id=build_response_message_id(response_id=response_id),
         output_index=output_index,
         content_index=content_index,
         delta=text,
-    )
-
-
-def build_openai_responses_output_item_added_event(
-    *,
-    response_id: str,
-    sequence_number: int,
-    output_index: int = 0,
-) -> OpenAIResponsesOutputItemAddedEvent:
-    """Build the lifecycle event that opens the active output item."""
-    return OpenAIResponsesOutputItemAddedEvent(
-        sequence_number=sequence_number,
-        output_index=output_index,
-        item=OpenAIResponsesOutputMessage(
-            id=build_response_message_id(response_id=response_id),
-            status='in_progress',
-            content=[],
-        ),
-    )
-
-
-def build_openai_responses_content_part_added_event(
-    *,
-    response_id: str,
-    sequence_number: int,
-    output_index: int = 0,
-    content_index: int = 0,
-) -> OpenAIResponsesContentPartAddedEvent:
-    """Build the lifecycle event that opens the active text content part."""
-    return OpenAIResponsesContentPartAddedEvent(
-        sequence_number=sequence_number,
-        item_id=build_response_message_id(response_id=response_id),
-        output_index=output_index,
-        content_index=content_index,
-        part=OpenAIResponsesOutputText(text=''),
     )
 
 
@@ -366,13 +286,30 @@ def build_openai_responses_output_text_done_event(
     output_index: int = 0,
     content_index: int = 0,
 ) -> OpenAIResponsesOutputTextDoneEvent:
-    """Build the lifecycle event that finalizes one output-text part."""
+    """Build one ``response.output_text.done`` event for a streamed response."""
     return OpenAIResponsesOutputTextDoneEvent(
         sequence_number=sequence_number,
         item_id=build_response_message_id(response_id=response_id),
         output_index=output_index,
         content_index=content_index,
         text=text,
+    )
+
+
+def build_openai_responses_content_part_added_event(
+    *,
+    response_id: str,
+    sequence_number: int,
+    output_index: int = 0,
+    content_index: int = 0,
+) -> OpenAIResponsesContentPartAddedEvent:
+    """Build one ``response.content_part.added`` event for a response stream."""
+    return OpenAIResponsesContentPartAddedEvent(
+        sequence_number=sequence_number,
+        item_id=build_response_message_id(response_id=response_id),
+        output_index=output_index,
+        content_index=content_index,
+        part=OpenAIResponsesOutputText(text=''),
     )
 
 
@@ -384,13 +321,31 @@ def build_openai_responses_content_part_done_event(
     output_index: int = 0,
     content_index: int = 0,
 ) -> OpenAIResponsesContentPartDoneEvent:
-    """Build the lifecycle event that finalizes the active content part."""
+    """Build one ``response.content_part.done`` event for a response stream."""
     return OpenAIResponsesContentPartDoneEvent(
         sequence_number=sequence_number,
         item_id=build_response_message_id(response_id=response_id),
         output_index=output_index,
         content_index=content_index,
         part=OpenAIResponsesOutputText(text=text),
+    )
+
+
+def build_openai_responses_output_item_added_event(
+    *,
+    response_id: str,
+    sequence_number: int,
+    output_index: int = 0,
+) -> OpenAIResponsesOutputItemAddedEvent:
+    """Build one ``response.output_item.added`` event for a response stream."""
+    return OpenAIResponsesOutputItemAddedEvent(
+        sequence_number=sequence_number,
+        output_index=output_index,
+        item=build_openai_responses_output_message(
+            response_id=response_id,
+            output_text='',
+            status='in_progress',
+        ),
     )
 
 
@@ -401,7 +356,7 @@ def build_openai_responses_output_item_done_event(
     sequence_number: int,
     output_index: int = 0,
 ) -> OpenAIResponsesOutputItemDoneEvent:
-    """Build the lifecycle event that finalizes the active output item."""
+    """Build one ``response.output_item.done`` event for a response stream."""
     return OpenAIResponsesOutputItemDoneEvent(
         sequence_number=sequence_number,
         output_index=output_index,
@@ -413,36 +368,13 @@ def build_openai_responses_output_item_done_event(
     )
 
 
-def _normalize_responses_message_block(
-    *,
-    value: str | list[OpenAIResponsesInputMessage],
-    default_role: Literal['system', 'user'],
-) -> list[CanonicalChatMessage]:
-    """Normalize one Responses message block into canonical chat messages.
-
-    Args:
-        value: Either a plain string shorthand or a structured list of message
-            items accepted by the Responses API.
-        default_role: Role used when ``value`` is the plain-string shorthand.
-
-    Returns:
-        A list of normalized canonical chat messages that can be routed into the
-        existing runtime execution path.
-
-    """
-    if isinstance(value, str):
-        return [CanonicalChatMessage(role=default_role, content=value)]
-
-    return [_normalize_responses_message(message=message) for message in value]
-
-
 def build_openai_responses_output_message(
     *,
     response_id: str,
     output_text: str,
     status: Literal['in_progress', 'completed'],
 ) -> OpenAIResponsesOutputMessage:
-    """Build one assistant output-message item for Responses payloads/events."""
+    """Build a single assistant output item for a Responses payload."""
     return OpenAIResponsesOutputMessage(
         id=build_response_message_id(response_id=response_id),
         status=status,
@@ -450,50 +382,40 @@ def build_openai_responses_output_message(
     )
 
 
-def _normalize_responses_message(
+def _normalize_responses_message_block(
     *,
-    message: OpenAIResponsesInputMessage,
-) -> CanonicalChatMessage:
-    """Normalize one structured Responses message into the canonical contract.
+    value: str | list[OpenAIResponsesInputMessage],
+    default_role: Literal['system', 'user'],
+) -> list[CanonicalChatMessage]:
+    """Normalize a Responses message block into canonical chat messages."""
+    if isinstance(value, str):
+        return [CanonicalChatMessage(role=default_role, content=value)]
 
-    Args:
-        message: Structured input item accepted by the Responses API route.
+    normalized_messages: list[CanonicalChatMessage] = []
+    for item in value:
+        if item.type != 'message':
+            continue
 
-    Returns:
-        A canonical chat message with the closest provider-supported role and a
-        concatenated plain-text body.
+        normalized_role = (
+            'system' if item.role in {'system', 'developer'} else item.role
+        )
+        normalized_messages.extend(
+            _normalize_responses_message_content(
+                role=cast("Literal['system', 'user', 'assistant']", normalized_role),
+                content=item.content,
+            )
+        )
 
-    """
-    return CanonicalChatMessage(
-        role=_normalize_responses_role(role=message.role),
-        content=_render_responses_message_content(message=message),
-    )
+    return normalized_messages
 
 
-def _normalize_responses_role(
+def _normalize_responses_message_content(
     *,
-    role: Literal['system', 'developer', 'user', 'assistant'],
-) -> Literal['system', 'user', 'assistant']:
-    """Map Responses message roles onto the provider's canonical chat roles."""
-    if role in {'system', 'developer'}:
-        return 'system'
-    if role == 'assistant':
-        return 'assistant'
-    return 'user'
+    role: Literal['system', 'user', 'assistant'],
+    content: str | list[OpenAIResponsesInputTextPart],
+) -> list[CanonicalChatMessage]:
+    """Normalize one Responses message content payload."""
+    if isinstance(content, str):
+        return [CanonicalChatMessage(role=role, content=content)]
 
-
-def _render_responses_message_content(*, message: OpenAIResponsesInputMessage) -> str:
-    """Render one structured Responses message into plain assistant-visible text.
-
-    Args:
-        message: Structured input item whose content may be a plain string or a
-            list of text content parts.
-
-    Returns:
-        The concatenated text content for the input message.
-
-    """
-    if isinstance(message.content, str):
-        return message.content
-
-    return ''.join(part.text for part in message.content)
+    return [CanonicalChatMessage(role=role, content=part.text) for part in content]
