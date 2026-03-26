@@ -8,16 +8,17 @@ if TYPE_CHECKING:
     import httpx
 
 
-def test_container_responses_non_streaming_supports_default_alias(
+def test_container_responses_non_streaming_supports_live_model_id(
     integration_client: httpx.Client,
     integration_github_token: str,
+    integration_model_id: str,
 ) -> None:
-    """Verify that the Responses JSON surface works through the real container."""
+    """Verify that the Responses JSON surface works with one live model ID."""
     response = integration_client.post(
         '/v1/responses',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
-            'model': 'default',
+            'model': integration_model_id,
             'input': 'Reply with exactly RESPONSES_PING and nothing else.',
             'stream': False,
         },
@@ -26,13 +27,14 @@ def test_container_responses_non_streaming_supports_default_alias(
     assert response.status_code == 200
     payload = response.json()
     assert payload['object'] == 'response'
-    assert payload['model'] == 'default'
+    assert payload['model'] == integration_model_id
     assert payload['output'][0]['content'][0]['text'].strip() == 'RESPONSES_PING'
 
 
 def test_container_responses_streaming_emits_expected_lifecycle(
     integration_client: httpx.Client,
     integration_github_token: str,
+    integration_model_id: str,
 ) -> None:
     """Verify that the containerized SSE stream emits the expected Responses frames."""
     with integration_client.stream(
@@ -40,7 +42,7 @@ def test_container_responses_streaming_emits_expected_lifecycle(
         '/v1/responses',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
-            'model': 'default',
+            'model': integration_model_id,
             'input': 'Reply with exactly STREAM_PING and nothing else.',
             'stream': True,
         },

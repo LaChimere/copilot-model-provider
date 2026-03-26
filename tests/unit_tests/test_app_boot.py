@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from fastapi import FastAPI
@@ -10,17 +10,99 @@ from fastapi.routing import APIRoute
 
 from copilot_model_provider.app import create_app
 from copilot_model_provider.config import ProviderSettings
-from copilot_model_provider.core.catalog import create_default_model_catalog
-from copilot_model_provider.core.models import OpenAIModelListResponse
+from copilot_model_provider.core.models import (
+    OpenAIModelCard,
+    OpenAIModelListResponse,
+    ResolvedRoute,
+    RuntimeCompletion,
+    RuntimeHealth,
+)
 from copilot_model_provider.core.routing import ModelRouter, ModelRouterProtocol
 from copilot_model_provider.runtimes import CopilotRuntime
-from copilot_model_provider.runtimes.protocols import RuntimeProtocol
+from copilot_model_provider.runtimes.protocols import (
+    RuntimeEventStream,
+    RuntimeProtocol,
+)
 from tests.harness import build_async_client, build_test_app
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from copilot_model_provider.core.models import InternalHealthResponse
+
+
+class _FakeModelsRuntime(RuntimeProtocol):
+    """Minimal runtime used by app boot tests that hit `/v1/models`."""
+
+    @property
+    @override
+    def runtime_name(self) -> str:
+        """Return the fake runtime name."""
+        return 'copilot'
+
+    @override
+    def default_route(self) -> ResolvedRoute:
+        """Return the fake default route."""
+        return ResolvedRoute(runtime='copilot')
+
+    @override
+    async def check_health(self) -> RuntimeHealth:
+        """Return a healthy fake runtime payload."""
+        return RuntimeHealth(runtime='copilot', available=True, detail='ok')
+
+    @override
+    async def list_model_ids(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return a deterministic live-model snapshot for tests."""
+        del runtime_auth_token
+        return ('gpt-5.4', 'gpt-5.4-mini')
+
+    @override
+    async def complete_chat(self, **kwargs: object) -> RuntimeCompletion:
+        """Reject unexpected execution calls in app-boot tests."""
+        del kwargs
+        raise AssertionError('complete_chat should not be called in this test')
+
+    @override
+    async def stream_chat(self, **kwargs: object) -> RuntimeEventStream:
+        """Reject unexpected streaming calls in app-boot tests."""
+        del kwargs
+        raise AssertionError('stream_chat should not be called in this test')
+
+
+class _StaticModelRouter(ModelRouterProtocol):
+    """Deterministic router used when app tests should avoid runtime discovery."""
+
+    @override
+    async def list_models_response(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> OpenAIModelListResponse:
+        """Return a fixed OpenAI-compatible model list."""
+        del runtime_auth_token
+        return OpenAIModelListResponse(
+            data=[
+                OpenAIModelCard(
+                    id='gpt-5.4',
+                    owned_by='copilot-model-provider',
+                )
+            ]
+        )
+
+    @override
+    async def resolve_model(
+        self,
+        *,
+        model_id: str,
+        runtime_auth_token: str | None = None,
+    ) -> ResolvedRoute:
+        """Resolve the one supported fake model ID."""
+        del runtime_auth_token
+        return ResolvedRoute(runtime='copilot', runtime_model_id=model_id)
 
 
 def _route_paths(app: FastAPI) -> set[str]:
@@ -34,7 +116,7 @@ def test_create_app_returns_fastapi_application() -> None:
 
     assert isinstance(app, FastAPI)
     assert app.title == 'copilot-model-provider'
-    assert app.state.model_router.list_models_response().data
+    assert isinstance(app.state.model_router, ModelRouter)
 
 
 def test_internal_health_route_is_optional() -> None:
@@ -60,27 +142,19 @@ def test_harness_builds_test_application() -> None:
 
     assert isinstance(app, FastAPI)
     assert app.state.settings.environment == 'test'
-    assert app.state.model_catalog.list_entries()
+    assert isinstance(app.state.model_router, ModelRouter)
 
 
-def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
-    """Verify that app state stays consistent when a custom router is supplied."""
-    settings = ProviderSettings()
-    explicit_catalog = create_default_model_catalog(settings=settings)
-    router_catalog = create_default_model_catalog(
-        settings=ProviderSettings(app_name='router-owned'),
-    )
-    router = ModelRouter(model_catalog=router_catalog)
+def test_create_app_uses_supplied_router_when_router_is_provided() -> None:
+    """Verify that app state keeps the injected router instance unchanged."""
+    router = _StaticModelRouter()
 
     app = create_app(
-        settings=settings,
-        model_catalog=explicit_catalog,
+        settings=ProviderSettings(),
         model_router=router,
     )
 
     assert app.state.model_router is router
-    assert app.state.model_catalog is router_catalog
-    assert app.state.model_router.model_catalog is app.state.model_catalog
 
 
 def test_protocol_implementations_are_explicitly_declared() -> None:
@@ -114,7 +188,7 @@ class _IncompleteRuntime:
 class _IncompleteModelRouter:
     """Deliberately invalid router dependency for protocol validation tests."""
 
-    def list_models_response(self) -> OpenAIModelListResponse:
+    async def list_models_response(self) -> OpenAIModelListResponse:
         """Return a placeholder model list for protocol validation tests."""
         return OpenAIModelListResponse(data=[])
 
@@ -151,7 +225,10 @@ async def test_request_logging_middleware_emits_structured_completion_event(
     captured_logger = _CapturedLogger()
     monkeypatch.setattr(app_module, '_logger', captured_logger)
 
-    async with build_async_client() as client:
+    async with build_async_client(
+        runtime=_FakeModelsRuntime(),
+        model_router=_StaticModelRouter(),
+    ) as client:
         response = await client.get('/v1/models')
 
     assert response.status_code == 200

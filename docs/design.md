@@ -19,7 +19,7 @@ The service is a FastAPI application that exposes a small OpenAI-compatible HTTP
 The core design choice is to keep the provider layer intentionally thin:
 
 - northbound compatibility happens over HTTP
-- routing happens through a service-owned model catalog
+- routing happens through auth-context live model discovery
 - execution happens through `github-copilot-sdk`
 - provider-owned conversation/session state is **not** persisted across requests
 - server-side tools and MCP are **not** enabled
@@ -36,9 +36,11 @@ Implemented in `src/copilot_model_provider/api/openai_models.py`.
 
 Behavior:
 
-- lists the public model aliases exposed by the service-owned catalog
+- lists the live model IDs visible to the current auth context
 - returns an OpenAI-compatible model list response
-- does not require runtime auth
+- resolves auth the same way execution routes do:
+  - `Authorization: Bearer ...`
+  - otherwise the configured runtime fallback token
 
 ### 3.2 `POST /v1/chat/completions`
 
@@ -48,7 +50,7 @@ Behavior:
 
 - accepts an OpenAI-compatible chat request
 - supports non-streaming and streaming SSE responses
-- resolves the requested public alias through the model router
+- resolves the requested public model ID through the model router
 - forwards optional bearer auth into the runtime layer
 
 ### 3.3 `POST /v1/responses`
@@ -83,7 +85,7 @@ Responsibilities:
 
 - load validated settings
 - construct the runtime
-- construct the model catalog and router
+- construct the model router
 - validate injected runtimes and routers against explicit protocol contracts
 - install routes and error handlers
 - install structlog-backed HTTP request logging middleware
@@ -103,7 +105,7 @@ Responsibilities:
 
 - parse HTTP requests
 - normalize auth headers
-- resolve public model aliases into runtime routes
+- resolve public model IDs into runtime routes
 - convert OpenAI-compatible requests into canonical internal requests
 - format HTTP responses and SSE streams
 
@@ -116,7 +118,7 @@ Responsibilities:
 - define internal request/response models
 - normalize OpenAI chat and Responses requests
 - render prompts for the runtime
-- define the model catalog and model router
+- define the live model-catalog snapshot and model router
 - translate runtime completions into northbound response shapes
 - raise structured provider errors
 
@@ -127,6 +129,7 @@ Implemented in `src/copilot_model_provider/runtimes/`.
 Responsibilities:
 
 - own the `github-copilot-sdk` integration
+- list live model IDs for one auth context
 - create ephemeral Copilot sessions per request
 - execute non-streaming and streaming turns
 - translate raw runtime failures into provider errors
@@ -153,7 +156,7 @@ Current fields:
 - `request_id`
 - `conversation_id`
 - `runtime_auth_token`
-- `model_alias`
+- `model_id`
 - `messages`
 - `stream`
 
@@ -197,29 +200,24 @@ Behavior:
 
 The runtime path is therefore message-normalized at the provider boundary but prompt-based at the SDK call boundary.
 
-## 6. Routing and Model Catalog
+## 6. Routing and Live Model Discovery
 
-### 6.1 Service-owned model catalog
+### 6.1 Auth-context model catalog snapshot
 
 Implemented in `src/copilot_model_provider/core/catalog.py`.
 
-The default catalog is intentionally small and stable.
+A catalog snapshot is built dynamically from the live Copilot model IDs visible to the current auth context.
 
-Shipped aliases:
+Each entry maps:
 
-- `default`
-- `fast`
-
-Each alias maps to:
-
+- a public model ID
 - a runtime name
 - an owner label
 - a concrete runtime model identifier
 
-For the default shipped catalog, those runtime model identifiers are built from the configured runtime name:
+In the current implementation, the public model ID and runtime model identifier are the same string.
 
-- `copilot-default`
-- `copilot-fast`
+`GET /v1/models` is therefore the canonical source of truth for what callers may request.
 
 ### 6.2 Model router
 
@@ -227,19 +225,27 @@ Implemented in `src/copilot_model_provider/core/routing.py`.
 
 Behavior:
 
-- resolves a public alias to a `ResolvedRoute(runtime, runtime_model_id)`
-- raises a structured `model_not_found` error for unknown aliases
+- validates a public model ID against the live model set for the current auth context
+- resolves that model ID to `ResolvedRoute(runtime, runtime_model_id)`
+- raises a structured `model_not_found` error for unknown model IDs
 - produces the OpenAI-compatible `/v1/models` payload from the catalog
+- caches auth-context-specific catalog snapshots for a short TTL so repeated requests do not rediscover the same upstream model set on every call
+- coalesces concurrent requests for the same auth context so only one in-flight live-model discovery runs at a time
 
 The shipped `ModelRouter` explicitly implements `ModelRouterProtocol` so the
 composition root depends on a named routing contract rather than only on
 structural compatibility.
 
-The router is intentionally static:
+The router is intentionally stateless:
 
-- no dynamic catalog mutation API exists
-- no runtime-side model discovery is exposed through the default public catalog
+- no provider-owned catalog mutation API exists
+- no provider-owned alias layer exists on top of runtime model IDs
 - no fallback or weighted routing logic exists
+
+The cache is an implementation detail of discovery, not a provider-managed state surface:
+
+- cache keys are derived from the auth context without persisting raw bearer tokens
+- cache entries expire automatically and are rebuilt from the runtime on demand
 
 ## 7. Runtime Execution Model
 
@@ -282,7 +288,7 @@ The runtime uses two client modes.
 
 #### Shared default client
 
-Used when no bearer token is present.
+Used when no bearer token is present on the request and the runtime falls back to its configured auth context.
 
 Behavior:
 
@@ -302,7 +308,18 @@ Behavior:
 
 This keeps runtime auth request-scoped without introducing provider-owned identity state.
 
-### 7.4 Non-streaming execution
+### 7.4 Live model discovery
+
+Implemented in `CopilotRuntime.list_model_ids()`.
+
+Behavior:
+
+- selects the same auth context that request execution would use
+- starts the underlying Copilot client if needed
+- calls `CopilotClient.list_models()`
+- returns a stable, de-duplicated tuple of visible model IDs
+
+### 7.5 Non-streaming execution
 
 Implemented in `CopilotRuntime.complete_chat()`.
 
@@ -321,7 +338,7 @@ Structured failures include:
 - `runtime_invalid_response`
 - `runtime_unhealthy`
 
-### 7.5 Streaming execution
+### 7.6 Streaming execution
 
 Implemented in `CopilotRuntime.stream_chat()`.
 
@@ -490,7 +507,7 @@ The repository validates this design through multiple test layers.
 Validate:
 
 - normalization logic
-- catalog/router behavior
+- live model discovery and router behavior
 - runtime behavior
 - streaming translation helpers
 - config validation
@@ -516,7 +533,7 @@ Validate:
 
 Validate:
 
-- the shipped `default` alias through both chat and Responses in fast mode
+- one preferred visible live model through both chat and Responses in fast mode
 - every currently visible live Copilot model when full mode is explicitly requested
 
 These live sweeps are intentionally opt-in because they depend on real auth and are much slower than the default repository test path.

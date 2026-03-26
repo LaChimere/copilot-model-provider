@@ -1,6 +1,6 @@
 """Core contracts for the provider scaffold."""
 
-from .catalog import ModelCatalog, create_default_model_catalog
+from .catalog import ModelCatalog, build_live_model_catalog
 from .chat import (
     build_openai_chat_completion_response,
     normalize_openai_chat_request,
@@ -51,8 +51,8 @@ __all__ = [
     'ResolvedRoute',
     'RuntimeCompletion',
     'RuntimeHealth',
+    'build_live_model_catalog',
     'build_openai_chat_completion_response',
-    'create_default_model_catalog',
     'install_error_handlers',
     'normalize_openai_chat_request',
     'render_prompt',

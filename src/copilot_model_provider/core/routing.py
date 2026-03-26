@@ -1,9 +1,14 @@
-"""Routing helpers that translate public model aliases into runtime metadata."""
+"""Routing helpers that translate live public model IDs into runtime metadata."""
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, override, runtime_checkable
 
+from copilot_model_provider.core.catalog import build_live_model_catalog
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     OpenAIModelCard,
@@ -12,61 +17,99 @@ from copilot_model_provider.core.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from copilot_model_provider.core.catalog import ModelCatalog
+    from copilot_model_provider.runtimes.protocols import RuntimeProtocol
+
+DEFAULT_MODEL_CATALOG_TTL_SECONDS = 30.0
+DEFAULT_AUTH_CONTEXT_CACHE_KEY = '<default-auth-context>'
+
+
+@dataclass(frozen=True)
+class _CatalogCacheEntry:
+    """One cached live-model catalog snapshot for a specific auth context.
+
+    Attributes:
+        catalog: Snapshot built from the runtime-visible model ids.
+        expires_at: Monotonic clock deadline after which the snapshot is stale.
+
+    """
+
+    catalog: ModelCatalog
+    expires_at: float
 
 
 @runtime_checkable
 class ModelRouterProtocol(Protocol):
-    """Protocol contract for public-model listing and alias resolution."""
+    """Protocol contract for live public-model listing and resolution."""
 
-    @property
-    def model_catalog(self) -> ModelCatalog:
-        """Return the model catalog backing this routing policy."""
+    async def list_models_response(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> OpenAIModelListResponse:
+        """Build the public model-list response for one auth context."""
         ...
 
-    def list_models_response(self) -> OpenAIModelListResponse:
-        """Build the public model-list response for the compatibility layer."""
-        ...
-
-    def resolve_model(self, *, alias: str) -> ResolvedRoute:
-        """Resolve one public model alias into runtime routing metadata."""
+    async def resolve_model(
+        self,
+        *,
+        model_id: str,
+        runtime_auth_token: str | None = None,
+    ) -> ResolvedRoute:
+        """Resolve one public model identifier into runtime routing metadata."""
         ...
 
 
 class ModelRouter(ModelRouterProtocol):
-    """Resolve service-owned public model aliases into runtime routing metadata."""
+    """Resolve live public model IDs into runtime routing metadata."""
 
-    def __init__(self, *, model_catalog: ModelCatalog) -> None:
-        """Create a router bound to a validated model catalog.
+    def __init__(
+        self,
+        *,
+        runtime: RuntimeProtocol,
+        owned_by: str,
+        catalog_ttl_seconds: float = DEFAULT_MODEL_CATALOG_TTL_SECONDS,
+        time_factory: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Create a router that derives its public surface from one runtime.
 
         Args:
-            model_catalog: The service-owned catalog that defines public aliases
-                and the runtime metadata they should map to.
+            runtime: Runtime used for live model discovery and execution metadata.
+            owned_by: Owner label exposed through the compatibility surface.
+            catalog_ttl_seconds: Duration for which one auth-context-specific
+                live-model snapshot may be reused before rediscovery.
+            time_factory: Monotonic clock source used for cache expiry checks.
 
         """
-        self._model_catalog = model_catalog
+        if catalog_ttl_seconds <= 0:
+            msg = 'catalog_ttl_seconds must be positive'
+            raise ValueError(msg)
 
-    @property
-    @override
-    def model_catalog(self) -> ModelCatalog:
-        """Return the catalog backing this router.
-
-        Returns:
-            The ``ModelCatalog`` used for public model listing and alias
-            resolution.
-
-        """
-        return self._model_catalog
+        self._runtime = runtime
+        self._owned_by = owned_by
+        self._catalog_ttl_seconds = catalog_ttl_seconds
+        self._time_factory = time_factory
+        self._catalog_cache: dict[str, _CatalogCacheEntry] = {}
+        self._catalog_build_locks: dict[str, asyncio.Lock] = {}
 
     @override
-    def list_models_response(self) -> OpenAIModelListResponse:
+    async def list_models_response(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> OpenAIModelListResponse:
         """Build the OpenAI-compatible model listing response.
 
         Returns:
-            An ``OpenAIModelListResponse`` containing one card per public alias
-            in the catalog, preserving the catalog's stable ordering.
+            An ``OpenAIModelListResponse`` containing one card per live model ID
+            visible to the supplied auth context, preserving runtime ordering.
 
         """
+        model_catalog = await self._build_model_catalog(
+            runtime_auth_token=runtime_auth_token
+        )
         return OpenAIModelListResponse(
             data=[
                 OpenAIModelCard(
@@ -74,28 +117,39 @@ class ModelRouter(ModelRouterProtocol):
                     created=entry.created,
                     owned_by=entry.owned_by,
                 )
-                for entry in self.model_catalog.list_entries()
+                for entry in model_catalog.list_entries()
             ]
         )
 
     @override
-    def resolve_model(self, *, alias: str) -> ResolvedRoute:
-        """Resolve a public model alias into runtime routing metadata.
+    async def resolve_model(
+        self,
+        *,
+        model_id: str,
+        runtime_auth_token: str | None = None,
+    ) -> ResolvedRoute:
+        """Resolve a public model identifier into runtime routing metadata.
 
         Args:
-            alias: The public alias requested by a compatibility-layer client.
+            model_id: The public model identifier requested by a client.
+            runtime_auth_token: Optional auth token used to discover the live
+                model set that should be used for validation.
 
         Returns:
             A ``ResolvedRoute`` describing which runtime and runtime model ID
-            should handle requests for the alias.
+            should handle requests for the supplied model identifier.
 
         Raises:
-            ProviderError: If the alias is unknown to the service-owned catalog.
+            ProviderError: If the model identifier is not visible to the current
+                auth context.
 
         """
-        entry = self.model_catalog.get_entry(alias=alias)
+        model_catalog = await self._build_model_catalog(
+            runtime_auth_token=runtime_auth_token
+        )
+        entry = model_catalog.get_entry(alias=model_id)
         if entry is None:
-            msg = f'Unknown model alias: {alias!r}'
+            msg = f'Unknown model: {model_id!r}'
             raise ProviderError(
                 code='model_not_found',
                 message=msg,
@@ -106,3 +160,54 @@ class ModelRouter(ModelRouterProtocol):
             runtime=entry.runtime,
             runtime_model_id=entry.runtime_model_id,
         )
+
+    async def _build_model_catalog(
+        self,
+        *,
+        runtime_auth_token: str | None,
+    ) -> ModelCatalog:
+        """Build or reuse one auth-context-specific catalog snapshot."""
+        cache_key = self._build_cache_key(runtime_auth_token)
+        now = self._time_factory()
+        self._prune_expired_cache(now)
+        cached_entry = self._catalog_cache.get(cache_key)
+        if cached_entry is not None and cached_entry.expires_at > now:
+            return cached_entry.catalog
+
+        build_lock = self._catalog_build_locks.setdefault(cache_key, asyncio.Lock())
+        async with build_lock:
+            now = self._time_factory()
+            self._prune_expired_cache(now)
+            cached_entry = self._catalog_cache.get(cache_key)
+            if cached_entry is not None and cached_entry.expires_at > now:
+                return cached_entry.catalog
+
+            model_ids = await self._runtime.list_model_ids(
+                runtime_auth_token=runtime_auth_token
+            )
+            catalog = build_live_model_catalog(
+                runtime=self._runtime.runtime_name,
+                owned_by=self._owned_by,
+                model_ids=model_ids,
+            )
+            self._catalog_cache[cache_key] = _CatalogCacheEntry(
+                catalog=catalog,
+                expires_at=self._time_factory() + self._catalog_ttl_seconds,
+            )
+            return catalog
+
+    def _build_cache_key(self, runtime_auth_token: str | None) -> str:
+        """Return a stable cache key for one auth context without storing raw tokens."""
+        if runtime_auth_token is None:
+            return DEFAULT_AUTH_CONTEXT_CACHE_KEY
+
+        token_digest = hashlib.sha256(runtime_auth_token.encode('utf-8')).hexdigest()
+        return f'token:{token_digest}'
+
+    def _prune_expired_cache(self, now: float) -> None:
+        """Drop expired cached catalogs before servicing a new lookup."""
+        expired_keys = [
+            key for key, entry in self._catalog_cache.items() if entry.expires_at <= now
+        ]
+        for key in expired_keys:
+            self._catalog_cache.pop(key, None)

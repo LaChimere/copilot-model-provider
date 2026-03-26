@@ -1,4 +1,4 @@
-"""Opt-in live sweeps for default and all-visible Copilot models."""
+"""Opt-in live sweeps for one preferred or all visible Copilot models."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ from typing import cast
 import pytest
 
 from copilot_model_provider.config import ProviderSettings
-from copilot_model_provider.core.catalog import ModelCatalog
-from copilot_model_provider.core.models import ModelCatalogEntry
 from tests.harness import build_async_client
 from tests.runtime_support import list_live_model_ids, resolve_github_token
 
@@ -48,57 +46,27 @@ def _run_full_live_sweep() -> bool:
     return os.environ.get(_RUN_FULL_LIVE_SWEEP_ENV) == '1'
 
 
-def _build_live_model_catalog(*, model_ids: list[str]) -> ModelCatalog:
-    """Expose each live runtime model identifier as a direct public alias.
-
-    Args:
-        model_ids: The live Copilot runtime model identifiers returned by the
-            current auth context.
-
-    Returns:
-        A ``ModelCatalog`` that maps every live runtime model identifier to a
-        same-name public alias for the duration of the sweep.
-
-    """
-    return ModelCatalog(
-        entries=tuple(
-            ModelCatalogEntry(
-                alias=model_id,
-                runtime='copilot',
-                owned_by='live-model-sweep',
-                runtime_model_id=model_id,
-            )
-            for model_id in model_ids
-        )
-    )
-
-
-async def _resolve_sweep_targets(
-    *,
-    github_token: str,
-) -> tuple[list[str], ModelCatalog | None, str]:
-    """Resolve which model aliases the current live sweep should execute.
+async def _resolve_sweep_targets(*, github_token: str) -> tuple[list[str], str]:
+    """Resolve which live model IDs the current sweep should execute.
 
     Args:
         github_token: Real GitHub bearer token used for runtime execution when
             the caller opted into the full all-model sweep.
 
     Returns:
-        A tuple containing:
-        - the model aliases to request from the provider
-        - an optional custom catalog override
-        - a human-readable sweep mode label for diagnostics
+        A tuple containing the model IDs to request from the provider and a
+        human-readable sweep mode label for diagnostics.
 
     """
-    if not _run_full_live_sweep():
-        return ['default'], None, 'default'
-
     model_ids = await list_live_model_ids(github_token=github_token)
-    return (
-        model_ids,
-        _build_live_model_catalog(model_ids=model_ids),
-        'all-visible-models',
-    )
+    if not model_ids:
+        return [], 'no-visible-models'
+
+    if not _run_full_live_sweep():
+        preferred_model_id = 'gpt-5.4' if 'gpt-5.4' in model_ids else model_ids[0]
+        return [preferred_model_id], 'preferred-live-model'
+
+    return (model_ids, 'all-visible-models')
 
 
 def _extract_completion_text(payload: object) -> str | None:
@@ -204,16 +172,12 @@ async def _run_live_chat_sweep(
     *,
     github_token: str,
     model_ids: list[str],
-    model_catalog: ModelCatalog | None,
 ) -> list[str]:
     """Run the live chat sweep through ``POST /v1/chat/completions``.
 
     Args:
         github_token: Real GitHub bearer token used for runtime execution.
-        model_ids: Provider model aliases requested during the current sweep.
-        model_catalog: Optional custom catalog override used for the explicit
-            all-model sweep. ``None`` keeps the repository's shipped default
-            catalog in place for the fast default-mode sweep.
+        model_ids: Provider model IDs requested during the current sweep.
 
     Returns:
         A list of failure descriptions. An empty list means all models passed.
@@ -226,10 +190,7 @@ async def _run_live_chat_sweep(
     )
     failures: list[str] = []
 
-    async with build_async_client(
-        settings=settings,
-        model_catalog=model_catalog,
-    ) as client:
+    async with build_async_client(settings=settings) as client:
         for model_id in model_ids:
             response = await client.post(
                 '/v1/chat/completions',
@@ -263,16 +224,12 @@ async def _run_live_responses_sweep(
     *,
     github_token: str,
     model_ids: list[str],
-    model_catalog: ModelCatalog | None,
 ) -> list[str]:
     """Run the live Responses sweep through ``POST /v1/responses``.
 
     Args:
         github_token: Real GitHub bearer token used for runtime execution.
-        model_ids: Provider model aliases requested during the current sweep.
-        model_catalog: Optional custom catalog override used for the explicit
-            all-model sweep. ``None`` keeps the repository's shipped default
-            catalog in place for the fast default-mode sweep.
+        model_ids: Provider model IDs requested during the current sweep.
 
     Returns:
         A list of failure descriptions. An empty list means all models passed.
@@ -285,10 +242,7 @@ async def _run_live_responses_sweep(
     )
     failures: list[str] = []
 
-    async with build_async_client(
-        settings=settings,
-        model_catalog=model_catalog,
-    ) as client:
+    async with build_async_client(settings=settings) as client:
         for model_id in model_ids:
             response = await client.post(
                 '/v1/responses',
@@ -322,11 +276,10 @@ async def _run_live_responses_sweep(
 async def test_live_models_complete_successfully() -> None:
     """Verify that the configured live chat sweep succeeds through the provider.
 
-    By default, the opt-in live sweep exercises only the shipped `default`
-    alias so the check stays fast. When
+    By default, the opt-in live sweep exercises one preferred visible live model
+    so the check stays fast. When
     ``COPILOT_MODEL_PROVIDER_RUN_LIVE_MODEL_SWEEP_ALL=1`` is also set, the test
-    expands to every currently visible live Copilot model by installing a
-    temporary same-name catalog for the duration of the sweep.
+    expands to every currently visible live Copilot model.
 
     """
     _require_live_sweep_opt_in()
@@ -338,15 +291,12 @@ async def test_live_models_complete_successfully() -> None:
             'GITHUB_TOKEN/GH_TOKEN or `gh auth token`.'
         )
 
-    model_ids, model_catalog, sweep_mode = await _resolve_sweep_targets(
-        github_token=github_token
-    )
+    model_ids, sweep_mode = await _resolve_sweep_targets(github_token=github_token)
     assert model_ids, 'Expected at least one live Copilot model to be visible.'
 
     failures = await _run_live_chat_sweep(
         github_token=github_token,
         model_ids=model_ids,
-        model_catalog=model_catalog,
     )
     assert not failures, f'Live chat sweep ({sweep_mode}) failed:\n' + '\n'.join(
         failures
@@ -359,9 +309,9 @@ async def test_live_models_responses_complete_successfully() -> None:
 
     This complements the chat-completions live sweep so the provider's two
     implemented northbound execution routes are both covered under the same
-    real-auth validation mode. The default opt-in path stays on the shipped
-    `default` alias, while the explicit all-model mode expands to every visible
-    live Copilot model.
+    real-auth validation mode. The default opt-in path stays on one preferred
+    visible live model, while the explicit all-model mode expands to every
+    visible live Copilot model.
 
     """
     _require_live_sweep_opt_in()
@@ -373,15 +323,12 @@ async def test_live_models_responses_complete_successfully() -> None:
             'GITHUB_TOKEN/GH_TOKEN or `gh auth token`.'
         )
 
-    model_ids, model_catalog, sweep_mode = await _resolve_sweep_targets(
-        github_token=github_token
-    )
+    model_ids, sweep_mode = await _resolve_sweep_targets(github_token=github_token)
     assert model_ids, 'Expected at least one live Copilot model to be visible.'
 
     failures = await _run_live_responses_sweep(
         github_token=github_token,
         model_ids=model_ids,
-        model_catalog=model_catalog,
     )
     assert not failures, f'Live responses sweep ({sweep_mode}) failed:\n' + '\n'.join(
         failures

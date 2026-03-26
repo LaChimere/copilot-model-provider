@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import subprocess
 import time
@@ -13,7 +14,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from tests.runtime_support import resolve_github_token
+from tests.runtime_support import list_live_model_ids, resolve_github_token
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -22,6 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _IMAGE_TAG = f'copilot-model-provider:integration-{uuid4().hex[:12]}'
 _CONTAINER_NAME = f'copilot-model-provider-integration-{uuid4().hex[:12]}'
 _CONTAINER_PORT = 8000
+_HEALTH_PATH = '/_internal/health'
 _READY_TIMEOUT_SECONDS = 90.0
 _REQUEST_TIMEOUT = httpx.Timeout(180.0)
 _DOCKER_EXECUTABLE = which('docker')
@@ -118,7 +120,7 @@ def _wait_for_container(base_url: str) -> None:
     with httpx.Client(base_url=base_url, timeout=5.0) as client:
         while time.monotonic() < deadline:
             try:
-                response = client.get('/v1/models')
+                response = client.get(_HEALTH_PATH)
                 if response.status_code == 200:
                     return
                 last_error = f'unexpected status {response.status_code}'
@@ -156,11 +158,17 @@ def integration_github_token() -> str:
 
 
 @pytest.fixture(scope='session')
-def integration_base_url(integration_image: str) -> Iterator[str]:
+def integration_base_url(
+    integration_image: str,
+    integration_github_token: str,
+) -> Iterator[str]:
     """Start the production container and expose its base URL for tests.
 
     Args:
         integration_image: The Docker image tag built for this pytest session.
+        integration_github_token: Real GitHub auth token injected into the
+            container so unauthenticated route calls can reuse the runtime
+            fallback token behavior.
 
     Yields:
         The localhost base URL for the running test container.
@@ -173,6 +181,8 @@ def integration_base_url(integration_image: str) -> Iterator[str]:
         '--detach',
         '--name',
         _CONTAINER_NAME,
+        '--env',
+        f'GITHUB_TOKEN={integration_github_token}',
         '--publish',
         f'{host_port}:{_CONTAINER_PORT}',
         integration_image,
@@ -200,3 +210,21 @@ def integration_client(integration_base_url: str) -> Iterator[httpx.Client]:
         base_url=integration_base_url, timeout=_REQUEST_TIMEOUT
     ) as client:
         yield client
+
+
+@pytest.fixture(scope='session')
+def integration_model_ids(integration_github_token: str) -> list[str]:
+    """Return the live model IDs visible to the integration auth context."""
+    return asyncio.run(list_live_model_ids(github_token=integration_github_token))
+
+
+@pytest.fixture(scope='session')
+def integration_model_id(integration_model_ids: list[str]) -> str:
+    """Return the preferred live model ID used by chat/responses integration tests."""
+    if not integration_model_ids:
+        pytest.skip('Integration tests require at least one live Copilot model.')
+
+    if 'gpt-5.4' in integration_model_ids:
+        return 'gpt-5.4'
+
+    return integration_model_ids[0]

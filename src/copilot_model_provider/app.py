@@ -12,7 +12,6 @@ from .api.openai_chat import install_openai_chat_route
 from .api.openai_models import install_openai_models_route
 from .api.openai_responses import install_openai_responses_route
 from .config import ProviderSettings
-from .core.catalog import ModelCatalog, create_default_model_catalog
 from .core.errors import install_error_handlers
 from .core.models import InternalHealthResponse
 from .core.routing import ModelRouter, ModelRouterProtocol
@@ -29,7 +28,6 @@ def create_app(
     settings: ProviderSettings | None = None,
     *,
     runtime: RuntimeProtocol | None = None,
-    model_catalog: ModelCatalog | None = None,
     model_router: ModelRouterProtocol | None = None,
 ) -> FastAPI:
     """Create the provider's FastAPI application scaffold.
@@ -42,7 +40,6 @@ def create_app(
     Args:
         settings: Optional pre-built settings to bind onto the application.
         runtime: Optional runtime to store in application state.
-        model_catalog: Optional pre-built service-owned model catalog.
         model_router: Optional router for model listing and alias resolution.
 
     Returns:
@@ -60,11 +57,10 @@ def create_app(
     resolved_router = _require_model_router(
         model_router
         or ModelRouter(
-            model_catalog=model_catalog
-            or create_default_model_catalog(settings=resolved_settings)
+            runtime=resolved_runtime,
+            owned_by=resolved_settings.app_name,
         )
     )
-    resolved_catalog = resolved_router.model_catalog
 
     app = FastAPI(
         title=resolved_settings.app_name,
@@ -74,12 +70,15 @@ def create_app(
     )
     app.state.settings = resolved_settings
     app.state.runtime = resolved_runtime
-    app.state.model_catalog = resolved_catalog
     app.state.model_router = resolved_router
 
     _install_request_logging_middleware(app)
     install_error_handlers(app)
-    install_openai_models_route(app, model_router=resolved_router)
+    install_openai_models_route(
+        app,
+        default_runtime_auth_token=resolved_settings.runtime_auth_token,
+        model_router=resolved_router,
+    )
     install_openai_chat_route(
         app,
         default_runtime_auth_token=resolved_settings.runtime_auth_token,

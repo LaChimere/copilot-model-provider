@@ -1,4 +1,4 @@
-"""Service-owned model catalog helpers."""
+"""Helpers for model-catalog snapshots derived from live runtime discovery."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 from copilot_model_provider.core.models import ModelCatalogEntry
 
 if TYPE_CHECKING:
-    from copilot_model_provider.config import ProviderSettings
+    from collections.abc import Iterable
 
 
 @dataclass(frozen=True, slots=True)
 class ModelCatalog:
-    """Store and validate the service-owned set of public model aliases."""
+    """Store and validate one public model-catalog snapshot."""
 
     entries: tuple[ModelCatalogEntry, ...]
 
@@ -51,31 +51,32 @@ class ModelCatalog:
         return None
 
 
-def create_default_model_catalog(*, settings: ProviderSettings) -> ModelCatalog:
-    """Build the repository's default service-owned model catalog.
+def build_live_model_catalog(
+    *,
+    runtime: str,
+    owned_by: str,
+    model_ids: Iterable[str],
+) -> ModelCatalog:
+    """Build one catalog snapshot from live runtime model identifiers.
 
     Args:
-        settings: Application settings that supply the default runtime name and
-            the owner label exposed through the compatibility surface.
+        runtime: Stable runtime name that should back every exposed model.
+        owned_by: Owner label exposed through the compatibility surface.
+        model_ids: Visible runtime model identifiers for the current auth context.
 
     Returns:
-        A ``ModelCatalog`` containing the stable public aliases served by the
-        application.
+        A ``ModelCatalog`` that exposes each runtime model identifier as the same
+        public model identifier.
 
     """
     return ModelCatalog(
-        entries=(
+        entries=tuple(
             ModelCatalogEntry(
-                alias='default',
-                runtime=settings.default_runtime,
-                owned_by=settings.app_name,
-                runtime_model_id=f'{settings.default_runtime}-default',
-            ),
-            ModelCatalogEntry(
-                alias='fast',
-                runtime=settings.default_runtime,
-                owned_by=settings.app_name,
-                runtime_model_id=f'{settings.default_runtime}-fast',
-            ),
+                alias=model_id,
+                runtime=runtime,
+                owned_by=owned_by,
+                runtime_model_id=model_id,
+            )
+            for model_id in model_ids
         )
     )

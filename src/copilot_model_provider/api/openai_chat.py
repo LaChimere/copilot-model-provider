@@ -63,10 +63,13 @@ def install_openai_chat_route(
     ) -> OpenAIChatCompletionResponse | StreamingResponse:
         """Execute a chat completion through the runtime."""
         request_id = uuid4().hex
-        route = model_router.resolve_model(alias=request.model)
         runtime_auth_token = resolve_runtime_auth_token(
             authorization_header=authorization_header,
             default_token=default_runtime_auth_token,
+        )
+        route = await model_router.resolve_model(
+            model_id=request.model,
+            runtime_auth_token=runtime_auth_token,
         )
         canonical_request = normalize_openai_chat_request(
             request=request,

@@ -67,7 +67,7 @@ def normalize_openai_responses_request(
         request_id=request_id,
         conversation_id=conversation_id,
         runtime_auth_token=runtime_auth_token,
-        model_alias=request.model,
+        model_id=request.model,
         messages=messages,
         stream=request.stream,
     )

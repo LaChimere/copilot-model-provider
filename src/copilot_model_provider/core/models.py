@@ -45,7 +45,7 @@ class CanonicalChatRequest(BaseModel):
     request_id: str | None = None
     conversation_id: str | None = None
     runtime_auth_token: str | None = None
-    model_alias: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
     messages: list[CanonicalChatMessage] = Field(min_length=1)
     stream: bool = False
 

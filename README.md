@@ -13,7 +13,7 @@ Today it contains:
 - the canonical architecture/design document in `docs/design.md`
 - an approved MVP planning slug in `plans/copilot-model-provider-mvp/`
 - a FastAPI app scaffold with an internal health endpoint
-- a service-owned model catalog and OpenAI-compatible `GET /v1/models`
+- auth-aware live model discovery and OpenAI-compatible `GET /v1/models`
 - an OpenAI-compatible `POST /v1/chat/completions` supporting non-streaming and streaming SSE behavior
 - a thin OpenAI-compatible `POST /v1/responses` surface for Codex-style clients
 - a Copilot SDK-backed runtime for thin stateless chat execution
@@ -35,7 +35,7 @@ Available today:
 
 Minimum release-gate coverage now includes:
 
-- `/v1/models` alias advertisement
+- `/v1/models` live model advertisement
 - non-streaming chat
 - streaming SSE framing
 - thin `/v1/responses` compatibility
@@ -48,7 +48,7 @@ At a high level, the target system is:
 1. a **northbound compatibility layer**
    for OpenAI-style clients first, with room for additional protocol facades later
 2. a **canonical core**
-   for request normalization, model catalog, routing, and event translation
+   for request normalization, live model discovery, routing, and event translation
 3. a **Copilot runtime**
    that uses `copilot-sdk` as the first execution backend
 
@@ -71,7 +71,7 @@ In scope:
 - `POST /v1/chat/completions`
 - SSE streaming for chat completions
 - thin OpenAI-compatible `/v1/responses`
-- a service-owned model catalog
+- auth-aware live Copilot model exposure
 - a Copilot runtime
 - subprocess-backed request-scoped GitHub bearer-token passthrough
 
@@ -182,7 +182,16 @@ The provider forwards the selected token into a short-lived subprocess-backed Co
 
 ### Local Codex / custom-provider baseline
 
-For local Codex testing, the repository now exposes a thin OpenAI-compatible `/v1/responses` route and expects Codex to forward a GitHub token through `env_key = "GITHUB_TOKEN"`.
+For local Codex testing, the repository now exposes a thin OpenAI-compatible `/v1/responses` route and includes `scripts/config_codex.py` to:
+
+- resolve `gh auth token`
+- start or restart the local container on the requested port
+- back up `~/.codex/config.toml`
+- point Codex at the local provider
+- default the configured model to `gpt-5.4`
+- fail fast if the requested model is not visible from the running service's auth context
+
+Visible model IDs depend on the bearer token or fallback container token that the running provider sees. `GET /v1/models` is the canonical source of truth for what Codex may request.
 
 See `.env.example` for the minimal local environment contract.
 
@@ -213,7 +222,7 @@ The repository also includes a real-auth live sweep for the provider's
 implemented northbound execution routes:
 
 ```bash
-# Fast mode: verify the shipped `default` alias through chat + responses
+# Fast mode: verify one preferred visible live model through chat + responses
 COPILOT_MODEL_PROVIDER_RUN_LIVE_MODEL_SWEEP=1 \
   uv run pytest -q tests/live_tests/test_all_models.py -s
 

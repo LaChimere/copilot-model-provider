@@ -39,6 +39,13 @@ class _FakeEvent:
     type: str = 'assistant.message'
 
 
+@dataclass
+class _FakeListedModel:
+    """Minimal fake model descriptor matching the runtime discovery path."""
+
+    id: str
+
+
 class _FakeSession:
     """Deterministic fake Copilot session for runtime tests."""
 
@@ -113,10 +120,17 @@ class _FakeSession:
 class _FakeClient:
     """Deterministic fake Copilot client for runtime tests."""
 
-    def __init__(self, *, session: _FakeSession, state: str = 'disconnected') -> None:
+    def __init__(
+        self,
+        *,
+        session: _FakeSession,
+        state: str = 'disconnected',
+        listed_models: list[_FakeListedModel] | None = None,
+    ) -> None:
         """Store the fake session and initial lifecycle state."""
         self._session = session
         self._state = state
+        self._listed_models = listed_models or []
         self.started = False
         self.stopped = False
         self.create_session_calls: list[dict[str, Any]] = []
@@ -156,6 +170,10 @@ class _FakeClient:
         )
         return self._session
 
+    async def list_models(self) -> list[_FakeListedModel]:
+        """Return the configured fake live-model list."""
+        return self._listed_models
+
 
 def _build_request(
     *,
@@ -165,7 +183,7 @@ def _build_request(
     """Construct a stable canonical request used by runtime tests."""
     return CanonicalChatRequest(
         runtime_auth_token=runtime_auth_token,
-        model_alias='default',
+        model_id='gpt-5.4',
         messages=[CanonicalChatMessage(role='user', content='Hello')],
         stream=stream,
     )
@@ -321,6 +339,53 @@ async def test_copilot_runtime_uses_authenticated_client_factory_for_bearer_toke
     assert authed_client.started is True
     assert authed_client.stopped is True
     assert completion.output_text == 'Hi from authed client'
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_lists_live_model_ids_from_default_client() -> None:
+    """Verify that model discovery uses the shared default client by default."""
+    client = _FakeClient(
+        session=_FakeSession(),
+        listed_models=[
+            _FakeListedModel(id='gpt-5.4'),
+            _FakeListedModel(id='gpt-5.4-mini'),
+            _FakeListedModel(id='gpt-5.4'),
+        ],
+    )
+    runtime = CopilotRuntime(client_factory=lambda: cast('CopilotClient', client))
+
+    model_ids = await runtime.list_model_ids()
+
+    assert model_ids == ('gpt-5.4', 'gpt-5.4-mini')
+    assert client.started is True
+    assert client.stopped is False
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_lists_live_model_ids_with_authenticated_client() -> None:
+    """Verify that auth-scoped model discovery uses a short-lived client."""
+    default_client = _FakeClient(session=_FakeSession())
+    authed_client = _FakeClient(
+        session=_FakeSession(),
+        listed_models=[_FakeListedModel(id='gpt-5.4')],
+    )
+    captured_tokens: list[str] = []
+    runtime = CopilotRuntime(
+        client_factory=lambda: cast('CopilotClient', default_client),
+        authenticated_client_factory=lambda token: (
+            captured_tokens.append(token) or cast('CopilotClient', authed_client)
+        ),
+    )
+
+    model_ids = await runtime.list_model_ids(
+        runtime_auth_token='github-token-123'  # noqa: S106 - deterministic test token
+    )
+
+    assert model_ids == ('gpt-5.4',)
+    assert captured_tokens == ['github-token-123']
+    assert default_client.started is False
+    assert authed_client.started is True
+    assert authed_client.stopped is True
 
 
 def test_copilot_runtime_denies_runtime_permission_requests() -> None:

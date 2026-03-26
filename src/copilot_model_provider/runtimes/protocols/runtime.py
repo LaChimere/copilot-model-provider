@@ -59,6 +59,25 @@ class RuntimeProtocol(Protocol):
         """Return runtime health metadata for internal diagnostics."""
         ...
 
+    async def list_model_ids(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return the live runtime model identifiers for one auth context.
+
+        Args:
+            runtime_auth_token: Optional request-scoped bearer token that should
+                override the runtime's configured default auth context for this
+                discovery call.
+
+        Returns:
+            A stable, de-duplicated tuple of runtime model identifiers visible to
+            the supplied auth context.
+
+        """
+        ...
+
     async def complete_chat(
         self,
         *,

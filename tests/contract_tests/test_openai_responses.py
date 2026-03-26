@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 class _FakeResponsesRuntime(RuntimeProtocol):
     """Deterministic runtime used by Responses HTTP contract tests."""
 
+    supported_model_ids = ('gpt-5.4', 'gpt-5.4-mini')
+
     def __init__(self) -> None:
         """Initialize the fake runtime state."""
         self.last_request: CanonicalChatRequest | None = None
@@ -46,6 +48,16 @@ class _FakeResponsesRuntime(RuntimeProtocol):
     async def check_health(self) -> RuntimeHealth:
         """Return a healthy fake runtime payload for internal diagnostics."""
         return RuntimeHealth(runtime='copilot', available=True, detail='ok')
+
+    @override
+    async def list_model_ids(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return a deterministic live-model snapshot for the fake runtime."""
+        del runtime_auth_token
+        return self.supported_model_ids
 
     @override
     async def complete_chat(
@@ -151,7 +163,7 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
     """Verify that the Responses route returns the expected non-streaming payload."""
     runtime = _FakeResponsesRuntime()
     payload: dict[str, object] = {
-        'model': 'default',
+        'model': 'gpt-5.4',
         'instructions': 'Be terse',
         'input': [
             {
@@ -178,7 +190,7 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
     assert response.status_code == 200
     assert payload['object'] == 'response'
     assert payload['status'] == 'completed'
-    assert payload['model'] == 'default'
+    assert payload['model'] == 'gpt-5.4'
     assert output[0]['type'] == 'message'
     assert content[0]['type'] == 'output_text'
     assert content[0]['text'] == 'Hello from the fake runtime.'
@@ -206,7 +218,7 @@ async def test_post_responses_extracts_bearer_token() -> None:
                 'Authorization': 'Bearer github-token-123',
             },
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'input': 'Hello',
             },
         )
@@ -230,7 +242,7 @@ async def test_post_responses_fall_back_to_configured_runtime_token() -> None:
         response = await client.post(
             '/v1/responses',
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'input': 'Hello',
             },
         )
@@ -257,7 +269,7 @@ async def test_post_responses_prefer_request_auth_over_configured_runtime_token(
             '/v1/responses',
             headers={'Authorization': 'Bearer github-token-123'},
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'input': 'Hello',
             },
         )
@@ -276,7 +288,7 @@ async def test_post_responses_streams_openai_compatible_sse_frames() -> None:
             'POST',
             '/v1/responses',
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'stream': True,
                 'input': 'Hello',
             },
@@ -301,7 +313,7 @@ async def test_post_responses_streaming_deduplicates_final_aggregate_message() -
             'POST',
             '/v1/responses',
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'stream': True,
                 'input': 'Hello',
             },

@@ -97,6 +97,36 @@ class CopilotRuntime(RuntimeProtocol):
         )
 
     @override
+    async def list_model_ids(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[str, ...]:
+        """List the live Copilot model identifiers for one auth context."""
+        resolved_client = await self._get_client_for_runtime_auth_token(
+            runtime_auth_token=runtime_auth_token
+        )
+        await self._ensure_client_started(resolved_client.client)
+        try:
+            models = await resolved_client.client.list_models()
+        except Exception as error:
+            raise ProviderError(
+                code='runtime_execution_failed',
+                message=f'Copilot runtime model discovery failed: {error}',
+                status_code=502,
+            ) from error
+        finally:
+            if resolved_client.stop_on_close:
+                await self._stop_client(resolved_client.client)
+
+        model_ids = [
+            model_id
+            for model in models
+            if isinstance((model_id := getattr(model, 'id', None)), str) and model_id
+        ]
+        return tuple(dict.fromkeys(model_ids))
+
+    @override
     async def complete_chat(
         self,
         *,
@@ -293,11 +323,21 @@ class CopilotRuntime(RuntimeProtocol):
         request: CanonicalChatRequest,
     ) -> _ResolvedCopilotClient:
         """Resolve the Copilot client that should execute one canonical request."""
-        if request.runtime_auth_token is None:
+        return await self._get_client_for_runtime_auth_token(
+            runtime_auth_token=request.runtime_auth_token
+        )
+
+    async def _get_client_for_runtime_auth_token(
+        self,
+        *,
+        runtime_auth_token: str | None,
+    ) -> _ResolvedCopilotClient:
+        """Resolve the Copilot client that should use one auth context."""
+        if runtime_auth_token is None:
             return self._ResolvedCopilotClient(client=self._get_or_create_client())
 
         return self._ResolvedCopilotClient(
-            client=self._authenticated_client_factory(request.runtime_auth_token),
+            client=self._authenticated_client_factory(runtime_auth_token),
             stop_on_close=True,
         )
 

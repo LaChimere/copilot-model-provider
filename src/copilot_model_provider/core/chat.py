@@ -44,7 +44,7 @@ def normalize_openai_chat_request(
         request_id=request_id,
         conversation_id=conversation_id,
         runtime_auth_token=runtime_auth_token,
-        model_alias=request.model,
+        model_id=request.model,
         messages=[
             CanonicalChatMessage(role=message.role, content=message.content)
             for message in request.messages

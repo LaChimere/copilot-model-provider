@@ -8,16 +8,17 @@ if TYPE_CHECKING:
     import httpx
 
 
-def test_container_chat_completion_supports_default_alias(
+def test_container_chat_completion_supports_live_model_id(
     integration_client: httpx.Client,
     integration_github_token: str,
+    integration_model_id: str,
 ) -> None:
-    """Verify that the default alias completes through the real container runtime."""
+    """Verify that one live model ID completes through the real container runtime."""
     response = integration_client.post(
         '/v1/chat/completions',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
-            'model': 'default',
+            'model': integration_model_id,
             'messages': [
                 {
                     'role': 'user',
@@ -30,20 +31,20 @@ def test_container_chat_completion_supports_default_alias(
     assert response.status_code == 200
     payload = response.json()
     assert payload['object'] == 'chat.completion'
-    assert payload['model'] == 'default'
+    assert payload['model'] == integration_model_id
     assert payload['choices'][0]['message']['content'].strip() == 'DEFAULT_PING'
 
 
-def test_container_chat_completion_supports_fast_alias(
+def test_container_chat_completion_rejects_unknown_model_id(
     integration_client: httpx.Client,
     integration_github_token: str,
 ) -> None:
-    """Verify that the fast alias completes through the real container runtime."""
+    """Verify that unknown live model IDs fail with the structured error contract."""
     response = integration_client.post(
         '/v1/chat/completions',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
-            'model': 'fast',
+            'model': 'missing-model-id',
             'messages': [
                 {
                     'role': 'user',
@@ -53,8 +54,5 @@ def test_container_chat_completion_supports_fast_alias(
         },
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload['object'] == 'chat.completion'
-    assert payload['model'] == 'fast'
-    assert payload['choices'][0]['message']['content'].strip() == 'FAST_PING'
+    assert response.status_code == 404
+    assert response.json()['error']['code'] == 'model_not_found'

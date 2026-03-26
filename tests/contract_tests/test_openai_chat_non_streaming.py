@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 class _FakeChatRuntime(RuntimeProtocol):
     """Deterministic runtime used by HTTP contract tests."""
 
+    supported_model_ids = ('gpt-5.4', 'gpt-5.4-mini')
+
     def __init__(self) -> None:
         """Initialize the fake runtime state."""
         self.last_request: CanonicalChatRequest | None = None
@@ -46,6 +48,16 @@ class _FakeChatRuntime(RuntimeProtocol):
     async def check_health(self) -> RuntimeHealth:
         """Return a healthy fake runtime payload for internal diagnostics."""
         return RuntimeHealth(runtime='copilot', available=True, detail='ok')
+
+    @override
+    async def list_model_ids(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return a deterministic live-model snapshot for the fake runtime."""
+        del runtime_auth_token
+        return self.supported_model_ids
 
     @override
     async def complete_chat(
@@ -159,7 +171,7 @@ async def test_post_chat_completions_returns_openai_compatible_payload() -> None
         response = await client.post(
             '/v1/chat/completions',
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
         )
@@ -169,7 +181,7 @@ async def test_post_chat_completions_returns_openai_compatible_payload() -> None
     assert payload['id'] == 'chatcmpl-contract'
     assert payload['object'] == 'chat.completion'
     assert isinstance(payload['created'], int)
-    assert payload['model'] == 'default'
+    assert payload['model'] == 'gpt-5.4'
     assert payload['choices'] == [
         {
             'index': 0,
@@ -198,7 +210,7 @@ async def test_post_chat_completions_extracts_bearer_token() -> None:
             '/v1/chat/completions',
             headers={'Authorization': 'Bearer github-token-123'},
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
         )
@@ -222,7 +234,7 @@ async def test_post_chat_completions_fall_back_to_configured_runtime_token() -> 
         response = await client.post(
             '/v1/chat/completions',
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
         )
@@ -249,7 +261,7 @@ async def test_post_chat_completions_prefer_request_auth_over_configured_runtime
             '/v1/chat/completions',
             headers={'Authorization': 'Bearer github-token-123'},
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
         )
@@ -267,7 +279,7 @@ async def test_post_chat_completions_rejects_non_bearer_authorization_headers() 
             '/v1/chat/completions',
             headers={'Authorization': 'Token github-token-123'},
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
         )
@@ -285,7 +297,7 @@ async def test_post_chat_completions_streams_openai_compatible_sse_frames() -> N
             'POST',
             '/v1/chat/completions',
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'stream': True,
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
@@ -311,7 +323,7 @@ async def test_post_chat_completions_streaming_deduplicates_final_aggregate_mess
             'POST',
             '/v1/chat/completions',
             json={
-                'model': 'default',
+                'model': 'gpt-5.4',
                 'stream': True,
                 'messages': [{'role': 'user', 'content': 'Hello'}],
             },
