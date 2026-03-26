@@ -28,16 +28,6 @@ class InternalHealthResponse(BaseModel):
     runtime: RuntimeHealth
 
 
-class CanonicalRequest(BaseModel):
-    """Minimal normalized request contract for later provider phases."""
-
-    model_config = ConfigDict(frozen=True)
-
-    request_id: str | None = None
-    conversation_id: str | None = None
-    model_alias: str | None = None
-
-
 class CanonicalChatMessage(BaseModel):
     """Normalized chat message used by the provider's internal execution path."""
 

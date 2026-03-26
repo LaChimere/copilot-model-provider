@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
-from copilot import SubprocessConfig
+from copilot import CopilotClient, SubprocessConfig
 from copilot.generated.session_events import PermissionRequest, SessionEvent
 
 from copilot_model_provider.core.errors import ProviderError
@@ -16,7 +16,6 @@ from copilot_model_provider.core.models import (
     ResolvedRoute,
 )
 from copilot_model_provider.runtimes.copilot import (
-    CopilotClientLike,
     CopilotRuntimeAdapter,
     PermissionRequestHandler,
 )
@@ -187,7 +186,7 @@ async def test_copilot_runtime_adapter_executes_and_translates_completion() -> N
     )
     client = _FakeClient(session=session)
     adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', client),
+        client_factory=lambda: cast('CopilotClient', client),
         timeout_seconds=15.0,
         working_directory='/workspace',
     )
@@ -301,9 +300,9 @@ async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bea
     authed_client = _FakeClient(session=authed_session)
     captured_tokens: list[str] = []
     adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', default_client),
+        client_factory=lambda: cast('CopilotClient', default_client),
         authenticated_client_factory=lambda token: (
-            captured_tokens.append(token) or cast('CopilotClientLike', authed_client)
+            captured_tokens.append(token) or cast('CopilotClient', authed_client)
         ),
     )
 
@@ -341,7 +340,7 @@ async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_content() 
     """Verify that empty assistant messages become structured provider failures."""
     session = _FakeSession(event=_FakeEvent(data=_FakeEventData(content=None)))
     adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', _FakeClient(session=session))
+        client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
     )
 
     with pytest.raises(ProviderError, match='Copilot runtime returned no assistant'):
@@ -361,7 +360,7 @@ async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_event_data
     """Verify that missing event data becomes a structured provider failure."""
     session = _FakeSession(event=_FakeEvent(data=None))
     adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', _FakeClient(session=session))
+        client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
     )
 
     with pytest.raises(ProviderError, match='Copilot runtime returned no assistant'):
@@ -387,7 +386,7 @@ async def test_copilot_runtime_adapter_raises_when_token_metadata_is_invalid() -
         )
     )
     adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', _FakeClient(session=session))
+        client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
     )
 
     with pytest.raises(ProviderError, match='invalid token metadata'):
@@ -426,7 +425,7 @@ async def test_copilot_runtime_adapter_streams_events_and_keeps_session_id() -> 
     )
     client = _FakeClient(session=session)
     adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClientLike', client)
+        client_factory=lambda: cast('CopilotClient', client)
     )
 
     runtime_stream = await adapter.stream_chat(

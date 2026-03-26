@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast, override
+from typing import TYPE_CHECKING, override
 
 from copilot import CopilotClient, PermissionRequestResult, SubprocessConfig
 from copilot.generated.session_events import (
@@ -24,74 +24,13 @@ from copilot_model_provider.core.models import (
 )
 from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
 
-
-class CopilotSessionLike(Protocol):
-    """Typed subset of the Copilot session API used by this adapter."""
-
-    session_id: str
-
-    async def send(
-        self,
-        prompt: str,
-        *,
-        attachments: list[object] | None = None,
-        mode: Literal['enqueue', 'immediate'] | None = None,
-    ) -> str:
-        """Send a prompt without waiting for session completion."""
-        ...
-
-    async def send_and_wait(
-        self,
-        prompt: str,
-        *,
-        attachments: list[object] | None = None,
-        mode: Literal['enqueue', 'immediate'] | None = None,
-        timeout: float = 60.0,  # noqa: ASYNC109 - mirrors SDK signature
-    ) -> SessionEvent | None:
-        """Send a prompt and wait for the final assistant message."""
-        ...
-
-    def on(self, handler: Callable[[SessionEvent], None]) -> Callable[[], None]:
-        """Subscribe to session events and return an unsubscribe callback."""
-        ...
-
-    async def disconnect(self) -> None:
-        """Tear down the session and release associated runtime resources."""
-        ...
-
+if TYPE_CHECKING:
+    from copilot.session import CopilotSession
 
 PermissionRequestHandler = Callable[
     [PermissionRequest, dict[str, str]],
     PermissionRequestResult | Awaitable[PermissionRequestResult],
 ]
-
-
-class CopilotClientLike(Protocol):
-    """Typed subset of the Copilot client API used by this adapter."""
-
-    def get_state(self) -> str:
-        """Return the current client lifecycle state."""
-        ...
-
-    async def start(self) -> None:
-        """Start the underlying Copilot client when it is disconnected."""
-        ...
-
-    async def stop(self) -> None:
-        """Stop the underlying Copilot client and release runtime resources."""
-        ...
-
-    async def create_session(
-        self,
-        *,
-        on_permission_request: PermissionRequestHandler,
-        model: str | None = None,
-        working_directory: str | None = None,
-        streaming: bool | None = None,
-        on_event: Callable[[SessionEvent], None] | None = None,
-    ) -> CopilotSessionLike:
-        """Create an ephemeral session used for one chat-completion request."""
-        ...
 
 
 class CopilotRuntimeAdapter(RuntimeAdapter):
@@ -100,8 +39,8 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
     def __init__(
         self,
         *,
-        client_factory: Callable[[], CopilotClientLike] | None = None,
-        authenticated_client_factory: Callable[[str], CopilotClientLike] | None = None,
+        client_factory: Callable[[], CopilotClient] | None = None,
+        authenticated_client_factory: Callable[[str], CopilotClient] | None = None,
         timeout_seconds: float = 60.0,
         working_directory: str | None = None,
     ) -> None:
@@ -126,7 +65,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         )
         self._timeout_seconds = timeout_seconds
         self._working_directory = working_directory
-        self._client: CopilotClientLike | None = None
+        self._client: CopilotClient | None = None
 
     @property
     def connection_mode(self) -> str:
@@ -270,24 +209,24 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
     class _ResolvedCopilotClient:
         """Client selection result for one canonical request."""
 
-        client: CopilotClientLike
+        client: CopilotClient
         stop_on_close: bool = False
 
     @dataclass(frozen=True, slots=True)
     class _ActiveCopilotSession:
         """Opened Copilot session plus the client lifecycle policy that owns it."""
 
-        session: CopilotSessionLike
+        session: CopilotSession
         client: CopilotRuntimeAdapter._ResolvedCopilotClient
 
-    def _get_or_create_client(self) -> CopilotClientLike:
+    def _get_or_create_client(self) -> CopilotClient:
         """Build the lazy Copilot client on first use and cache it afterwards."""
         if self._client is None:
             self._client = self._client_factory()
 
         return self._client
 
-    async def _ensure_client_started(self, client: CopilotClientLike) -> None:
+    async def _ensure_client_started(self, client: CopilotClient) -> None:
         """Start the Copilot client when the lazy adapter has not connected yet."""
         state = client.get_state()
         if state == 'error':
@@ -353,34 +292,31 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
             stop_on_close=True,
         )
 
-    async def _stop_client(self, client: CopilotClientLike) -> None:
+    async def _stop_client(self, client: CopilotClient) -> None:
         """Stop a short-lived Copilot client once its request-scoped work is done."""
         await client.stop()
 
-    def _build_default_client(self) -> CopilotClientLike:
+    def _build_default_client(self) -> CopilotClient:
         """Construct the default lazy Copilot client for production usage."""
-        return cast('CopilotClientLike', CopilotClient(None, auto_start=False))
+        return CopilotClient(None, auto_start=False)
 
-    def _build_authenticated_client(self, github_token: str) -> CopilotClientLike:
+    def _build_authenticated_client(self, github_token: str) -> CopilotClient:
         """Construct a subprocess-backed Copilot client for one bearer token.
 
         Args:
             github_token: Request-scoped GitHub bearer token used for Copilot auth.
 
         Returns:
-            A ``CopilotClientLike`` configured to spawn its own CLI subprocess
+            A ``CopilotClient`` configured to spawn its own CLI subprocess
             with the provided GitHub token injected through SDK auth settings.
 
         """
-        return cast(
-            'CopilotClientLike',
-            CopilotClient(
-                SubprocessConfig(
-                    cwd=self._working_directory,
-                    github_token=github_token,
-                ),
-                auto_start=False,
+        return CopilotClient(
+            SubprocessConfig(
+                cwd=self._working_directory,
+                github_token=github_token,
             ),
+            auto_start=False,
         )
 
     def _deny_permission_request(

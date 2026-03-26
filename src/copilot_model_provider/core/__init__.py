@@ -15,7 +15,6 @@ from .errors import (
 from .models import (
     CanonicalChatMessage,
     CanonicalChatRequest,
-    CanonicalRequest,
     InternalHealthResponse,
     ModelCatalogEntry,
     OpenAIChatCompletionChoice,
@@ -34,7 +33,6 @@ from .routing import ModelRouter
 __all__ = [
     'CanonicalChatMessage',
     'CanonicalChatRequest',
-    'CanonicalRequest',
     'ErrorDetail',
     'ErrorResponse',
     'InternalHealthResponse',

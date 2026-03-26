@@ -4,20 +4,19 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, override
-
-from copilot_model_provider.core.errors import ProviderError
-from copilot_model_provider.core.models import (
-    CanonicalChatRequest,
-    ResolvedRoute,
-    RuntimeCompletion,
-    RuntimeHealth,
-)
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
     from copilot.generated.session_events import SessionEvent
+
+    from copilot_model_provider.core.models import (
+        CanonicalChatRequest,
+        ResolvedRoute,
+        RuntimeCompletion,
+        RuntimeHealth,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,55 +75,3 @@ class RuntimeAdapter(ABC):
         route: ResolvedRoute,
     ) -> RuntimeEventStream:
         """Execute a normalized streaming chat request."""
-
-
-class ScaffoldRuntimeAdapter(RuntimeAdapter):
-    """Non-executing runtime used during the scaffold phase."""
-
-    def __init__(self) -> None:
-        """Initialize the scaffold adapter."""
-        super().__init__(runtime_name='copilot')
-
-    @override
-    def default_route(self) -> ResolvedRoute:
-        """Return the placeholder route used during the scaffold phase."""
-        return ResolvedRoute(runtime=self.runtime_name)
-
-    @override
-    async def check_health(self) -> RuntimeHealth:
-        """Report scaffold health without claiming execution support."""
-        return RuntimeHealth(
-            runtime=self.runtime_name,
-            available=False,
-            detail='Scaffold only; runtime execution is not implemented yet.',
-        )
-
-    @override
-    async def complete_chat(
-        self,
-        *,
-        request: CanonicalChatRequest,
-        route: ResolvedRoute,
-    ) -> RuntimeCompletion:
-        """Reject chat execution while the scaffold adapter is active."""
-        del request, route
-        raise ProviderError(
-            code='runtime_not_available',
-            message='Chat execution is not available for the scaffold runtime.',
-            status_code=503,
-        )
-
-    @override
-    async def stream_chat(
-        self,
-        *,
-        request: CanonicalChatRequest,
-        route: ResolvedRoute,
-    ) -> RuntimeEventStream:
-        """Reject streaming execution while the scaffold adapter is active."""
-        del request, route
-        raise ProviderError(
-            code='runtime_not_available',
-            message='Chat execution is not available for the scaffold runtime.',
-            status_code=503,
-        )
