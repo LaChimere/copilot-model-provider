@@ -181,6 +181,22 @@ uv run ty check .
 uv run pytest -q
 ```
 
+### Opt-in live runtime sweeps
+
+The repository also includes a real-auth live sweep for the provider's
+implemented northbound execution routes:
+
+```bash
+# Fast mode: verify the shipped `default` alias through chat + responses
+COPILOT_MODEL_PROVIDER_RUN_LIVE_MODEL_SWEEP=1 \
+  uv run pytest -q tests/live_tests/test_all_models.py -s
+
+# Full mode: expand the sweep to every currently visible live Copilot model
+COPILOT_MODEL_PROVIDER_RUN_LIVE_MODEL_SWEEP=1 \
+COPILOT_MODEL_PROVIDER_RUN_LIVE_MODEL_SWEEP_ALL=1 \
+  uv run pytest -q tests/live_tests/test_all_models.py -s
+```
+
 ## Planning and execution model
 
 This repository follows an agent-driven, reviewable workflow defined in `AGENTS.md`.

@@ -2,10 +2,17 @@
 
 > Purpose: execution-phase checklist derived from `plans/{slug}/plan.md`.
 > Treat this as the progress truth source.
+>
+> Historical note (2026-03-26): this checklist tracks the broader MVP rollout as
+> it was executed. Current `main` has since been intentionally simplified to a
+> thin stateless provider, so completed items below that mention session
+> persistence, tool/MCP control planes, auth-subject binding, or external CLI
+> runtime mode should be read as historical rollout record rather than current
+> implementation scope.
 
 ## Task
 - Summary:
-  - Execute the approved `copilot-model-provider-mvp` plan through the completed functional MVP, then track the completed containerization and thin OpenAI-compatible Responses/Codex follow-ons over `copilot-sdk`.
+  - Execute the approved `copilot-model-provider-mvp` plan through the completed functional MVP, then track the completed containerization and thin OpenAI-compatible Responses/Codex follow-ons over `copilot-sdk`, while preserving the record even though current `main` has since been narrowed.
 - Links:
   - `plans/copilot-model-provider-mvp/research.md`
   - `plans/copilot-model-provider-mvp/design.md`

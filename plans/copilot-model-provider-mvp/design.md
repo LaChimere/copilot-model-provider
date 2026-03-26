@@ -2,10 +2,17 @@
 
 > Purpose: document the solution design for review and approval before execution planning.
 > Do not proceed to plan/execution until this design is approved.
+>
+> Historical note (2026-03-26): this document records the broader reviewed MVP
+> design and branch decomposition. Current `main` now intentionally ships a
+> thinner stateless provider, so references below to session persistence,
+> tool/MCP control planes, auth-subject binding, and external CLI runtime mode
+> should be read as historical design scope or deferred directions rather than
+> present-day implementation facts.
 
 ## Objective
 - What problem are we solving (1–2 sentences):
-  - We need the approved staged implementation record for the provider MVP to stay aligned with the repository now that the functional service is implemented on `main`.
+  - We need the approved staged implementation record for the provider MVP to stay aligned with the repository history now that the functional service has been implemented and later intentionally simplified on `main`.
   - The slug should continue to preserve the reviewed branch decomposition, validation boundaries, the completed operational follow-on for containerized deployment, and the later thin OpenAI-compatible Responses/Codex compatibility slice in a way that still honors `docs/design.md`.
 - Link to research: `plans/copilot-model-provider-mvp/research.md`
 

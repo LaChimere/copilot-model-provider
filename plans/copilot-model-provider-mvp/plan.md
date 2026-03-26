@@ -1,10 +1,17 @@
 # Plan
 
 > Purpose: a reviewable plan that can be annotated. Do not implement until the plan is approved when plan mode is triggered.
+>
+> Historical note (2026-03-26): this plan records the broader MVP execution
+> sequence that was approved and carried out historically. Current `main` now
+> intentionally ships a thinner stateless provider, so items below mentioning
+> provider-managed session persistence, tool/MCP control planes, auth-subject
+> binding, or external CLI runtime mode should be read as historical execution
+> record or deferred scope.
 
 ## Objective
 - What outcome we want (1–2 sentences):
-  - Implement the provider MVP as an OpenAI-compatible gateway over `copilot-sdk`, starting with `GET /v1/models` and `POST /v1/chat/completions`, while preserving the session-oriented runtime design in `docs/design.md`.
+  - Implement the provider MVP as an OpenAI-compatible gateway over `copilot-sdk`, starting with `GET /v1/models` and `POST /v1/chat/completions`, while preserving the broader session-oriented runtime design that was originally captured in `docs/design.md`.
   - Record the completed functional MVP as **five execution phases implemented as seven mergeable branches**, then track the completed operational follow-ons for containerized deployment and thin OpenAI-compatible `POST /v1/responses` / Codex compatibility without violating the SDK backend-services, scaling, and auth guidance.
 
 ## Constraints

@@ -2,6 +2,11 @@
 
 > Purpose: capture facts, evidence, and unknowns before planning/implementation.
 > This is the review surface for understanding and diagnosis.
+>
+> Historical note (2026-03-26): this slug preserves the broader MVP planning and
+> execution history. Current `main` has since been intentionally simplified to a
+> thin stateless provider; the authoritative current-state docs are `README.md`
+> and `docs/design.md`.
 
 ## Task
 - Summary: Decompose the `copilot-model-provider` MVP into a sequence of small, mergeable PRs and define whether any part of that sequence can be parallelized safely across multiple agents.
@@ -13,6 +18,13 @@
 
 ## Current Behavior
 - Observed behavior:
+  - Current `main` intentionally ships the thinner stateless provider surface:
+    `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`,
+    streaming, subprocess-backed request-scoped bearer passthrough, and
+    container-backed integration coverage.
+  - References below to session persistence/resume, server-approved tools / MCP,
+    `runtime_cli_url`, and auth-subject binding record the broader historical
+    MVP rollout that was later trimmed back out of `main`.
   - The repository now contains the foundation scaffold, a service-owned model catalog, routing metadata, an OpenAI-compatible `GET /v1/models` endpoint, and a `POST /v1/chat/completions` path that supports both non-streaming and streaming SSE behavior through the Copilot runtime adapter.
   - The Step 2 fan-out slices are merged, and the Step 3 convergence work is now implemented on `main`: the shared hot files wire in streaming transport, session persistence/resume, and locking behavior.
   - Step 4 is now also implemented on `main`: server-approved tool execution, MCP mounting, and policy-controlled permission handling are wired into runtime session creation and validated through focused integration coverage.
