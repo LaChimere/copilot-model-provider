@@ -75,6 +75,7 @@ def create_app(
     resolved_runtime = runtime_adapter or CopilotRuntimeAdapter(
         timeout_seconds=resolved_settings.runtime_timeout_seconds,
         working_directory=resolved_settings.runtime_working_directory,
+        cli_url=resolved_settings.runtime_cli_url,
         tool_registry=resolved_tool_registry,
         policy_engine=resolved_policy_engine,
         mcp_registry=resolved_mcp_registry,
@@ -132,6 +133,11 @@ def create_app(
         environment=resolved_settings.environment,
         internal_health=resolved_settings.enable_internal_health,
         runtime=resolved_runtime.runtime_name,
+        runtime_connection_mode=getattr(
+            resolved_runtime,
+            'connection_mode',
+            'unknown',
+        ),
     )
     return app
 

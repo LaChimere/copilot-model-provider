@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytest
+from copilot import ExternalServerConfig, SubprocessConfig
 from copilot.generated.session_events import PermissionRequest, SessionEvent
 
 from copilot_model_provider.core.errors import ProviderError
@@ -133,6 +134,7 @@ class _FakeClient:
         self._session = session
         self._state = state
         self.started = False
+        self.stopped = False
         self.create_session_calls: list[dict[str, Any]] = []
         self.resume_session_calls: list[dict[str, Any]] = []
 
@@ -140,10 +142,15 @@ class _FakeClient:
         """Return the current fake lifecycle state."""
         return self._state
 
-    def start(self) -> None:
+    async def start(self) -> None:
         """Simulate connecting the underlying Copilot client."""
         self.started = True
         self._state = 'connected'
+
+    async def stop(self) -> None:
+        """Simulate stopping the underlying Copilot client."""
+        self.stopped = True
+        self._state = 'disconnected'
 
     async def create_session(
         self,
@@ -203,12 +210,16 @@ class _FakeClient:
 def _build_request(
     *,
     session_id: str | None = None,
+    runtime_auth_token: str | None = None,
+    auth_subject: str | None = None,
     execution_mode: Literal['stateless', 'sessional'] = 'stateless',
     stream: bool = False,
 ) -> CanonicalChatRequest:
     """Construct a stable canonical request used by runtime adapter tests."""
     return CanonicalChatRequest(
         session_id=session_id,
+        runtime_auth_token=runtime_auth_token,
+        auth_subject=auth_subject,
         model_alias='default',
         execution_mode=execution_mode,
         messages=[CanonicalChatMessage(role='user', content='Hello')],
@@ -299,6 +310,194 @@ def test_copilot_runtime_adapter_approves_registered_server_tools() -> None:
     assert result.kind == 'approved'
     assert result.message is not None
     assert 'server-approved' in result.message
+
+
+def test_copilot_runtime_adapter_defaults_to_subprocess_mode() -> None:
+    """Verify that the adapter reports subprocess mode when no CLI URL is set."""
+    adapter = CopilotRuntimeAdapter()
+
+    assert adapter.connection_mode == 'subprocess'
+    assert adapter.external_cli_url is None
+
+
+def test_copilot_runtime_adapter_builds_external_server_client_when_cli_url_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that the default client connects to an external CLI when configured."""
+    captured_arguments: dict[str, object] = {}
+
+    class _CapturedClient:
+        """Capture constructor arguments for the default client factory."""
+
+        def __init__(
+            self,
+            config: object = None,
+            *,
+            auto_start: bool = True,
+        ) -> None:
+            """Record the configuration passed to the SDK client."""
+            captured_arguments['config'] = config
+            captured_arguments['auto_start'] = auto_start
+
+    monkeypatch.setattr(
+        'copilot_model_provider.runtimes.copilot.CopilotClient',
+        _CapturedClient,
+    )
+
+    adapter = CopilotRuntimeAdapter(cli_url='http://copilot-cli.internal:3000')
+    adapter._get_or_create_client()
+
+    assert adapter.connection_mode == 'external_server'
+    assert adapter.external_cli_url == 'http://copilot-cli.internal:3000'
+    assert captured_arguments['config'] == ExternalServerConfig(
+        url='http://copilot-cli.internal:3000'
+    )
+    assert captured_arguments['auto_start'] is False
+
+
+def test_copilot_runtime_adapter_builds_authenticated_subprocess_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that authenticated clients use subprocess mode with github_token."""
+    captured_arguments: dict[str, object] = {}
+
+    class _CapturedClient:
+        """Capture constructor arguments for authenticated client creation."""
+
+        def __init__(
+            self,
+            config: object = None,
+            *,
+            auto_start: bool = True,
+        ) -> None:
+            """Record the configuration passed to the SDK client."""
+            captured_arguments['config'] = config
+            captured_arguments['auto_start'] = auto_start
+
+    monkeypatch.setattr(
+        'copilot_model_provider.runtimes.copilot.CopilotClient',
+        _CapturedClient,
+    )
+
+    adapter = CopilotRuntimeAdapter(working_directory='/workspace')
+    adapter._build_authenticated_client('github-token-123')
+
+    config = cast('SubprocessConfig', captured_arguments['config'])
+    assert isinstance(config, SubprocessConfig)
+    assert config.github_token == 'github-token-123'  # noqa: S105 - deterministic test token
+    assert config.cwd == '/workspace'
+    assert captured_arguments['auto_start'] is False
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bearer_tokens() -> (
+    None
+):
+    """Verify that stateless bearer-token requests use a short-lived client."""
+    default_client = _FakeClient(session=_FakeSession())
+    authed_session = _FakeSession(
+        event=_FakeEvent(data=_FakeEventData(content='Hi from authed client'))
+    )
+    authed_client = _FakeClient(session=authed_session)
+    captured_tokens: list[str] = []
+    adapter = CopilotRuntimeAdapter(
+        client_factory=lambda: cast('CopilotClientLike', default_client),
+        authenticated_client_factory=lambda token: (
+            captured_tokens.append(token) or cast('CopilotClientLike', authed_client)
+        ),
+    )
+
+    completion = await adapter.complete_chat(
+        request=_build_request(
+            runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
+            auth_subject='github-bearer-sha256:abc',
+        ),
+        route=ResolvedRoute(
+            runtime='copilot',
+            session_mode='stateless',
+            runtime_model_id='copilot-default',
+        ),
+    )
+
+    assert captured_tokens == ['github-token-123']
+    assert default_client.started is False
+    assert authed_client.started is True
+    assert authed_client.stopped is True
+    assert completion.output_text == 'Hi from authed client'
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_adapter_reuses_authenticated_client_for_sessional_bearer_requests() -> (
+    None
+):
+    """Verify that session-backed bearer requests reuse one cached client per subject."""
+    default_client = _FakeClient(session=_FakeSession())
+    authed_client = _FakeClient(
+        session=_FakeSession(event=_FakeEvent(data=_FakeEventData(content='Hi')))
+    )
+    captured_tokens: list[str] = []
+    adapter = CopilotRuntimeAdapter(
+        client_factory=lambda: cast('CopilotClientLike', default_client),
+        authenticated_client_factory=lambda token: (
+            captured_tokens.append(token) or cast('CopilotClientLike', authed_client)
+        ),
+    )
+
+    first_completion = await adapter.complete_chat(
+        request=_build_request(
+            runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
+            auth_subject='github-bearer-sha256:abc',
+            execution_mode='sessional',
+        ),
+        route=ResolvedRoute(
+            runtime='copilot',
+            session_mode='sessional',
+            runtime_model_id='copilot-default',
+        ),
+    )
+    second_completion = await adapter.complete_chat(
+        request=_build_request(
+            runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
+            auth_subject='github-bearer-sha256:abc',
+            execution_mode='sessional',
+        ),
+        route=ResolvedRoute(
+            runtime='copilot',
+            session_mode='sessional',
+            runtime_model_id='copilot-default',
+        ),
+    )
+
+    assert captured_tokens == ['github-token-123']
+    assert authed_client.started is True
+    assert authed_client.stopped is False
+    assert len(authed_client.create_session_calls) == 2
+    assert first_completion.output_text == 'Hi'
+    assert second_completion.output_text == 'Hi'
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_adapter_rejects_bearer_passthrough_for_external_server() -> (
+    None
+):
+    """Verify that external-server mode fails fast for request-scoped bearer auth."""
+    adapter = CopilotRuntimeAdapter(cli_url='http://copilot-cli.internal:3000')
+
+    with pytest.raises(
+        ProviderError,
+        match='not supported when runtime_cli_url points to an external',
+    ):
+        await adapter.complete_chat(
+            request=_build_request(
+                runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
+                auth_subject='github-bearer-sha256:abc',
+            ),
+            route=ResolvedRoute(
+                runtime='copilot',
+                session_mode='stateless',
+                runtime_model_id='copilot-default',
+            ),
+        )
 
 
 def test_copilot_runtime_adapter_denies_unknown_tools() -> None:

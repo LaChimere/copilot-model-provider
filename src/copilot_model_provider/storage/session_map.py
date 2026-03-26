@@ -49,6 +49,7 @@ class SessionMapEntry(BaseModel):
     copilot_session_id: str = Field(min_length=1)
     runtime_name: str = Field(min_length=1)
     runtime_model_id: str | None = None
+    auth_subject: str | None = None
     execution_mode: Literal['stateless', 'sessional'] = 'sessional'
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

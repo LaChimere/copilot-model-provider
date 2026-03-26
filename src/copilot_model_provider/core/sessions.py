@@ -90,6 +90,20 @@ async def prepare_execution_session(
         lease_seconds=_DEFAULT_LOCK_LEASE_SECONDS,
     )
     existing_entry = session_map.get(request.conversation_id)
+    if (
+        existing_entry is not None
+        and existing_entry.auth_subject != request.auth_subject
+    ):
+        raise ProviderError(
+            code='session_auth_subject_mismatch',
+            message=(
+                'The stored conversation session is bound to a different '
+                'authentication subject. Reuse the original auth mode or token '
+                'for this conversation, or start a new conversation ID.'
+            ),
+            status_code=403,
+        )
+
     session_id = (
         existing_entry.copilot_session_id if existing_entry is not None else None
     )
@@ -135,6 +149,7 @@ def persist_execution_session(
             copilot_session_id=session_id,
             runtime_name=runtime_name,
             runtime_model_id=runtime_model_id,
+            auth_subject=managed_session.request.auth_subject,
             execution_mode='sessional',
         )
     )

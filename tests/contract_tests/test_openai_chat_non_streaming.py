@@ -26,6 +26,7 @@ class _FakeChatRuntimeAdapter(RuntimeAdapter):
     def __init__(self) -> None:
         """Initialize the fake runtime with a stable Copilot name."""
         super().__init__(runtime_name='copilot')
+        self.last_request: CanonicalChatRequest | None = None
 
     @override
     def default_route(self) -> ResolvedRoute:
@@ -45,7 +46,8 @@ class _FakeChatRuntimeAdapter(RuntimeAdapter):
         route: ResolvedRoute,
     ) -> RuntimeCompletion:
         """Return a deterministic non-streaming completion for HTTP tests."""
-        del request, route
+        del route
+        self.last_request = request
         return RuntimeCompletion(
             output_text='Hello from the fake runtime.',
             provider_response_id='chatcmpl-contract',
@@ -94,7 +96,8 @@ class _FakeChatRuntimeAdapter(RuntimeAdapter):
 @pytest.mark.asyncio
 async def test_post_chat_completions_returns_openai_compatible_payload() -> None:
     """Verify that the HTTP route returns the expected non-streaming payload."""
-    async with build_async_client(runtime_adapter=_FakeChatRuntimeAdapter()) as client:
+    runtime_adapter = _FakeChatRuntimeAdapter()
+    async with build_async_client(runtime_adapter=runtime_adapter) as client:
         response = await client.post(
             '/v1/chat/completions',
             json={
@@ -124,6 +127,48 @@ async def test_post_chat_completions_returns_openai_compatible_payload() -> None
         'completion_tokens': 6,
         'total_tokens': 15,
     }
+    assert runtime_adapter.last_request is not None
+    assert runtime_adapter.last_request.runtime_auth_token is None
+
+
+@pytest.mark.asyncio
+async def test_post_chat_completions_extracts_bearer_token_without_persisting_raw_header() -> (
+    None
+):
+    """Verify that bearer auth is normalized onto the canonical runtime request."""
+    runtime_adapter = _FakeChatRuntimeAdapter()
+    async with build_async_client(runtime_adapter=runtime_adapter) as client:
+        response = await client.post(
+            '/v1/chat/completions',
+            headers={'Authorization': 'Bearer github-token-123'},
+            json={
+                'model': 'default',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert runtime_adapter.last_request is not None
+    assert runtime_adapter.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
+    assert runtime_adapter.last_request.auth_subject is not None
+    assert 'github-token-123' not in runtime_adapter.last_request.auth_subject
+
+
+@pytest.mark.asyncio
+async def test_post_chat_completions_rejects_non_bearer_authorization_headers() -> None:
+    """Verify that malformed Authorization headers fail fast."""
+    async with build_async_client(runtime_adapter=_FakeChatRuntimeAdapter()) as client:
+        response = await client.post(
+            '/v1/chat/completions',
+            headers={'Authorization': 'Token github-token-123'},
+            json={
+                'model': 'default',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()['error']['code'] == 'invalid_authorization_header'
 
 
 @pytest.mark.asyncio

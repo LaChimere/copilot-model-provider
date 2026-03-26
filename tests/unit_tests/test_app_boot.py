@@ -17,6 +17,7 @@ from copilot_model_provider.core.catalog import (
 from copilot_model_provider.core.models import ModelCatalogEntry
 from copilot_model_provider.core.policies import PolicyEngine
 from copilot_model_provider.core.routing import ModelRouter
+from copilot_model_provider.runtimes import CopilotRuntimeAdapter
 from copilot_model_provider.storage import (
     FileBackedSessionLockManager,
     FileBackedSessionMap,
@@ -48,6 +49,22 @@ def test_create_app_returns_fastapi_application() -> None:
     assert isinstance(app, FastAPI)
     assert app.title == 'copilot-model-provider'
     assert app.state.model_router.list_models_response().data
+
+
+def test_create_app_passes_runtime_cli_url_into_default_runtime_adapter() -> None:
+    """Verify that app wiring preserves external headless CLI configuration."""
+    app = create_app(
+        settings=ProviderSettings(
+            environment='test',
+            runtime_cli_url='http://copilot-cli.internal:3000',
+        )
+    )
+
+    runtime_adapter = app.state.runtime_adapter
+
+    assert isinstance(runtime_adapter, CopilotRuntimeAdapter)
+    assert runtime_adapter.connection_mode == 'external_server'
+    assert runtime_adapter.external_cli_url == 'http://copilot-cli.internal:3000'
 
 
 def test_internal_health_route_is_optional() -> None:

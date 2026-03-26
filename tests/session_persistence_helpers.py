@@ -39,6 +39,7 @@ def build_session_map_entry(
     copilot_session_id: str = 'copilot-session-1',
     runtime_name: str = 'copilot',
     runtime_model_id: str | None = 'copilot-default',
+    auth_subject: str | None = None,
     created_at: datetime | None = None,
 ) -> SessionMapEntry:
     """Build a deterministic session-map entry for tests."""
@@ -48,6 +49,7 @@ def build_session_map_entry(
         copilot_session_id=copilot_session_id,
         runtime_name=runtime_name,
         runtime_model_id=runtime_model_id,
+        auth_subject=auth_subject,
         created_at=timestamp,
         updated_at=timestamp,
     )

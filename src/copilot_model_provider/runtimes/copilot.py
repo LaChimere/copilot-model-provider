@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast, override
 
-from copilot import CopilotClient, PermissionRequestResult
+from copilot import (
+    CopilotClient,
+    ExternalServerConfig,
+    PermissionRequestResult,
+    SubprocessConfig,
+)
 from copilot.generated.session_events import (
     PermissionRequest,
     PermissionRequestKind,
@@ -82,8 +89,12 @@ class CopilotClientLike(Protocol):
         """Return the current client lifecycle state."""
         ...
 
-    def start(self) -> None:
+    async def start(self) -> None:
         """Start the underlying Copilot client when it is disconnected."""
+        ...
+
+    async def stop(self) -> None:
+        """Stop the underlying Copilot client and release runtime resources."""
         ...
 
     async def create_session(
@@ -124,8 +135,10 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         self,
         *,
         client_factory: Callable[[], CopilotClientLike] | None = None,
+        authenticated_client_factory: Callable[[str], CopilotClientLike] | None = None,
         timeout_seconds: float = 60.0,
         working_directory: str | None = None,
+        cli_url: str | None = None,
         tool_registry: ToolRegistry | None = None,
         policy_engine: PolicyEngine | None = None,
         mcp_registry: MCPRegistry | None = None,
@@ -135,10 +148,16 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         Args:
             client_factory: Optional factory used to construct the underlying
                 Copilot client. Tests can override this with a fake SDK surface.
+            authenticated_client_factory: Optional factory used to construct a
+                subprocess-backed Copilot client for one request-scoped GitHub
+                bearer token.
             timeout_seconds: Maximum wall-clock time to wait for a non-streaming
                 assistant response.
             working_directory: Optional working directory forwarded into new
                 ephemeral Copilot sessions.
+            cli_url: Optional external headless Copilot CLI URL. When provided,
+                the adapter connects to an already managed CLI server instead of
+                spawning a subprocess-backed client.
             tool_registry: Registry of provider-known tools used by later
                 permission and session wiring.
             policy_engine: Policy engine that decides whether runtime tool
@@ -149,8 +168,12 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         """
         super().__init__(runtime_name='copilot')
         self._client_factory = client_factory or self._build_default_client
+        self._authenticated_client_factory = (
+            authenticated_client_factory or self._build_authenticated_client
+        )
         self._timeout_seconds = timeout_seconds
         self._working_directory = working_directory
+        self._cli_url = cli_url
         self._tool_registry = tool_registry or ToolRegistry()
         self._mcp_registry = mcp_registry or MCPRegistry()
         self._policy_engine = policy_engine or PolicyEngine(
@@ -158,6 +181,31 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
             mcp_registry=self._mcp_registry,
         )
         self._client: CopilotClientLike | None = None
+        self._authenticated_clients: OrderedDict[str, CopilotClientLike] = OrderedDict()
+        self._authenticated_clients_lock = asyncio.Lock()
+
+    @property
+    def connection_mode(self) -> str:
+        """Report whether the adapter uses subprocess or external-server mode.
+
+        Returns:
+            ``"external_server"`` when the adapter is configured to connect to an
+            already running headless Copilot CLI via ``cli_url``; otherwise
+            ``"subprocess"``.
+
+        """
+        return 'external_server' if self._cli_url is not None else 'subprocess'
+
+    @property
+    def external_cli_url(self) -> str | None:
+        """Return the configured external headless CLI URL, if any.
+
+        Returns:
+            The configured external CLI URL when this adapter should connect to
+            a managed headless Copilot CLI server, otherwise ``None``.
+
+        """
+        return self._cli_url
 
     @override
     def default_route(self) -> ResolvedRoute:
@@ -203,19 +251,20 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 status_code=500,
             )
 
-        session = await self._open_session(
+        active_session = await self._open_session(
+            request=request,
             route=route,
             session_id=request.session_id,
             streaming=False,
         )
         try:
-            event = await session.send_and_wait(
+            event = await active_session.session.send_and_wait(
                 render_prompt(request=request),
                 timeout=self._timeout_seconds,
             )
             return _build_runtime_completion(
                 event=event,
-                session_id=session.session_id,
+                session_id=active_session.session.session_id,
             )
         except TimeoutError as error:
             raise ProviderError(
@@ -233,7 +282,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
             ) from error
         finally:
             await self._close_session(
-                session=session,
+                active_session=active_session,
                 execution_mode=request.execution_mode,
             )
 
@@ -259,7 +308,8 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 fails while preparing the streaming session.
 
         """
-        session = await self._open_session(
+        active_session = await self._open_session(
+            request=request,
             route=route,
             session_id=request.session_id,
             streaming=True,
@@ -274,7 +324,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
 
             session_closed = True
             await self._close_session(
-                session=session,
+                active_session=active_session,
                 execution_mode=request.execution_mode,
             )
 
@@ -285,9 +335,9 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
             def _handle_event(event: SessionEvent) -> None:
                 queue.put_nowait(event)
 
-            unsubscribe = session.on(_handle_event)
+            unsubscribe = active_session.session.on(_handle_event)
             try:
-                await session.send(render_prompt(request=request))
+                await active_session.session.send(render_prompt(request=request))
                 while True:
                     try:
                         event = await asyncio.wait_for(
@@ -323,10 +373,24 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 await _finalize_session()
 
         return RuntimeEventStream(
-            session_id=session.session_id,
+            session_id=active_session.session.session_id,
             events=_event_stream(),
             close=_finalize_session,
         )
+
+    @dataclass(frozen=True, slots=True)
+    class _ResolvedCopilotClient:
+        """Client selection result for one canonical request."""
+
+        client: CopilotClientLike
+        stop_on_close: bool = False
+
+    @dataclass(frozen=True, slots=True)
+    class _ActiveCopilotSession:
+        """Opened Copilot session plus the client lifecycle policy that owns it."""
+
+        session: CopilotSessionLike
+        client: CopilotRuntimeAdapter._ResolvedCopilotClient
 
     def _get_or_create_client(self) -> CopilotClientLike:
         """Build the lazy Copilot client on first use and cache it afterwards."""
@@ -335,7 +399,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
 
         return self._client
 
-    def _ensure_client_started(self, client: CopilotClientLike) -> None:
+    async def _ensure_client_started(self, client: CopilotClientLike) -> None:
         """Start the Copilot client when the lazy adapter has not connected yet.
 
         Args:
@@ -354,18 +418,20 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
             )
 
         if state == 'disconnected':
-            client.start()
+            await client.start()
 
     async def _open_session(
         self,
         *,
+        request: CanonicalChatRequest,
         route: ResolvedRoute,
         session_id: str | None,
         streaming: bool,
-    ) -> CopilotSessionLike:
+    ) -> _ActiveCopilotSession:
         """Open or resume a Copilot session for one request.
 
         Args:
+            request: Canonical request whose auth mode determines client selection.
             route: Resolved model routing metadata for the request.
             session_id: Existing Copilot session identifier to resume, when any.
             streaming: Whether the returned session should emit streaming events.
@@ -384,47 +450,153 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 status_code=500,
             )
 
-        client = self._get_or_create_client()
-        self._ensure_client_started(client)
+        resolved_client = await self._get_client_for_request(request=request)
+        await self._ensure_client_started(resolved_client.client)
         tools = self._tool_registry.sdk_tools() or None
         mcp_servers = self._mcp_registry.sdk_server_configs() or None
         if session_id is not None:
-            return await client.resume_session(
-                session_id,
+            return self._ActiveCopilotSession(
+                session=await resolved_client.client.resume_session(
+                    session_id,
+                    on_permission_request=self._handle_permission_request,
+                    model=route.runtime_model_id,
+                    working_directory=self._working_directory,
+                    streaming=streaming,
+                    tools=tools,
+                    mcp_servers=mcp_servers,
+                ),
+                client=resolved_client,
+            )
+
+        return self._ActiveCopilotSession(
+            session=await resolved_client.client.create_session(
                 on_permission_request=self._handle_permission_request,
                 model=route.runtime_model_id,
                 working_directory=self._working_directory,
                 streaming=streaming,
                 tools=tools,
                 mcp_servers=mcp_servers,
-            )
-
-        return await client.create_session(
-            on_permission_request=self._handle_permission_request,
-            model=route.runtime_model_id,
-            working_directory=self._working_directory,
-            streaming=streaming,
-            tools=tools,
-            mcp_servers=mcp_servers,
+            ),
+            client=resolved_client,
         )
 
     async def _close_session(
         self,
         *,
-        session: CopilotSessionLike,
+        active_session: _ActiveCopilotSession,
         execution_mode: str,
     ) -> None:
         """Close a Copilot session according to the request execution mode."""
-        if execution_mode == 'sessional':
-            await session.disconnect()
-            return
+        try:
+            if execution_mode == 'sessional':
+                await active_session.session.disconnect()
+                return
 
-        await session.destroy()
+            await active_session.session.destroy()
+        finally:
+            if active_session.client.stop_on_close:
+                await self._stop_client(active_session.client.client)
 
-    @staticmethod
-    def _build_default_client() -> CopilotClientLike:
-        """Construct the default lazy Copilot client for production usage."""
-        return cast('CopilotClientLike', CopilotClient(auto_start=False))
+    async def _get_client_for_request(
+        self,
+        *,
+        request: CanonicalChatRequest,
+    ) -> _ResolvedCopilotClient:
+        """Resolve the Copilot client that should execute one canonical request.
+
+        Args:
+            request: The canonical request about to execute.
+
+        Returns:
+            A lazy default client when no runtime auth token is present. For
+            bearer-token execution, stateless requests get one short-lived client
+            per request, while session-backed requests reuse one cached client per
+            auth subject so resumable Copilot sessions stay reachable.
+
+        Raises:
+            ProviderError: If request-scoped auth passthrough is attempted while
+                the adapter is configured for an external CLI server.
+
+        """
+        if request.runtime_auth_token is None:
+            return self._ResolvedCopilotClient(client=self._get_or_create_client())
+
+        if self._cli_url is not None:
+            raise ProviderError(
+                code='runtime_auth_passthrough_unsupported',
+                message=(
+                    'Request-scoped GitHub bearer-token passthrough is not '
+                    'supported when runtime_cli_url points to an external '
+                    'Copilot CLI server. Use subprocess-backed runtime mode for '
+                    'per-request bearer tokens, or preconfigure auth on the '
+                    'external CLI deployment instead.'
+                ),
+                status_code=501,
+            )
+
+        if request.auth_subject is None:
+            raise ProviderError(
+                code='runtime_auth_subject_missing',
+                message='Runtime auth subject is required when a bearer token is set.',
+                status_code=500,
+            )
+
+        if request.execution_mode == 'stateless':
+            return self._ResolvedCopilotClient(
+                client=self._authenticated_client_factory(request.runtime_auth_token),
+                stop_on_close=True,
+            )
+
+        async with self._authenticated_clients_lock:
+            client = self._authenticated_clients.get(request.auth_subject)
+            if client is None:
+                client = self._authenticated_client_factory(request.runtime_auth_token)
+                self._authenticated_clients[request.auth_subject] = client
+            else:
+                self._authenticated_clients.move_to_end(request.auth_subject)
+
+        return self._ResolvedCopilotClient(client=client)
+
+    async def _stop_client(self, client: CopilotClientLike) -> None:
+        """Stop a short-lived Copilot client once its request-scoped work is done."""
+        await client.stop()
+
+    def _build_default_client(self) -> CopilotClientLike:
+        """Construct the default lazy Copilot client for production usage.
+
+        Returns:
+            A ``CopilotClientLike`` configured either for a managed external
+            headless CLI server or for the SDK's default subprocess mode.
+
+        """
+        config = (
+            ExternalServerConfig(url=self._cli_url)
+            if self._cli_url is not None
+            else None
+        )
+        return cast('CopilotClientLike', CopilotClient(config, auto_start=False))
+
+    def _build_authenticated_client(self, github_token: str) -> CopilotClientLike:
+        """Construct a subprocess-backed Copilot client for one bearer token.
+
+        Args:
+            github_token: Request-scoped GitHub bearer token used for Copilot auth.
+
+        Returns:
+            A ``CopilotClientLike`` configured to spawn its own CLI subprocess
+            with the provided GitHub token injected through SDK auth settings.
+
+        """
+        return cast(
+            'CopilotClientLike',
+            CopilotClient(
+                SubprocessConfig(
+                    cwd=self._working_directory,
+                    github_token=github_token,
+                ),
+                auto_start=False,
+            ),
+        )
 
     def _handle_permission_request(
         self,

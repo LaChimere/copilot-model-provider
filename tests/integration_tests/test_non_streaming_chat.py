@@ -71,6 +71,7 @@ class _SessionAwareRuntimeAdapter(RuntimeAdapter):
         """Initialize deterministic session tracking for session-backed tests."""
         super().__init__(runtime_name='copilot')
         self.session_ids_seen: list[str | None] = []
+        self.auth_subjects_seen: list[str | None] = []
         self._created_sessions = 0
 
     @override
@@ -93,6 +94,7 @@ class _SessionAwareRuntimeAdapter(RuntimeAdapter):
         """Return a deterministic response and stable session ID for follow-ups."""
         del route
         self.session_ids_seen.append(request.session_id)
+        self.auth_subjects_seen.append(request.auth_subject)
         if request.session_id is None:
             self._created_sessions += 1
             session_id = f'copilot-session-{self._created_sessions}'
@@ -177,3 +179,66 @@ async def test_non_streaming_chat_sessional_path_persists_and_resumes_session_id
     assert runtime_adapter.session_ids_seen == [None, 'copilot-session-1']
     assert stored_entry is not None
     assert stored_entry.copilot_session_id == 'copilot-session-1'
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_chat_sessional_path_binds_resume_to_same_auth_subject() -> (
+    None
+):
+    """Verify that resumed sessional turns stay bound to the original auth subject."""
+    model_catalog = ModelCatalog(
+        entries=(
+            ModelCatalogEntry(
+                alias='default',
+                runtime='copilot',
+                owned_by='test',
+                runtime_model_id='copilot-default',
+                session_mode='sessional',
+            ),
+        )
+    )
+    runtime_adapter = _SessionAwareRuntimeAdapter()
+    with managed_scratch_directory('integration-convergence-auth-binding') as scratch:
+        session_map = FileBackedSessionMap(scratch / 'session-map')
+        session_lock_manager = FileBackedSessionLockManager(scratch / 'locks')
+        async with build_async_client(
+            runtime_adapter=runtime_adapter,
+            model_catalog=model_catalog,
+            session_map=session_map,
+            session_lock_manager=session_lock_manager,
+        ) as client:
+            first_response = await client.post(
+                '/v1/chat/completions',
+                headers={
+                    'X-Copilot-Conversation-Id': 'conversation-auth',
+                    'Authorization': 'Bearer github-token-1',
+                },
+                json={
+                    'model': 'default',
+                    'messages': [{'role': 'user', 'content': 'Ping'}],
+                },
+            )
+            second_response = await client.post(
+                '/v1/chat/completions',
+                headers={
+                    'X-Copilot-Conversation-Id': 'conversation-auth',
+                    'Authorization': 'Bearer github-token-2',
+                },
+                json={
+                    'model': 'default',
+                    'messages': [{'role': 'user', 'content': 'Follow up'}],
+                },
+            )
+
+        stored_entry = session_map.get('conversation-auth')
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 403
+    assert second_response.json()['error']['code'] == 'session_auth_subject_mismatch'
+    assert runtime_adapter.session_ids_seen == [None]
+    assert runtime_adapter.auth_subjects_seen == [
+        stored_entry.auth_subject if stored_entry else None
+    ]
+    assert stored_entry is not None
+    assert stored_entry.auth_subject is not None
+    assert 'github-token-1' not in stored_entry.auth_subject

@@ -53,6 +53,24 @@ def test_file_backed_session_map_preserves_original_creation_time_on_update() ->
         assert stored_updated.copilot_session_id == 'copilot-session-2'
 
 
+def test_file_backed_session_map_persists_auth_subject_metadata() -> None:
+    """Verify that auth subject fingerprints round-trip through session storage."""
+    with managed_scratch_directory(
+        'unit-session-map-auth-subject'
+    ) as scratch_directory:
+        session_map = FileBackedSessionMap(scratch_directory / 'session-map')
+        entry = build_session_map_entry(
+            auth_subject='github-bearer-sha256:abc123',
+        )
+
+        persisted_entry = session_map.put(entry)
+        loaded_entry = session_map.get(entry.conversation_id)
+
+        assert persisted_entry.auth_subject == 'github-bearer-sha256:abc123'
+        assert loaded_entry is not None
+        assert loaded_entry.auth_subject == 'github-bearer-sha256:abc123'
+
+
 def test_file_backed_session_map_delete_removes_entries() -> None:
     """Verify that deleting an entry removes it from future reads and listings."""
     with managed_scratch_directory('unit-session-map-delete') as scratch_directory:
