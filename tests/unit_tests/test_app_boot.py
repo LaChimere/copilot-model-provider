@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute
 from copilot_model_provider.app import create_app
 from copilot_model_provider.config import ProviderSettings
 from copilot_model_provider.core.catalog import create_default_model_catalog
+from copilot_model_provider.core.models import OpenAIModelListResponse
 from copilot_model_provider.core.routing import ModelRouter
 from tests.harness import build_test_app
 
@@ -78,6 +79,40 @@ def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
     assert app.state.model_router is router
     assert app.state.model_catalog is router_catalog
     assert app.state.model_router.model_catalog is app.state.model_catalog
+
+
+class _IncompleteRuntime:
+    """Deliberately invalid runtime dependency for protocol validation tests."""
+
+    runtime_name = 'broken'
+
+
+class _IncompleteModelRouter:
+    """Deliberately invalid router dependency for protocol validation tests."""
+
+    def list_models_response(self) -> OpenAIModelListResponse:
+        """Return a placeholder model list for protocol validation tests."""
+        return OpenAIModelListResponse(data=[])
+
+
+def test_create_app_rejects_runtime_dependencies_that_fail_protocol_validation() -> (
+    None
+):
+    """Verify that runtime injections must satisfy the explicit runtime protocol."""
+    with pytest.raises(TypeError, match='RuntimeProtocol protocol'):
+        create_app(
+            settings=ProviderSettings(environment='test'),
+            runtime=cast('Any', _IncompleteRuntime()),
+        )
+
+
+def test_create_app_rejects_router_dependencies_that_fail_protocol_validation() -> None:
+    """Verify that router injections must satisfy the explicit routing protocol."""
+    with pytest.raises(TypeError, match='ModelRouterProtocol protocol'):
+        create_app(
+            settings=ProviderSettings(environment='test'),
+            model_router=cast('Any', _IncompleteModelRouter()),
+        )
 
 
 @pytest.mark.asyncio

@@ -9,10 +9,14 @@ from copilot_model_provider.core.models import OpenAIModelListResponse
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from copilot_model_provider.core.routing import ModelRouter
+    from copilot_model_provider.core.routing import ModelRouterProtocol
 
 
-def install_openai_models_route(app: FastAPI, *, model_router: ModelRouter) -> None:
+def install_openai_models_route(
+    app: FastAPI,
+    *,
+    model_router: ModelRouterProtocol,
+) -> None:
     """Install the OpenAI-compatible ``GET /v1/models`` route.
 
     Args:

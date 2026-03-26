@@ -1,10 +1,9 @@
-"""Base runtime adapter contracts for the provider scaffold."""
+"""Runtime protocol contracts for the provider scaffold."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -38,27 +37,28 @@ class RuntimeEventStream:
     close: Callable[[], Awaitable[None]] | None = None
 
 
-class RuntimeAdapter(ABC):
-    """Abstract contract for provider runtime backends."""
+@runtime_checkable
+class RuntimeProtocol(Protocol):
+    """Protocol contract for provider runtime backends.
 
-    def __init__(self, *, runtime_name: str) -> None:
-        """Initialize the adapter with a stable runtime name."""
-        self._runtime_name = runtime_name
+    The provider's composition root and API routes depend on this protocol rather
+    than on a specific runtime class so that runtime implementations remain
+    substitutable without requiring inheritance from a framework-owned base class.
+    """
 
     @property
     def runtime_name(self) -> str:
-        """Return the stable runtime identifier exposed by this adapter."""
-        return self._runtime_name
+        """Return the stable runtime identifier exposed by this runtime."""
+        ...
 
-    @abstractmethod
     def default_route(self) -> ResolvedRoute:
         """Return the default route metadata for the runtime backend."""
+        ...
 
-    @abstractmethod
     async def check_health(self) -> RuntimeHealth:
         """Return runtime health metadata for internal diagnostics."""
+        ...
 
-    @abstractmethod
     async def complete_chat(
         self,
         *,
@@ -66,8 +66,8 @@ class RuntimeAdapter(ABC):
         route: ResolvedRoute,
     ) -> RuntimeCompletion:
         """Execute a normalized non-streaming chat request."""
+        ...
 
-    @abstractmethod
     async def stream_chat(
         self,
         *,
@@ -75,3 +75,4 @@ class RuntimeAdapter(ABC):
         route: ResolvedRoute,
     ) -> RuntimeEventStream:
         """Execute a normalized streaming chat request."""
+        ...

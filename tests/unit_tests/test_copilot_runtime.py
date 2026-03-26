@@ -1,4 +1,4 @@
-"""Unit tests for the Copilot SDK-backed runtime adapter."""
+"""Unit tests for the Copilot SDK-backed runtime."""
 
 from __future__ import annotations
 
@@ -15,15 +15,15 @@ from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     ResolvedRoute,
 )
-from copilot_model_provider.runtimes.copilot import (
-    CopilotRuntimeAdapter,
+from copilot_model_provider.runtimes.copilot_runtime import (
+    CopilotRuntime,
     PermissionRequestHandler,
 )
 
 
 @dataclass
 class _FakeEventData:
-    """Minimal fake event payload matching the adapter's read path."""
+    """Minimal fake event payload matching the runtime read path."""
 
     content: str | None
     message_id: str | None = None
@@ -33,14 +33,14 @@ class _FakeEventData:
 
 @dataclass
 class _FakeEvent:
-    """Minimal fake event wrapper matching the adapter's read path."""
+    """Minimal fake event wrapper matching the runtime read path."""
 
     data: _FakeEventData | None
     type: str = 'assistant.message'
 
 
 class _FakeSession:
-    """Deterministic fake Copilot session for adapter tests."""
+    """Deterministic fake Copilot session for runtime tests."""
 
     def __init__(
         self,
@@ -106,12 +106,12 @@ class _FakeSession:
         return _unsubscribe
 
     async def disconnect(self) -> None:
-        """Track that the adapter tears the session down after each request."""
+        """Track that the runtime tears the session down after each request."""
         self.disconnected = True
 
 
 class _FakeClient:
-    """Deterministic fake Copilot client for adapter tests."""
+    """Deterministic fake Copilot client for runtime tests."""
 
     def __init__(self, *, session: _FakeSession, state: str = 'disconnected') -> None:
         """Store the fake session and initial lifecycle state."""
@@ -162,7 +162,7 @@ def _build_request(
     runtime_auth_token: str | None = None,
     stream: bool = False,
 ) -> CanonicalChatRequest:
-    """Construct a stable canonical request used by runtime adapter tests."""
+    """Construct a stable canonical request used by runtime tests."""
     return CanonicalChatRequest(
         runtime_auth_token=runtime_auth_token,
         model_alias='default',
@@ -172,8 +172,8 @@ def _build_request(
 
 
 @pytest.mark.asyncio
-async def test_copilot_runtime_adapter_executes_and_translates_completion() -> None:
-    """Verify that the adapter starts the client, sends the prompt, and tears down."""
+async def test_copilot_runtime_executes_and_translates_completion() -> None:
+    """Verify that the runtime starts the client, sends the prompt, and tears down."""
     session = _FakeSession(
         event=_FakeEvent(
             data=_FakeEventData(
@@ -185,13 +185,13 @@ async def test_copilot_runtime_adapter_executes_and_translates_completion() -> N
         )
     )
     client = _FakeClient(session=session)
-    adapter = CopilotRuntimeAdapter(
+    runtime = CopilotRuntime(
         client_factory=lambda: cast('CopilotClient', client),
         timeout_seconds=15.0,
         working_directory='/workspace',
     )
 
-    completion = await adapter.complete_chat(
+    completion = await runtime.complete_chat(
         request=_build_request(),
         route=ResolvedRoute(
             runtime='copilot',
@@ -216,14 +216,14 @@ async def test_copilot_runtime_adapter_executes_and_translates_completion() -> N
     assert completion.completion_tokens == 5
 
 
-def test_copilot_runtime_adapter_defaults_to_subprocess_mode() -> None:
-    """Verify that the adapter reports subprocess mode."""
-    adapter = CopilotRuntimeAdapter()
+def test_copilot_runtime_defaults_to_subprocess_mode() -> None:
+    """Verify that the runtime reports subprocess mode."""
+    runtime = CopilotRuntime()
 
-    assert adapter.connection_mode == 'subprocess'
+    assert runtime.connection_mode == 'subprocess'
 
 
-def test_copilot_runtime_adapter_builds_default_client_without_external_config(
+def test_copilot_runtime_builds_default_client_without_external_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify that the default client uses the SDK default configuration."""
@@ -243,18 +243,18 @@ def test_copilot_runtime_adapter_builds_default_client_without_external_config(
             captured_arguments['auto_start'] = auto_start
 
     monkeypatch.setattr(
-        'copilot_model_provider.runtimes.copilot.CopilotClient',
+        'copilot_model_provider.runtimes.copilot_runtime.CopilotClient',
         _CapturedClient,
     )
 
-    adapter = CopilotRuntimeAdapter()
-    adapter._get_or_create_client()
+    runtime = CopilotRuntime()
+    runtime._get_or_create_client()
 
     assert captured_arguments['config'] is None
     assert captured_arguments['auto_start'] is False
 
 
-def test_copilot_runtime_adapter_builds_authenticated_subprocess_client(
+def test_copilot_runtime_builds_authenticated_subprocess_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify that authenticated clients use subprocess mode with github_token."""
@@ -274,12 +274,12 @@ def test_copilot_runtime_adapter_builds_authenticated_subprocess_client(
             captured_arguments['auto_start'] = auto_start
 
     monkeypatch.setattr(
-        'copilot_model_provider.runtimes.copilot.CopilotClient',
+        'copilot_model_provider.runtimes.copilot_runtime.CopilotClient',
         _CapturedClient,
     )
 
-    adapter = CopilotRuntimeAdapter(working_directory='/workspace')
-    adapter._build_authenticated_client('github-token-123')
+    runtime = CopilotRuntime(working_directory='/workspace')
+    runtime._build_authenticated_client('github-token-123')
 
     config = cast('SubprocessConfig', captured_arguments['config'])
     assert isinstance(config, SubprocessConfig)
@@ -289,7 +289,7 @@ def test_copilot_runtime_adapter_builds_authenticated_subprocess_client(
 
 
 @pytest.mark.asyncio
-async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bearer_tokens() -> (
+async def test_copilot_runtime_uses_authenticated_client_factory_for_bearer_tokens() -> (
     None
 ):
     """Verify that bearer-token requests use a short-lived authenticated client."""
@@ -299,14 +299,14 @@ async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bea
     )
     authed_client = _FakeClient(session=authed_session)
     captured_tokens: list[str] = []
-    adapter = CopilotRuntimeAdapter(
+    runtime = CopilotRuntime(
         client_factory=lambda: cast('CopilotClient', default_client),
         authenticated_client_factory=lambda token: (
             captured_tokens.append(token) or cast('CopilotClient', authed_client)
         ),
     )
 
-    completion = await adapter.complete_chat(
+    completion = await runtime.complete_chat(
         request=_build_request(
             runtime_auth_token='github-token-123',  # noqa: S106 - deterministic test token
         ),
@@ -323,10 +323,10 @@ async def test_copilot_runtime_adapter_uses_authenticated_client_factory_for_bea
     assert completion.output_text == 'Hi from authed client'
 
 
-def test_copilot_runtime_adapter_denies_runtime_permission_requests() -> None:
+def test_copilot_runtime_denies_runtime_permission_requests() -> None:
     """Verify that the thin provider denies server-side permission requests."""
-    adapter = CopilotRuntimeAdapter()
-    result = adapter._deny_permission_request(
+    runtime = CopilotRuntime()
+    result = runtime._deny_permission_request(
         PermissionRequest.from_dict({'kind': 'custom-tool', 'toolName': 'bash'}),
         {},
     )
@@ -336,15 +336,15 @@ def test_copilot_runtime_adapter_denies_runtime_permission_requests() -> None:
 
 
 @pytest.mark.asyncio
-async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_content() -> None:
+async def test_copilot_runtime_raises_when_runtime_returns_no_content() -> None:
     """Verify that empty assistant messages become structured provider failures."""
     session = _FakeSession(event=_FakeEvent(data=_FakeEventData(content=None)))
-    adapter = CopilotRuntimeAdapter(
+    runtime = CopilotRuntime(
         client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
     )
 
     with pytest.raises(ProviderError, match='Copilot runtime returned no assistant'):
-        await adapter.complete_chat(
+        await runtime.complete_chat(
             request=_build_request(),
             route=ResolvedRoute(
                 runtime='copilot',
@@ -354,17 +354,15 @@ async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_content() 
 
 
 @pytest.mark.asyncio
-async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_event_data() -> (
-    None
-):
+async def test_copilot_runtime_raises_when_runtime_returns_no_event_data() -> None:
     """Verify that missing event data becomes a structured provider failure."""
     session = _FakeSession(event=_FakeEvent(data=None))
-    adapter = CopilotRuntimeAdapter(
+    runtime = CopilotRuntime(
         client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
     )
 
     with pytest.raises(ProviderError, match='Copilot runtime returned no assistant'):
-        await adapter.complete_chat(
+        await runtime.complete_chat(
             request=_build_request(),
             route=ResolvedRoute(
                 runtime='copilot',
@@ -374,7 +372,7 @@ async def test_copilot_runtime_adapter_raises_when_runtime_returns_no_event_data
 
 
 @pytest.mark.asyncio
-async def test_copilot_runtime_adapter_raises_when_token_metadata_is_invalid() -> None:
+async def test_copilot_runtime_raises_when_token_metadata_is_invalid() -> None:
     """Verify that malformed token metadata is normalized into ProviderError."""
     session = _FakeSession(
         event=_FakeEvent(
@@ -385,12 +383,12 @@ async def test_copilot_runtime_adapter_raises_when_token_metadata_is_invalid() -
             )
         )
     )
-    adapter = CopilotRuntimeAdapter(
+    runtime = CopilotRuntime(
         client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
     )
 
     with pytest.raises(ProviderError, match='invalid token metadata'):
-        await adapter.complete_chat(
+        await runtime.complete_chat(
             request=_build_request(),
             route=ResolvedRoute(
                 runtime='copilot',
@@ -400,7 +398,7 @@ async def test_copilot_runtime_adapter_raises_when_token_metadata_is_invalid() -
 
 
 @pytest.mark.asyncio
-async def test_copilot_runtime_adapter_streams_events_and_keeps_session_id() -> None:
+async def test_copilot_runtime_streams_events_and_keeps_session_id() -> None:
     """Verify that streaming execution yields ordered events and session metadata."""
     session = _FakeSession(
         session_id='copilot-session-stream',
@@ -424,11 +422,9 @@ async def test_copilot_runtime_adapter_streams_events_and_keeps_session_id() -> 
         ],
     )
     client = _FakeClient(session=session)
-    adapter = CopilotRuntimeAdapter(
-        client_factory=lambda: cast('CopilotClient', client)
-    )
+    runtime = CopilotRuntime(client_factory=lambda: cast('CopilotClient', client))
 
-    runtime_stream = await adapter.stream_chat(
+    runtime_stream = await runtime.stream_chat(
         request=_build_request(stream=True),
         route=ResolvedRoute(
             runtime='copilot',

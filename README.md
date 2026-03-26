@@ -16,7 +16,7 @@ Today it contains:
 - a service-owned model catalog and OpenAI-compatible `GET /v1/models`
 - an OpenAI-compatible `POST /v1/chat/completions` supporting non-streaming and streaming SSE behavior
 - a thin OpenAI-compatible `POST /v1/responses` surface for Codex-style clients
-- a Copilot SDK-backed runtime adapter for thin stateless chat execution
+- a Copilot SDK-backed runtime for thin stateless chat execution
 - a container packaging baseline (`Dockerfile`, `.dockerignore`) plus a root `.env.example` for local token/config setup
 - focused release-gate integration coverage for models, chat, Responses, and Docker-backed end-to-end execution
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
@@ -49,7 +49,7 @@ At a high level, the target system is:
    for OpenAI-style clients first, with room for additional protocol facades later
 2. a **canonical core**
    for request normalization, model catalog, routing, and event translation
-3. a **Copilot runtime adapter**
+3. a **Copilot runtime**
    that uses `copilot-sdk` as the first execution backend
 
 The key architectural choice is that this project treats `copilot-sdk` as the execution backend while keeping the current provider implementation intentionally **thin and stateless**.
@@ -72,7 +72,7 @@ In scope:
 - SSE streaming for chat completions
 - thin OpenAI-compatible `/v1/responses`
 - a service-owned model catalog
-- a Copilot runtime adapter
+- a Copilot runtime
 - subprocess-backed request-scoped GitHub bearer-token passthrough
 
 Out of scope for the current MVP:
@@ -144,7 +144,7 @@ Both commands start the provider through `uvicorn` using the app factory entrypo
 
 ### Packaging-oriented runtime baseline
 
-The current packaging baseline runs the provider as a normal ASGI service and lets the runtime adapter use the SDK's subprocess-backed execution mode.
+The current packaging baseline runs the provider as a normal ASGI service and lets the runtime use the SDK's subprocess-backed execution mode.
 
 ```bash
 export COPILOT_MODEL_PROVIDER_SERVER_HOST=0.0.0.0
@@ -215,5 +215,5 @@ The historical MVP slug includes broader session/tool/MCP branches, but the curr
 ## Notes
 
 - Logging is expected to use `structlog`.
-- The design assumes `copilot-sdk` remains the primary runtime adapter for the first release.
+- The design assumes `copilot-sdk` remains the primary runtime integration for the first release.
 - If you are looking for the implementation plan, start with `plans/copilot-model-provider-mvp/plan.md`.

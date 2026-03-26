@@ -34,6 +34,7 @@ def normalize_openai_responses_request(
     request: OpenAIResponsesCreateRequest,
     request_id: str | None = None,
     conversation_id: str | None = None,
+    runtime_auth_token: str | None = None,
 ) -> CanonicalChatRequest:
     """Normalize an OpenAI Responses request into the provider chat contract.
 
@@ -43,6 +44,8 @@ def normalize_openai_responses_request(
             execution request.
         conversation_id: Optional client-supplied conversation identifier kept as
             request metadata without enabling provider-side session state.
+        runtime_auth_token: Optional bearer token forwarded to the runtime layer
+            for this one request.
 
     Returns:
         A ``CanonicalChatRequest`` suitable for routing and execution through the
@@ -63,6 +66,7 @@ def normalize_openai_responses_request(
     return CanonicalChatRequest(
         request_id=request_id,
         conversation_id=conversation_id,
+        runtime_auth_token=runtime_auth_token,
         model_alias=request.model,
         messages=messages,
         stream=request.stream,
@@ -115,7 +119,7 @@ def build_openai_responses_response_from_completion(
 
     Args:
         request: The original validated Responses request body.
-        completion: Normalized runtime output returned by the adapter.
+        completion: Normalized runtime output returned by the runtime.
         response_id: Public response identifier to expose northbound.
         conversation_id: Optional client-supplied conversation identifier to
             expose in response metadata.

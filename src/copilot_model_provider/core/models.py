@@ -38,7 +38,7 @@ class CanonicalChatMessage(BaseModel):
 
 
 class CanonicalChatRequest(BaseModel):
-    """Canonical chat request passed to runtime adapters."""
+    """Canonical chat request passed to runtime implementations."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -366,7 +366,7 @@ class ResolvedRoute(BaseModel):
 
 
 class RuntimeCompletion(BaseModel):
-    """Normalized runtime completion returned from a backend adapter."""
+    """Normalized runtime completion returned from a backend runtime."""
 
     model_config = ConfigDict(frozen=True)
 

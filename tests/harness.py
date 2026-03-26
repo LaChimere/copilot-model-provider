@@ -13,22 +13,22 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from copilot_model_provider.core.catalog import ModelCatalog
-    from copilot_model_provider.core.routing import ModelRouter
-    from copilot_model_provider.runtimes.base import RuntimeAdapter
+    from copilot_model_provider.core.routing import ModelRouterProtocol
+    from copilot_model_provider.runtimes.protocols import RuntimeProtocol
 
 
 def build_test_app(
     *,
     settings: ProviderSettings | None = None,
-    runtime_adapter: RuntimeAdapter | None = None,
+    runtime: RuntimeProtocol | None = None,
     model_catalog: ModelCatalog | None = None,
-    model_router: ModelRouter | None = None,
+    model_router: ModelRouterProtocol | None = None,
 ) -> FastAPI:
     """Build the scaffold app with test-friendly defaults.
 
     Args:
         settings: Optional settings override for specialized test scenarios.
-        runtime_adapter: Optional runtime adapter override so tests can inject
+        runtime: Optional runtime override so tests can inject
             deterministic execution behavior.
         model_catalog: Optional model catalog override for route tests.
         model_router: Optional model router override when tests need explicit routing.
@@ -41,7 +41,7 @@ def build_test_app(
     resolved_settings = settings or ProviderSettings(environment='test')
     return create_app(
         settings=resolved_settings,
-        runtime_adapter=runtime_adapter,
+        runtime=runtime,
         model_catalog=model_catalog,
         model_router=model_router,
     )
@@ -50,15 +50,15 @@ def build_test_app(
 def build_async_client(
     *,
     settings: ProviderSettings | None = None,
-    runtime_adapter: RuntimeAdapter | None = None,
+    runtime: RuntimeProtocol | None = None,
     model_catalog: ModelCatalog | None = None,
-    model_router: ModelRouter | None = None,
+    model_router: ModelRouterProtocol | None = None,
 ) -> httpx.AsyncClient:
     """Build an async HTTP client bound directly to the in-process ASGI app.
 
     Args:
         settings: Optional settings override for the app under test.
-        runtime_adapter: Optional runtime adapter override for deterministic
+        runtime: Optional runtime override for deterministic
             chat execution.
         model_catalog: Optional model catalog override for route tests.
         model_router: Optional model router override when tests need explicit routing.
@@ -70,7 +70,7 @@ def build_async_client(
     """
     app = build_test_app(
         settings=settings,
-        runtime_adapter=runtime_adapter,
+        runtime=runtime,
         model_catalog=model_catalog,
         model_router=model_router,
     )

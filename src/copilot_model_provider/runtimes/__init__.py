@@ -1,6 +1,6 @@
-"""Runtime adapter contracts for the provider scaffold."""
+"""Runtime contracts for the provider scaffold."""
 
-from .base import RuntimeAdapter
-from .copilot import CopilotRuntimeAdapter
+from .copilot_runtime import CopilotRuntime
+from .protocols import RuntimeProtocol
 
-__all__ = ['CopilotRuntimeAdapter', 'RuntimeAdapter']
+__all__ = ['CopilotRuntime', 'RuntimeProtocol']

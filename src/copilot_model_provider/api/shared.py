@@ -7,11 +7,71 @@ from typing import TYPE_CHECKING
 from copilot.generated.session_events import SessionEventType
 
 from copilot_model_provider.core.errors import ProviderError
+from copilot_model_provider.streaming.events import AssistantTextDeltaEvent
+from copilot_model_provider.streaming.translators import translate_session_event
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from copilot.generated.session_events import SessionEvent
 
-    from copilot_model_provider.runtimes.base import RuntimeEventStream
+    from copilot_model_provider.core.models import CanonicalChatRequest, ResolvedRoute
+    from copilot_model_provider.runtimes.protocols import (
+        RuntimeEventStream,
+        RuntimeProtocol,
+    )
+    from copilot_model_provider.streaming.events import CanonicalStreamingEvent
+
+
+async def open_runtime_event_stream(
+    *,
+    runtime: RuntimeProtocol,
+    request: CanonicalChatRequest,
+    route: ResolvedRoute,
+) -> RuntimeEventStream:
+    """Open a runtime-owned streaming session for one canonical request.
+
+    Args:
+        runtime: Runtime implementation that owns the streaming execution path.
+        request: Canonical request that should execute through the runtime.
+        route: Resolved runtime target for the current request.
+
+    Returns:
+        A ``RuntimeEventStream`` ready to be consumed by an HTTP streaming route.
+
+    """
+    return await runtime.stream_chat(request=request, route=route)
+
+
+async def iter_canonical_runtime_stream_events(
+    *,
+    runtime_stream: RuntimeEventStream,
+) -> AsyncIterator[CanonicalStreamingEvent]:
+    """Yield canonical stream events with shared de-duplication behavior.
+
+    Args:
+        runtime_stream: Runtime-owned event stream returned by the active runtime.
+
+    Yields:
+        Canonical stream events that are relevant to the northbound transport.
+
+    """
+    saw_text_delta = False
+    async for event in runtime_stream.events:
+        if should_skip_aggregated_assistant_message(
+            event=event,
+            saw_text_delta=saw_text_delta,
+        ):
+            continue
+
+        stream_event = translate_session_event(event=event)
+        if stream_event is None:
+            continue
+
+        if isinstance(stream_event, AssistantTextDeltaEvent):
+            saw_text_delta = True
+
+        yield stream_event
 
 
 def normalize_optional_header_value(*, value: str | None) -> str | None:

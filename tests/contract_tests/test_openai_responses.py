@@ -13,20 +13,28 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
-from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
+from copilot_model_provider.runtimes.protocols import (
+    RuntimeEventStream,
+    RuntimeProtocol,
+)
 from tests.harness import build_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
-class _FakeResponsesRuntimeAdapter(RuntimeAdapter):
-    """Deterministic runtime adapter used by Responses HTTP contract tests."""
+class _FakeResponsesRuntime(RuntimeProtocol):
+    """Deterministic runtime used by Responses HTTP contract tests."""
 
     def __init__(self) -> None:
-        """Initialize the fake runtime with a stable Copilot name."""
-        super().__init__(runtime_name='copilot')
+        """Initialize the fake runtime state."""
         self.last_request: CanonicalChatRequest | None = None
+
+    @property
+    @override
+    def runtime_name(self) -> str:
+        """Return the stable runtime identifier used by the fake runtime."""
+        return 'copilot'
 
     @override
     def default_route(self) -> ResolvedRoute:
@@ -90,7 +98,7 @@ class _FakeResponsesRuntimeAdapter(RuntimeAdapter):
         return RuntimeEventStream(session_id=None, events=_events())
 
 
-class _FakeResponsesAggregateRuntimeAdapter(_FakeResponsesRuntimeAdapter):
+class _FakeResponsesAggregateRuntime(_FakeResponsesRuntime):
     """Fake streaming runtime that emits a final aggregate assistant message."""
 
     @override
@@ -140,7 +148,7 @@ class _FakeResponsesAggregateRuntimeAdapter(_FakeResponsesRuntimeAdapter):
 @pytest.mark.asyncio
 async def test_post_responses_returns_openai_compatible_payload() -> None:
     """Verify that the Responses route returns the expected non-streaming payload."""
-    runtime_adapter = _FakeResponsesRuntimeAdapter()
+    runtime = _FakeResponsesRuntime()
     payload: dict[str, object] = {
         'model': 'default',
         'instructions': 'Be terse',
@@ -157,7 +165,7 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
             },
         ],
     }
-    async with build_async_client(runtime_adapter=runtime_adapter) as client:
+    async with build_async_client(runtime=runtime) as client:
         response = await client.post(
             '/v1/responses',
             json=payload,
@@ -178,10 +186,8 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
         'output_tokens': 6,
         'total_tokens': 15,
     }
-    assert runtime_adapter.last_request is not None
-    assert [
-        message.model_dump() for message in runtime_adapter.last_request.messages
-    ] == [
+    assert runtime.last_request is not None
+    assert [message.model_dump() for message in runtime.last_request.messages] == [
         {'role': 'system', 'content': 'Be terse'},
         {'role': 'system', 'content': 'Use plain text'},
         {'role': 'user', 'content': 'Hello'},
@@ -191,8 +197,8 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
 @pytest.mark.asyncio
 async def test_post_responses_extracts_bearer_token() -> None:
     """Verify that auth headers map into the canonical runtime request."""
-    runtime_adapter = _FakeResponsesRuntimeAdapter()
-    async with build_async_client(runtime_adapter=runtime_adapter) as client:
+    runtime = _FakeResponsesRuntime()
+    async with build_async_client(runtime=runtime) as client:
         response = await client.post(
             '/v1/responses',
             headers={
@@ -205,15 +211,15 @@ async def test_post_responses_extracts_bearer_token() -> None:
         )
 
     assert response.status_code == 200
-    assert runtime_adapter.last_request is not None
-    assert runtime_adapter.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
+    assert runtime.last_request is not None
+    assert runtime.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
 
 
 @pytest.mark.asyncio
 async def test_post_responses_streams_openai_compatible_sse_frames() -> None:
     """Verify that streaming Responses requests emit lifecycle SSE frames."""
     async with (
-        build_async_client(runtime_adapter=_FakeResponsesRuntimeAdapter()) as client,
+        build_async_client(runtime=_FakeResponsesRuntime()) as client,
         client.stream(
             'POST',
             '/v1/responses',
@@ -238,9 +244,7 @@ async def test_post_responses_streams_openai_compatible_sse_frames() -> None:
 async def test_post_responses_streaming_deduplicates_final_aggregate_message() -> None:
     """Verify that aggregate assistant.message events do not duplicate streamed text."""
     async with (
-        build_async_client(
-            runtime_adapter=_FakeResponsesAggregateRuntimeAdapter()
-        ) as client,
+        build_async_client(runtime=_FakeResponsesAggregateRuntime()) as client,
         client.stream(
             'POST',
             '/v1/responses',

@@ -41,7 +41,7 @@ class OpenAIChatCompletionChunk(BaseModel):
 
 
 class AssistantTextDeltaEvent(BaseModel):
-    """Canonical assistant text delta emitted by the streaming adapter layer."""
+    """Canonical assistant text delta emitted by the streaming runtime layer."""
 
     model_config = ConfigDict(frozen=True)
 

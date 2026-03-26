@@ -11,8 +11,10 @@ from fastapi.responses import StreamingResponse
 
 from copilot_model_provider.api.shared import (
     close_runtime_event_stream,
+    iter_canonical_runtime_stream_events,
     normalize_bearer_token,
-    should_skip_aggregated_assistant_message,
+    normalize_optional_header_value,
+    open_runtime_event_stream,
 )
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
@@ -40,13 +42,12 @@ from copilot_model_provider.streaming.responses import (
     encode_openai_responses_error_event,
     encode_openai_responses_event,
 )
-from copilot_model_provider.streaming.translators import translate_session_event
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from copilot_model_provider.core.routing import ModelRouter
-    from copilot_model_provider.runtimes.base import RuntimeAdapter
+    from copilot_model_provider.core.routing import ModelRouterProtocol
+    from copilot_model_provider.runtimes.protocols import RuntimeProtocol
 
 _AUTHORIZATION_HEADER_NAME = 'Authorization'
 _CLIENT_REQUEST_ID_HEADER_NAME = 'x-client-request-id'
@@ -55,8 +56,8 @@ _CLIENT_REQUEST_ID_HEADER_NAME = 'x-client-request-id'
 def install_openai_responses_route(
     app: FastAPI,
     *,
-    model_router: ModelRouter,
-    runtime_adapter: RuntimeAdapter,
+    model_router: ModelRouterProtocol,
+    runtime: RuntimeProtocol,
 ) -> None:
     """Install the OpenAI-compatible ``POST /v1/responses`` route."""
 
@@ -71,10 +72,8 @@ def install_openai_responses_route(
             Header(alias=_CLIENT_REQUEST_ID_HEADER_NAME),
         ] = None,
     ) -> OpenAIResponse | StreamingResponse:
-        """Execute a Responses request through the existing runtime adapter."""
-        request_id = (
-            client_request_id_header.strip() if client_request_id_header else None
-        )
+        """Execute a Responses request through the existing runtime."""
+        request_id = normalize_optional_header_value(value=client_request_id_header)
         if request_id is None:
             request_id = uuid4().hex
 
@@ -83,16 +82,17 @@ def install_openai_responses_route(
         canonical_request = normalize_openai_responses_request(
             request=request,
             request_id=request_id,
-        ).model_copy(update={'runtime_auth_token': runtime_auth_token})
+            runtime_auth_token=runtime_auth_token,
+        )
         if request.stream:
             return await _create_streaming_response(
                 request=request,
-                runtime_adapter=runtime_adapter,
+                runtime=runtime,
                 route=route,
                 canonical_request=canonical_request,
             )
 
-        completion = await runtime_adapter.complete_chat(
+        completion = await runtime.complete_chat(
             request=canonical_request,
             route=route,
         )
@@ -113,14 +113,15 @@ def install_openai_responses_route(
 async def _create_streaming_response(
     *,
     request: OpenAIResponsesCreateRequest,
-    runtime_adapter: RuntimeAdapter,
+    runtime: RuntimeProtocol,
     route: ResolvedRoute,
     canonical_request: CanonicalChatRequest,
 ) -> StreamingResponse:
     """Create a streaming OpenAI Responses-compatible SSE response."""
     runtime_stream = None
     try:
-        runtime_stream = await runtime_adapter.stream_chat(
+        runtime_stream = await open_runtime_event_stream(
+            runtime=runtime,
             request=canonical_request,
             route=route,
         )
@@ -137,7 +138,6 @@ async def _create_streaming_response(
         completed_at = created_at
         output_parts: list[str] = []
         completion_emitted = False
-        saw_text_delta = False
         yield encode_openai_responses_event(
             payload=build_openai_responses_created_event(
                 request=request,
@@ -162,17 +162,9 @@ async def _create_streaming_response(
         )
         sequence_number += 1
 
-        async for event in runtime_stream.events:
-            if should_skip_aggregated_assistant_message(
-                event=event,
-                saw_text_delta=saw_text_delta,
-            ):
-                continue
-
-            stream_event = translate_session_event(event=event)
-            if stream_event is None:
-                continue
-
+        async for stream_event in iter_canonical_runtime_stream_events(
+            runtime_stream=runtime_stream
+        ):
             if isinstance(stream_event, StreamingErrorEvent):
                 yield encode_openai_responses_error_event(
                     code=stream_event.code,
@@ -181,7 +173,6 @@ async def _create_streaming_response(
                 return
 
             if isinstance(stream_event, AssistantTextDeltaEvent):
-                saw_text_delta = True
                 output_parts.append(stream_event.text)
                 yield encode_openai_responses_event(
                     payload=build_openai_responses_output_text_delta_event(

@@ -82,7 +82,7 @@ Implemented in `src/copilot_model_provider/app.py`.
 Responsibilities:
 
 - load validated settings
-- construct the runtime adapter
+- construct the runtime
 - construct the model catalog and router
 - install routes and error handlers
 - optionally install the internal health endpoint
@@ -112,7 +112,7 @@ Responsibilities:
 - translate runtime completions into northbound response shapes
 - raise structured provider errors
 
-### 4.4 Runtime adapter
+### 4.4 Runtime layer
 
 Implemented in `src/copilot_model_provider/runtimes/`.
 
@@ -233,7 +233,7 @@ The router is intentionally static:
 
 ### 7.1 Runtime type
 
-The only shipped runtime adapter is `CopilotRuntimeAdapter` in `src/copilot_model_provider/runtimes/copilot.py`.
+The only shipped runtime is `CopilotRuntime` in `src/copilot_model_provider/runtimes/copilot_runtime.py`.
 
 Its connection mode is always:
 
@@ -272,7 +272,7 @@ Used when no bearer token is present.
 Behavior:
 
 - created lazily
-- cached on the adapter
+- cached on the runtime
 - reused across unauthenticated requests
 
 #### Request-scoped authenticated client
@@ -289,7 +289,7 @@ This keeps runtime auth request-scoped without introducing provider-owned identi
 
 ### 7.4 Non-streaming execution
 
-Implemented in `CopilotRuntimeAdapter.complete_chat()`.
+Implemented in `CopilotRuntime.complete_chat()`.
 
 Behavior:
 
@@ -308,7 +308,7 @@ Structured failures include:
 
 ### 7.5 Streaming execution
 
-Implemented in `CopilotRuntimeAdapter.stream_chat()`.
+Implemented in `CopilotRuntime.stream_chat()`.
 
 Behavior:
 
@@ -457,7 +457,7 @@ Validate:
 
 - normalization logic
 - catalog/router behavior
-- runtime adapter behavior
+- runtime behavior
 - streaming translation helpers
 - config validation
 
@@ -503,8 +503,8 @@ Primary entrypoints and modules:
 - `src/copilot_model_provider/core/catalog.py`
 - `src/copilot_model_provider/core/routing.py`
 - `src/copilot_model_provider/core/errors.py`
-- `src/copilot_model_provider/runtimes/base.py`
-- `src/copilot_model_provider/runtimes/copilot.py`
+- `src/copilot_model_provider/runtimes/protocols/runtime.py`
+- `src/copilot_model_provider/runtimes/copilot_runtime.py`
 - `src/copilot_model_provider/streaming/translators.py`
 - `src/copilot_model_provider/streaming/sse.py`
 - `src/copilot_model_provider/streaming/responses.py`
@@ -515,7 +515,7 @@ The current repository is best understood as:
 
 - a thin OpenAI-compatible HTTP facade
 - a small internal normalization and routing layer
-- a subprocess-backed Copilot SDK execution adapter
+- a subprocess-backed Copilot SDK runtime
 - a stateless provider with request-scoped auth passthrough
 
 That narrower definition is the correct design baseline for the code currently shipped in `src/copilot_model_provider/`.

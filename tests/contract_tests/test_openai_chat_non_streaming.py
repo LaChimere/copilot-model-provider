@@ -13,20 +13,28 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
-from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
+from copilot_model_provider.runtimes.protocols import (
+    RuntimeEventStream,
+    RuntimeProtocol,
+)
 from tests.harness import build_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
-class _FakeChatRuntimeAdapter(RuntimeAdapter):
-    """Deterministic runtime adapter used by HTTP contract tests."""
+class _FakeChatRuntime(RuntimeProtocol):
+    """Deterministic runtime used by HTTP contract tests."""
 
     def __init__(self) -> None:
-        """Initialize the fake runtime with a stable Copilot name."""
-        super().__init__(runtime_name='copilot')
+        """Initialize the fake runtime state."""
         self.last_request: CanonicalChatRequest | None = None
+
+    @property
+    @override
+    def runtime_name(self) -> str:
+        """Return the stable runtime identifier used by the fake runtime."""
+        return 'copilot'
 
     @override
     def default_route(self) -> ResolvedRoute:
@@ -93,11 +101,60 @@ class _FakeChatRuntimeAdapter(RuntimeAdapter):
         )
 
 
+class _FakeChatAggregateRuntime(_FakeChatRuntime):
+    """Fake streaming runtime that emits a final aggregate assistant message."""
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit both deltas and a final assistant.message to test de-duplication."""
+        del request, route
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield a delta, an aggregate message, and a terminal turn-end event."""
+            for event in (
+                SessionEvent.from_dict(
+                    {
+                        'id': '00000000-0000-0000-0000-000000000011',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.message_delta',
+                        'data': {'deltaContent': 'Hello'},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '00000000-0000-0000-0000-000000000012',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.message',
+                        'data': {'content': 'Hello'},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '00000000-0000-0000-0000-000000000013',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.turn_end',
+                        'data': {'reason': 'stop'},
+                    }
+                ),
+            ):
+                yield event
+
+        return RuntimeEventStream(
+            session_id=None,
+            events=_events(),
+        )
+
+
 @pytest.mark.asyncio
 async def test_post_chat_completions_returns_openai_compatible_payload() -> None:
     """Verify that the HTTP route returns the expected non-streaming payload."""
-    runtime_adapter = _FakeChatRuntimeAdapter()
-    async with build_async_client(runtime_adapter=runtime_adapter) as client:
+    runtime = _FakeChatRuntime()
+    async with build_async_client(runtime=runtime) as client:
         response = await client.post(
             '/v1/chat/completions',
             json={
@@ -127,15 +184,15 @@ async def test_post_chat_completions_returns_openai_compatible_payload() -> None
         'completion_tokens': 6,
         'total_tokens': 15,
     }
-    assert runtime_adapter.last_request is not None
-    assert runtime_adapter.last_request.runtime_auth_token is None
+    assert runtime.last_request is not None
+    assert runtime.last_request.runtime_auth_token is None
 
 
 @pytest.mark.asyncio
 async def test_post_chat_completions_extracts_bearer_token() -> None:
     """Verify that bearer auth is normalized onto the canonical runtime request."""
-    runtime_adapter = _FakeChatRuntimeAdapter()
-    async with build_async_client(runtime_adapter=runtime_adapter) as client:
+    runtime = _FakeChatRuntime()
+    async with build_async_client(runtime=runtime) as client:
         response = await client.post(
             '/v1/chat/completions',
             headers={'Authorization': 'Bearer github-token-123'},
@@ -146,14 +203,14 @@ async def test_post_chat_completions_extracts_bearer_token() -> None:
         )
 
     assert response.status_code == 200
-    assert runtime_adapter.last_request is not None
-    assert runtime_adapter.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
+    assert runtime.last_request is not None
+    assert runtime.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
 
 
 @pytest.mark.asyncio
 async def test_post_chat_completions_rejects_non_bearer_authorization_headers() -> None:
     """Verify that malformed Authorization headers fail fast."""
-    async with build_async_client(runtime_adapter=_FakeChatRuntimeAdapter()) as client:
+    async with build_async_client(runtime=_FakeChatRuntime()) as client:
         response = await client.post(
             '/v1/chat/completions',
             headers={'Authorization': 'Token github-token-123'},
@@ -171,7 +228,7 @@ async def test_post_chat_completions_rejects_non_bearer_authorization_headers() 
 async def test_post_chat_completions_streams_openai_compatible_sse_frames() -> None:
     """Verify that streaming requests emit OpenAI-compatible SSE frames."""
     async with (
-        build_async_client(runtime_adapter=_FakeChatRuntimeAdapter()) as client,
+        build_async_client(runtime=_FakeChatRuntime()) as client,
         client.stream(
             'POST',
             '/v1/chat/completions',
@@ -189,3 +246,26 @@ async def test_post_chat_completions_streams_openai_compatible_sse_frames() -> N
     assert '"object":"chat.completion.chunk"' in payload
     assert '"content":"Hello"' in payload
     assert 'data: [DONE]\n\n' in payload
+
+
+@pytest.mark.asyncio
+async def test_post_chat_completions_streaming_deduplicates_final_aggregate_message() -> (
+    None
+):
+    """Verify that aggregate assistant.message events do not duplicate streamed text."""
+    async with (
+        build_async_client(runtime=_FakeChatAggregateRuntime()) as client,
+        client.stream(
+            'POST',
+            '/v1/chat/completions',
+            json={
+                'model': 'default',
+                'stream': True,
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        ) as response,
+    ):
+        payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+    assert response.status_code == 200
+    assert payload.count('"content":"Hello"') == 1

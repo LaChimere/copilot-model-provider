@@ -1,4 +1,4 @@
-"""Copilot SDK-backed runtime adapter for chat execution."""
+"""Copilot SDK-backed runtime for chat execution."""
 
 from __future__ import annotations
 
@@ -22,7 +22,10 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
-from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
+from copilot_model_provider.runtimes.protocols import (
+    RuntimeEventStream,
+    RuntimeProtocol,
+)
 
 if TYPE_CHECKING:
     from copilot.session import CopilotSession
@@ -33,7 +36,7 @@ PermissionRequestHandler = Callable[
 ]
 
 
-class CopilotRuntimeAdapter(RuntimeAdapter):
+class CopilotRuntime(RuntimeProtocol):
     """Execute stateless chat completions through the installed Copilot SDK."""
 
     def __init__(
@@ -44,7 +47,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         timeout_seconds: float = 60.0,
         working_directory: str | None = None,
     ) -> None:
-        """Initialize the adapter with lazy Copilot client construction.
+        """Initialize the runtime with lazy Copilot client construction.
 
         Args:
             client_factory: Optional factory used to construct the underlying
@@ -58,7 +61,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
                 ephemeral Copilot sessions.
 
         """
-        super().__init__(runtime_name='copilot')
+        self._runtime_name = 'copilot'
         self._client_factory = client_factory or self._build_default_client
         self._authenticated_client_factory = (
             authenticated_client_factory or self._build_authenticated_client
@@ -68,8 +71,14 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         self._client: CopilotClient | None = None
 
     @property
+    @override
+    def runtime_name(self) -> str:
+        """Return the stable runtime identifier exposed by this runtime."""
+        return self._runtime_name
+
+    @property
     def connection_mode(self) -> str:
-        """Report the runtime connection mode used by the adapter."""
+        """Report the runtime connection mode used by this runtime."""
         return 'subprocess'
 
     @override
@@ -217,7 +226,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         """Opened Copilot session plus the client lifecycle policy that owns it."""
 
         session: CopilotSession
-        client: CopilotRuntimeAdapter._ResolvedCopilotClient
+        client: CopilotRuntime._ResolvedCopilotClient
 
     def _get_or_create_client(self) -> CopilotClient:
         """Build the lazy Copilot client on first use and cache it afterwards."""
@@ -227,7 +236,7 @@ class CopilotRuntimeAdapter(RuntimeAdapter):
         return self._client
 
     async def _ensure_client_started(self, client: CopilotClient) -> None:
-        """Start the Copilot client when the lazy adapter has not connected yet."""
+        """Start the Copilot client when the lazy runtime has not connected yet."""
         state = client.get_state()
         if state == 'error':
             raise ProviderError(

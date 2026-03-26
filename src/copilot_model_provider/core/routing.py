@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
@@ -13,6 +13,24 @@ from copilot_model_provider.core.models import (
 
 if TYPE_CHECKING:
     from copilot_model_provider.core.catalog import ModelCatalog
+
+
+@runtime_checkable
+class ModelRouterProtocol(Protocol):
+    """Protocol contract for public-model listing and alias resolution."""
+
+    @property
+    def model_catalog(self) -> ModelCatalog:
+        """Return the model catalog backing this routing policy."""
+        ...
+
+    def list_models_response(self) -> OpenAIModelListResponse:
+        """Build the public model-list response for the compatibility layer."""
+        ...
+
+    def resolve_model(self, *, alias: str) -> ResolvedRoute:
+        """Resolve one public model alias into runtime routing metadata."""
+        ...
 
 
 class ModelRouter:

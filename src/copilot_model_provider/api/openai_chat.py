@@ -12,7 +12,9 @@ from fastapi.responses import StreamingResponse
 
 from copilot_model_provider.api.shared import (
     close_runtime_event_stream,
+    iter_canonical_runtime_stream_events,
     normalize_bearer_token,
+    open_runtime_event_stream,
 )
 from copilot_model_provider.core.chat import (
     build_openai_chat_completion_response,
@@ -31,15 +33,14 @@ from copilot_model_provider.streaming.sse import (
     encode_sse_event,
 )
 from copilot_model_provider.streaming.translators import (
-    translate_session_event,
     translate_stream_event_to_openai_chunks,
 )
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from copilot_model_provider.core.routing import ModelRouter
-    from copilot_model_provider.runtimes.base import RuntimeAdapter
+    from copilot_model_provider.core.routing import ModelRouterProtocol
+    from copilot_model_provider.runtimes.protocols import RuntimeProtocol
 
 _AUTHORIZATION_HEADER_NAME = 'Authorization'
 
@@ -47,8 +48,8 @@ _AUTHORIZATION_HEADER_NAME = 'Authorization'
 def install_openai_chat_route(
     app: FastAPI,
     *,
-    model_router: ModelRouter,
-    runtime_adapter: RuntimeAdapter,
+    model_router: ModelRouterProtocol,
+    runtime: RuntimeProtocol,
 ) -> None:
     """Install the OpenAI-compatible ``POST /v1/chat/completions`` route."""
 
@@ -59,23 +60,24 @@ def install_openai_chat_route(
             Header(alias=_AUTHORIZATION_HEADER_NAME),
         ] = None,
     ) -> OpenAIChatCompletionResponse | StreamingResponse:
-        """Execute a chat completion through the runtime adapter."""
+        """Execute a chat completion through the runtime."""
         request_id = uuid4().hex
         route = model_router.resolve_model(alias=request.model)
         runtime_auth_token = normalize_bearer_token(value=authorization_header)
         canonical_request = normalize_openai_chat_request(
             request=request,
             request_id=request_id,
-        ).model_copy(update={'runtime_auth_token': runtime_auth_token})
+            runtime_auth_token=runtime_auth_token,
+        )
         if canonical_request.stream:
             return await _create_streaming_chat_completion(
                 request=request,
-                runtime_adapter=runtime_adapter,
+                runtime=runtime,
                 route=route,
                 canonical_request=canonical_request,
             )
 
-        completion = await runtime_adapter.complete_chat(
+        completion = await runtime.complete_chat(
             request=canonical_request,
             route=route,
         )
@@ -95,14 +97,15 @@ def install_openai_chat_route(
 async def _create_streaming_chat_completion(
     *,
     request: OpenAIChatCompletionRequest,
-    runtime_adapter: RuntimeAdapter,
+    runtime: RuntimeProtocol,
     route: ResolvedRoute,
     canonical_request: CanonicalChatRequest,
 ) -> StreamingResponse:
     """Create a streaming OpenAI-compatible SSE response."""
     runtime_stream = None
     try:
-        runtime_stream = await runtime_adapter.stream_chat(
+        runtime_stream = await open_runtime_event_stream(
+            runtime=runtime,
             request=canonical_request,
             route=route,
         )
@@ -116,11 +119,9 @@ async def _create_streaming_chat_completion(
     async def _frame_stream() -> AsyncIterator[str]:
         """Yield OpenAI-compatible SSE frames for one streaming chat response."""
         emit_role = True
-        async for event in runtime_stream.events:
-            stream_event = translate_session_event(event=event)
-            if stream_event is None:
-                continue
-
+        async for stream_event in iter_canonical_runtime_stream_events(
+            runtime_stream=runtime_stream
+        ):
             if isinstance(stream_event, StreamingErrorEvent):
                 yield encode_sse_event(
                     data=json.dumps(

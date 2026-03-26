@@ -28,7 +28,7 @@ from .models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
-from .routing import ModelRouter
+from .routing import ModelRouter, ModelRouterProtocol
 
 __all__ = [
     'CanonicalChatMessage',
@@ -39,6 +39,7 @@ __all__ = [
     'ModelCatalog',
     'ModelCatalogEntry',
     'ModelRouter',
+    'ModelRouterProtocol',
     'OpenAIChatCompletionChoice',
     'OpenAIChatCompletionRequest',
     'OpenAIChatCompletionResponse',
