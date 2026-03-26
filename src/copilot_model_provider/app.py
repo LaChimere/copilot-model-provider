@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from time import monotonic
+from typing import TYPE_CHECKING
+
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
 from .api.openai_chat import install_openai_chat_route
 from .api.openai_models import install_openai_models_route
@@ -15,6 +18,9 @@ from .core.models import InternalHealthResponse
 from .core.routing import ModelRouter, ModelRouterProtocol
 from .runtimes import CopilotRuntime
 from .runtimes.protocols import RuntimeProtocol
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 _logger = structlog.get_logger(__name__)
 
@@ -71,6 +77,7 @@ def create_app(
     app.state.model_catalog = resolved_catalog
     app.state.model_router = resolved_router
 
+    _install_request_logging_middleware(app)
     install_error_handlers(app)
     install_openai_models_route(app, model_router=resolved_router)
     install_openai_chat_route(
@@ -125,6 +132,60 @@ def _install_internal_health_route(
         response_model=InternalHealthResponse,
         methods=['GET'],
     )
+
+
+def _install_request_logging_middleware(app: FastAPI) -> None:
+    """Install a structlog-backed HTTP request logging middleware.
+
+    Args:
+        app: Application instance that should emit structured request logs.
+
+    """
+
+    async def _log_http_request(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Log one HTTP request/response cycle through structlog.
+
+        Args:
+            request: Incoming FastAPI request object.
+            call_next: FastAPI-provided continuation used to resolve the response.
+
+        Returns:
+            The response produced by the downstream route stack.
+
+        Raises:
+            Exception: Re-raises downstream exceptions after logging them.
+
+        """
+        started_at = monotonic()
+        client_host = request.client.host if request.client is not None else None
+        try:
+            response = await call_next(request)
+        except Exception:
+            _logger.exception(
+                'http_request_failed',
+                method=request.method,
+                path=request.url.path,
+                query=request.url.query or None,
+                client=client_host,
+                duration_ms=round((monotonic() - started_at) * 1000, 2),
+            )
+            raise
+
+        _logger.info(
+            'http_request_completed',
+            method=request.method,
+            path=request.url.path,
+            query=request.url.query or None,
+            client=client_host,
+            status_code=response.status_code,
+            duration_ms=round((monotonic() - started_at) * 1000, 2),
+        )
+        return response
+
+    app.middleware('http')(_log_http_request)
 
 
 def _require_runtime(runtime: object) -> RuntimeProtocol:

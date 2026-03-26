@@ -13,7 +13,7 @@ from copilot_model_provider.config import ProviderSettings
 from copilot_model_provider.core.catalog import create_default_model_catalog
 from copilot_model_provider.core.models import OpenAIModelListResponse
 from copilot_model_provider.core.routing import ModelRouter
-from tests.harness import build_test_app
+from tests.harness import build_async_client, build_test_app
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -81,6 +81,22 @@ def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
     assert app.state.model_router.model_catalog is app.state.model_catalog
 
 
+class _CapturedLogger:
+    """Record structlog-style info and exception calls for request logging tests."""
+
+    def __init__(self) -> None:
+        """Initialize the in-memory event sink."""
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        """Record one informational log event."""
+        self.events.append((event, kwargs))
+
+    def exception(self, event: str, **kwargs: object) -> None:
+        """Record one exception log event."""
+        self.events.append((event, kwargs))
+
+
 class _IncompleteRuntime:
     """Deliberately invalid runtime dependency for protocol validation tests."""
 
@@ -113,6 +129,33 @@ def test_create_app_rejects_router_dependencies_that_fail_protocol_validation() 
             settings=ProviderSettings(environment='test'),
             model_router=cast('Any', _IncompleteModelRouter()),
         )
+
+
+@pytest.mark.asyncio
+async def test_request_logging_middleware_emits_structured_completion_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that HTTP requests are logged through the structlog middleware."""
+    import importlib
+
+    app_module = importlib.import_module('copilot_model_provider.app')
+
+    captured_logger = _CapturedLogger()
+    monkeypatch.setattr(app_module, '_logger', captured_logger)
+
+    async with build_async_client() as client:
+        response = await client.get('/v1/models')
+
+    assert response.status_code == 200
+    completion_events = [
+        fields
+        for event, fields in captured_logger.events
+        if event == 'http_request_completed'
+    ]
+    assert len(completion_events) == 1
+    assert completion_events[0]['method'] == 'GET'
+    assert completion_events[0]['path'] == '/v1/models'
+    assert completion_events[0]['status_code'] == 200
 
 
 @pytest.mark.asyncio

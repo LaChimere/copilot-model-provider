@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import shutil
-from typing import Final
+from typing import Final, TypedDict
 
 import structlog
+import uvicorn
 
 from .config import ProviderSettings
+from .logging_config import configure_logging
 
 ASGI_APP_IMPORT_PATH = 'copilot_model_provider.app:app'
 ASGI_FACTORY_IMPORT_PATH = 'copilot_model_provider.app:create_app'
@@ -20,6 +20,17 @@ _SERVICE_SUMMARY: Final[str] = 'copilot-model-provider is a service package.'
 _ASGI_SERVER_REQUIREMENT: Final[str] = (
     'An installed ASGI server such as uvicorn is required to run the service.'
 )
+
+
+class UvicornServerKwargs(TypedDict):
+    """Typed uvicorn keyword arguments used by the service entrypoint."""
+
+    app: str
+    factory: bool
+    host: str
+    port: int
+    access_log: bool
+    log_config: None
 
 
 def build_startup_guidance_fields() -> dict[str, str]:
@@ -50,42 +61,31 @@ def build_startup_guidance() -> str:
     )
 
 
-def build_server_command(*, settings: ProviderSettings) -> tuple[str, ...]:
-    """Build the uvicorn command used by the package entrypoint."""
-    return (
-        UVICORN_EXECUTABLE_NAME,
-        ASGI_FACTORY_IMPORT_PATH,
-        '--factory',
-        '--host',
-        settings.server_host,
-        '--port',
-        str(settings.server_port),
-    )
+def build_server_kwargs(*, settings: ProviderSettings) -> UvicornServerKwargs:
+    """Build the uvicorn kwargs used by the package entrypoint.
 
+    Args:
+        settings: Validated provider settings for the running service process.
 
-def _resolve_uvicorn_executable() -> str:
-    """Resolve the installed uvicorn executable path for process replacement."""
-    executable_path = shutil.which(UVICORN_EXECUTABLE_NAME)
-    if executable_path is None:
-        msg = (
-            'copilot-model-provider requires an installed "uvicorn" executable '
-            'to start the HTTP service'
-        )
-        raise RuntimeError(msg)
+    Returns:
+        A keyword-argument mapping suitable for ``uvicorn.run``.
 
-    return executable_path
-
-
-def _exec_server_command(*, executable_path: str, command: tuple[str, ...]) -> None:
-    """Replace the current process with the configured uvicorn server process."""
-    os.execv(executable_path, command)  # noqa: S606 - formal process entrypoint
+    """
+    return {
+        'app': ASGI_FACTORY_IMPORT_PATH,
+        'factory': True,
+        'host': settings.server_host,
+        'port': settings.server_port,
+        'access_log': False,
+        'log_config': None,
+    }
 
 
 def main() -> None:
     """Start the provider through the formal external ASGI server entrypoint."""
+    configure_logging()
     settings = ProviderSettings.from_env()
-    command = build_server_command(settings=settings)
-    executable_path = _resolve_uvicorn_executable()
+    server_kwargs = build_server_kwargs(settings=settings)
 
     _logger.info(
         'service_starting',
@@ -93,5 +93,6 @@ def main() -> None:
         host=settings.server_host,
         port=settings.server_port,
         factory_import_path=ASGI_FACTORY_IMPORT_PATH,
+        access_log=False,
     )
-    _exec_server_command(executable_path=executable_path, command=command)
+    uvicorn.run(**server_kwargs)
