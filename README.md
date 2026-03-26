@@ -112,6 +112,7 @@ src/
     api/
     config.py
     core/
+    logging_config.py
     runtimes/
     server.py
 
@@ -140,7 +141,7 @@ uv run python -m copilot_model_provider
 uv run copilot-model-provider
 ```
 
-Both commands start the provider through `uvicorn` using the app factory entrypoint.
+Both commands start the provider through programmatic `uvicorn.run(...)` using the app factory entrypoint. The service entrypoint configures `structlog` first, disables uvicorn's default access-log formatter, and lets the application emit HTTP request logs through the same structured logging pipeline.
 
 ### Packaging-oriented runtime baseline
 
@@ -214,6 +215,7 @@ The historical MVP slug includes broader session/tool/MCP branches, but the curr
 
 ## Notes
 
-- Logging is expected to use `structlog`.
+- Logging is unified through `structlog`, including service startup, uvicorn-integrated logs, and application-level HTTP request completion/failure events.
+- Concrete `CopilotRuntime` and `ModelRouter` implementations explicitly inherit `RuntimeProtocol` and `ModelRouterProtocol`.
 - The design assumes `copilot-sdk` remains the primary runtime integration for the first release.
 - If you are looking for the implementation plan, start with `plans/copilot-model-provider-mvp/plan.md`.

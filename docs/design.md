@@ -84,8 +84,16 @@ Responsibilities:
 - load validated settings
 - construct the runtime
 - construct the model catalog and router
+- validate injected runtimes and routers against explicit protocol contracts
 - install routes and error handlers
+- install structlog-backed HTTP request logging middleware
 - optionally install the internal health endpoint
+
+The formal service entrypoint in `src/copilot_model_provider/server.py` configures
+`structlog` through `src/copilot_model_provider/logging_config.py` before calling
+`uvicorn.run(...)` with the app factory entrypoint. Default uvicorn access logging
+is disabled so startup/service logs and per-request logs all flow through the same
+structured logging pipeline.
 
 ### 4.2 API layer
 
@@ -223,6 +231,10 @@ Behavior:
 - raises a structured `model_not_found` error for unknown aliases
 - produces the OpenAI-compatible `/v1/models` payload from the catalog
 
+The shipped `ModelRouter` explicitly implements `ModelRouterProtocol` so the
+composition root depends on a named routing contract rather than only on
+structural compatibility.
+
 The router is intentionally static:
 
 - no dynamic catalog mutation API exists
@@ -234,6 +246,9 @@ The router is intentionally static:
 ### 7.1 Runtime type
 
 The only shipped runtime is `CopilotRuntime` in `src/copilot_model_provider/runtimes/copilot_runtime.py`.
+
+`CopilotRuntime` explicitly implements `RuntimeProtocol` from
+`src/copilot_model_provider/runtimes/protocols/runtime.py`.
 
 Its connection mode is always:
 
@@ -493,6 +508,8 @@ Primary entrypoints and modules:
 
 - `src/copilot_model_provider/app.py`
 - `src/copilot_model_provider/config.py`
+- `src/copilot_model_provider/server.py`
+- `src/copilot_model_provider/logging_config.py`
 - `src/copilot_model_provider/api/openai_models.py`
 - `src/copilot_model_provider/api/openai_chat.py`
 - `src/copilot_model_provider/api/openai_responses.py`

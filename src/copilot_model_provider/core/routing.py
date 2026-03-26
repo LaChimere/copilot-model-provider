@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, override, runtime_checkable
 
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
@@ -33,7 +33,7 @@ class ModelRouterProtocol(Protocol):
         ...
 
 
-class ModelRouter:
+class ModelRouter(ModelRouterProtocol):
     """Resolve service-owned public model aliases into runtime routing metadata."""
 
     def __init__(self, *, model_catalog: ModelCatalog) -> None:
@@ -47,6 +47,7 @@ class ModelRouter:
         self._model_catalog = model_catalog
 
     @property
+    @override
     def model_catalog(self) -> ModelCatalog:
         """Return the catalog backing this router.
 
@@ -57,6 +58,7 @@ class ModelRouter:
         """
         return self._model_catalog
 
+    @override
     def list_models_response(self) -> OpenAIModelListResponse:
         """Build the OpenAI-compatible model listing response.
 
@@ -76,6 +78,7 @@ class ModelRouter:
             ]
         )
 
+    @override
     def resolve_model(self, *, alias: str) -> ResolvedRoute:
         """Resolve a public model alias into runtime routing metadata.
 

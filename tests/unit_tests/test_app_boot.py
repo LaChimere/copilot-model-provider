@@ -12,7 +12,9 @@ from copilot_model_provider.app import create_app
 from copilot_model_provider.config import ProviderSettings
 from copilot_model_provider.core.catalog import create_default_model_catalog
 from copilot_model_provider.core.models import OpenAIModelListResponse
-from copilot_model_provider.core.routing import ModelRouter
+from copilot_model_provider.core.routing import ModelRouter, ModelRouterProtocol
+from copilot_model_provider.runtimes import CopilotRuntime
+from copilot_model_provider.runtimes.protocols import RuntimeProtocol
 from tests.harness import build_async_client, build_test_app
 
 if TYPE_CHECKING:
@@ -79,6 +81,12 @@ def test_create_app_uses_router_catalog_when_router_is_supplied() -> None:
     assert app.state.model_router is router
     assert app.state.model_catalog is router_catalog
     assert app.state.model_router.model_catalog is app.state.model_catalog
+
+
+def test_protocol_implementations_are_explicitly_declared() -> None:
+    """Verify that concrete implementations explicitly inherit their protocols."""
+    assert RuntimeProtocol in CopilotRuntime.__bases__
+    assert ModelRouterProtocol in ModelRouter.__bases__
 
 
 class _CapturedLogger:
