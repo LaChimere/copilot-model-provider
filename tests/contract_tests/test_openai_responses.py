@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import pytest
 from copilot.generated.session_events import SessionEvent
 
+from copilot_model_provider.config import ProviderSettings
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     ResolvedRoute,
@@ -204,6 +205,57 @@ async def test_post_responses_extracts_bearer_token() -> None:
             headers={
                 'Authorization': 'Bearer github-token-123',
             },
+            json={
+                'model': 'default',
+                'input': 'Hello',
+            },
+        )
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert runtime.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
+
+
+@pytest.mark.asyncio
+async def test_post_responses_fall_back_to_configured_runtime_token() -> None:
+    """Verify that Responses requests use the configured runtime token when needed."""
+    runtime = _FakeResponsesRuntime()
+    async with build_async_client(
+        runtime=runtime,
+        settings=ProviderSettings(
+            environment='test',
+            runtime_auth_token='github-token-456',  # noqa: S106 - deterministic test token
+        ),
+    ) as client:
+        response = await client.post(
+            '/v1/responses',
+            json={
+                'model': 'default',
+                'input': 'Hello',
+            },
+        )
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert runtime.last_request.runtime_auth_token == 'github-token-456'  # noqa: S105 - deterministic test token
+
+
+@pytest.mark.asyncio
+async def test_post_responses_prefer_request_auth_over_configured_runtime_token() -> (
+    None
+):
+    """Verify that explicit Responses auth overrides the configured runtime token."""
+    runtime = _FakeResponsesRuntime()
+    async with build_async_client(
+        runtime=runtime,
+        settings=ProviderSettings(
+            environment='test',
+            runtime_auth_token='github-token-456',  # noqa: S106 - deterministic test token
+        ),
+    ) as client:
+        response = await client.post(
+            '/v1/responses',
+            headers={'Authorization': 'Bearer github-token-123'},
             json={
                 'model': 'default',
                 'input': 'Hello',

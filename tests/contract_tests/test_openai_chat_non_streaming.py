@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, override
 import pytest
 from copilot.generated.session_events import SessionEvent
 
+from copilot_model_provider.config import ProviderSettings
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     ResolvedRoute,
@@ -193,6 +194,57 @@ async def test_post_chat_completions_extracts_bearer_token() -> None:
     """Verify that bearer auth is normalized onto the canonical runtime request."""
     runtime = _FakeChatRuntime()
     async with build_async_client(runtime=runtime) as client:
+        response = await client.post(
+            '/v1/chat/completions',
+            headers={'Authorization': 'Bearer github-token-123'},
+            json={
+                'model': 'default',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert runtime.last_request.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
+
+
+@pytest.mark.asyncio
+async def test_post_chat_completions_fall_back_to_configured_runtime_token() -> None:
+    """Verify that requests without auth headers use the configured runtime token."""
+    runtime = _FakeChatRuntime()
+    async with build_async_client(
+        runtime=runtime,
+        settings=ProviderSettings(
+            environment='test',
+            runtime_auth_token='github-token-456',  # noqa: S106 - deterministic test token
+        ),
+    ) as client:
+        response = await client.post(
+            '/v1/chat/completions',
+            json={
+                'model': 'default',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert runtime.last_request.runtime_auth_token == 'github-token-456'  # noqa: S105 - deterministic test token
+
+
+@pytest.mark.asyncio
+async def test_post_chat_completions_prefer_request_auth_over_configured_runtime_token() -> (
+    None
+):
+    """Verify that explicit request auth overrides the configured container token."""
+    runtime = _FakeChatRuntime()
+    async with build_async_client(
+        runtime=runtime,
+        settings=ProviderSettings(
+            environment='test',
+            runtime_auth_token='github-token-456',  # noqa: S106 - deterministic test token
+        ),
+    ) as client:
         response = await client.post(
             '/v1/chat/completions',
             headers={'Authorization': 'Bearer github-token-123'},

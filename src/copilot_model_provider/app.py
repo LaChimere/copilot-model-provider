@@ -82,11 +82,13 @@ def create_app(
     install_openai_models_route(app, model_router=resolved_router)
     install_openai_chat_route(
         app,
+        default_runtime_auth_token=resolved_settings.runtime_auth_token,
         model_router=resolved_router,
         runtime=resolved_runtime,
     )
     install_openai_responses_route(
         app,
+        default_runtime_auth_token=resolved_settings.runtime_auth_token,
         model_router=resolved_router,
         runtime=resolved_runtime,
     )

@@ -153,7 +153,32 @@ export COPILOT_MODEL_PROVIDER_SERVER_PORT=8000
 uv run copilot-model-provider
 ```
 
-Request-scoped runtime auth uses the incoming `Authorization: Bearer ...` header. The provider forwards that token into a short-lived subprocess-backed Copilot client for the request and never persists the raw bearer token.
+### Recommended Docker deployment flow
+
+The repository treats the container image as the primary deployment example.
+
+Recommended auth flow:
+
+1. log in on the host with `gh auth login`
+2. resolve a token on the host with `gh auth token`
+3. pass that token into the container as `GITHUB_TOKEN`
+
+```bash
+gh auth login
+export GITHUB_TOKEN="$(gh auth token)"
+docker build -t copilot-model-provider:local .
+docker run --rm \
+  -e GITHUB_TOKEN \
+  -p 8000:8000 \
+  copilot-model-provider:local
+```
+
+Auth precedence is:
+
+- `Authorization: Bearer ...` on an individual request
+- otherwise the container-injected `GITHUB_TOKEN` / `GH_TOKEN`
+
+The provider forwards the selected token into a short-lived subprocess-backed Copilot client and never persists the raw bearer token.
 
 ### Local Codex / custom-provider baseline
 
@@ -165,7 +190,7 @@ See `.env.example` for the minimal local environment contract.
 
 ```bash
 docker build -t copilot-model-provider:local .
-docker run --rm -p 8000:8000 copilot-model-provider:local
+docker run --rm -e GITHUB_TOKEN -p 8000:8000 copilot-model-provider:local
 ```
 
 ### Lint and type-check

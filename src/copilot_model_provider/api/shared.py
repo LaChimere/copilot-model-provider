@@ -122,6 +122,34 @@ def normalize_bearer_token(*, value: str | None) -> str | None:
     return normalized_token
 
 
+def resolve_runtime_auth_token(
+    *,
+    authorization_header: str | None,
+    default_token: str | None,
+) -> str | None:
+    """Resolve the runtime auth token for one incoming request.
+
+    Args:
+        authorization_header: Raw ``Authorization`` header supplied by the client.
+        default_token: Optional service-level fallback token, typically injected
+            into the running container environment.
+
+    Returns:
+        The request-scoped bearer token when the header is present, otherwise the
+        normalized fallback token when configured, otherwise ``None``.
+
+    Raises:
+        ProviderError: If the client supplied an ``Authorization`` header that is
+            present but not in ``Bearer <token>`` format.
+
+    """
+    request_token = normalize_bearer_token(value=authorization_header)
+    if request_token is not None:
+        return request_token
+
+    return normalize_optional_header_value(value=default_token)
+
+
 async def close_runtime_event_stream(*, runtime_stream: RuntimeEventStream) -> None:
     """Close a runtime event stream before the HTTP response starts consuming it.
 

@@ -348,11 +348,25 @@ Behavior:
 
 Current auth behavior is intentionally narrow:
 
-- auth is request-scoped, not conversation-scoped
+- auth remains request/runtime-scoped, not conversation-scoped
+- `Authorization: Bearer ...` is the highest-priority auth source for a request
+- when the request omits `Authorization`, the service falls back to a host-resolved token injected into the container as `GITHUB_TOKEN` or `GH_TOKEN`
 - bearer tokens are forwarded into the runtime layer only
 - the provider does not persist raw bearer tokens
 - the provider does not derive or store auth-subject fingerprints
 - the provider does not implement a separate service-owned user/account system
+
+### 8.3 Recommended deployment auth path
+
+The recommended deployment flow is Docker-oriented:
+
+1. authenticate on the host with `gh auth login`
+2. obtain a token on the host with `gh auth token`
+3. inject that token into the container as `GITHUB_TOKEN`
+
+This keeps interactive OAuth outside the service container while still letting the
+running provider construct request-scoped Copilot SDK clients. Request headers can
+still override the container default on a per-request basis.
 
 ## 9. Streaming Behavior
 
@@ -437,6 +451,11 @@ Current environment-backed fields:
 - `default_runtime`
 - `runtime_timeout_seconds`
 - `runtime_working_directory`
+- `runtime_auth_token`
+
+In addition to the provider-prefixed settings above, the service also recognizes
+host-provided GitHub auth from `GITHUB_TOKEN` or `GH_TOKEN` as the default runtime
+token source when `runtime_auth_token` is not explicitly configured.
 
 Notably absent from the current implementation:
 

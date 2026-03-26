@@ -23,6 +23,7 @@ def test_defaults_are_stable() -> None:
     assert settings.internal_health_path == '/_internal/health'
     assert settings.default_runtime == 'copilot'
     assert settings.runtime_working_directory is None
+    assert settings.runtime_auth_token is None
 
 
 def test_from_env_reads_overrides() -> None:
@@ -36,6 +37,7 @@ def test_from_env_reads_overrides() -> None:
         'COPILOT_MODEL_PROVIDER_INTERNAL_HEALTH_PATH': '/_healthz',
         'COPILOT_MODEL_PROVIDER_DEFAULT_RUNTIME': 'custom-runtime',
         'COPILOT_MODEL_PROVIDER_RUNTIME_WORKING_DIRECTORY': ' /workspace ',
+        'COPILOT_MODEL_PROVIDER_RUNTIME_AUTH_TOKEN': ' github-token-123 ',
     }
 
     with patch.dict(os.environ, env, clear=False):
@@ -49,6 +51,33 @@ def test_from_env_reads_overrides() -> None:
     assert settings.internal_health_path == '/_healthz'
     assert settings.default_runtime == 'custom-runtime'
     assert settings.runtime_working_directory == ' /workspace '
+    assert settings.runtime_auth_token == 'github-token-123'  # noqa: S105 - deterministic test token
+
+
+def test_from_env_falls_back_to_github_token_when_provider_token_is_unset() -> None:
+    """Verify that host GitHub auth becomes the default runtime token for Docker flows."""
+    env = {
+        'GITHUB_TOKEN': ' github-token-456 ',
+    }
+
+    with patch.dict(os.environ, env, clear=False):
+        settings = ProviderSettings.from_env()
+
+    assert settings.runtime_auth_token == 'github-token-456'  # noqa: S105 - deterministic test token
+
+
+def test_from_env_prefers_provider_runtime_token_over_host_github_token() -> None:
+    """Verify that explicit provider config wins over host GitHub auth fallback."""
+    env = {
+        'COPILOT_MODEL_PROVIDER_RUNTIME_AUTH_TOKEN': 'provider-token-123',
+        'GITHUB_TOKEN': 'github-token-456',
+        'GH_TOKEN': 'github-token-789',
+    }
+
+    with patch.dict(os.environ, env, clear=False):
+        settings = ProviderSettings.from_env()
+
+    assert settings.runtime_auth_token == 'provider-token-123'  # noqa: S105 - deterministic test token
 
 
 def test_invalid_health_path_raises() -> None:

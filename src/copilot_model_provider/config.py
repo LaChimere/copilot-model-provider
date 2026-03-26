@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar, Literal, Self
 
 from pydantic import ValidationInfo, field_validator
@@ -32,6 +33,7 @@ class ProviderSettings(BaseSettings):
     default_runtime: str = 'copilot'
     runtime_timeout_seconds: float = 60.0
     runtime_working_directory: str | None = None
+    runtime_auth_token: str | None = None
 
     @field_validator('internal_health_path')
     @classmethod
@@ -90,6 +92,36 @@ class ProviderSettings(BaseSettings):
 
         return value
 
+    @field_validator('runtime_auth_token')
+    @classmethod
+    def _normalize_runtime_auth_token(
+        cls,
+        value: str | None,
+        _info: ValidationInfo,
+    ) -> str | None:
+        """Normalize optional runtime auth tokens so blank values become ``None``."""
+        if value is None:
+            return None
+
+        normalized_value = value.strip()
+        return normalized_value or None
+
+    @classmethod
+    def _resolve_host_runtime_auth_token(cls) -> str | None:
+        """Resolve the host-provided GitHub token for Docker-oriented deployments.
+
+        Returns:
+            The stripped token from ``GITHUB_TOKEN`` or ``GH_TOKEN`` when either
+            variable is present with non-whitespace text, otherwise ``None``.
+
+        """
+        for variable_name in ('GITHUB_TOKEN', 'GH_TOKEN'):
+            token = os.environ.get(variable_name, '').strip()
+            if token:
+                return token
+
+        return None
+
     @classmethod
     def from_env(cls) -> Self:
         """Build validated settings from ``COPILOT_MODEL_PROVIDER_*`` variables.
@@ -103,4 +135,14 @@ class ProviderSettings(BaseSettings):
             process environment.
 
         """
-        return cls()
+        settings = cls()
+        if settings.runtime_auth_token is not None:
+            return settings
+
+        fallback_runtime_auth_token = cls._resolve_host_runtime_auth_token()
+        if fallback_runtime_auth_token is None:
+            return settings
+
+        return settings.model_copy(
+            update={'runtime_auth_token': fallback_runtime_auth_token}
+        )

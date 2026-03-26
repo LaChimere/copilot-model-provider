@@ -12,9 +12,9 @@ from fastapi.responses import StreamingResponse
 from copilot_model_provider.api.shared import (
     close_runtime_event_stream,
     iter_canonical_runtime_stream_events,
-    normalize_bearer_token,
     normalize_optional_header_value,
     open_runtime_event_stream,
+    resolve_runtime_auth_token,
 )
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
@@ -56,6 +56,7 @@ _CLIENT_REQUEST_ID_HEADER_NAME = 'x-client-request-id'
 def install_openai_responses_route(
     app: FastAPI,
     *,
+    default_runtime_auth_token: str | None = None,
     model_router: ModelRouterProtocol,
     runtime: RuntimeProtocol,
 ) -> None:
@@ -78,7 +79,10 @@ def install_openai_responses_route(
             request_id = uuid4().hex
 
         route = model_router.resolve_model(alias=request.model)
-        runtime_auth_token = normalize_bearer_token(value=authorization_header)
+        runtime_auth_token = resolve_runtime_auth_token(
+            authorization_header=authorization_header,
+            default_token=default_runtime_auth_token,
+        )
         canonical_request = normalize_openai_responses_request(
             request=request,
             request_id=request_id,
