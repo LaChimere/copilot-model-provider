@@ -17,8 +17,9 @@
   - The Step 2 fan-out slices are merged, and the Step 3 convergence work is now implemented on `main`: the shared hot files wire in streaming transport, session persistence/resume, and locking behavior.
   - Step 4 is now also implemented on `main`: server-approved tool execution, MCP mounting, and policy-controlled permission handling are wired into runtime session creation and validated through focused integration coverage.
   - Step 5 is now implemented on `main`: release-gate integration coverage validates model alias listing, routed `runtime_model_id` selection, sessional alias enforcement, session persistence, and clean `model_not_found` responses for unknown aliases.
-  - The documented auth baseline for the next packaging slice is now caller-supplied GitHub bearer-token passthrough (direct token or OAuth-issued token), not a service-owned identity layer.
-  - The repository still has no `Dockerfile`, `.dockerignore`, compose file, formal server entrypoint, or production-oriented `cli_url` wiring, so containerized deployment remains a design and packaging follow-on rather than a completed capability.
+  - Step 6 is now implemented on `main`: the repository has a formal `server.py` entrypoint, `Dockerfile`, `.dockerignore`, `runtime_cli_url` wiring, subject-bound session resume enforcement, and container startup smoke.
+  - A later thin OpenAI-compatible `POST /v1/responses` follow-on is now implemented on `main` for Codex-style clients, including Responses SSE framing, Docker-backed Codex smoke, and a root `.env.example` documenting `GITHUB_TOKEN`.
+  - The documented auth baseline remains caller-supplied GitHub bearer-token passthrough (direct token or OAuth-issued token), not a service-owned identity layer.
 - Expected behavior:
   - The repository should expose the completed MVP surface over a `copilot-sdk` runtime adapter and then package that service for containerized deployment without violating the SDK's backend-services, scaling, and authentication guidance.
   - The packaging/auth model should keep the service as a wrapped provider: callers pass GitHub bearer tokens through per request, the service does not become a separate identity provider, raw tokens are never persisted in session state, and subject-bound session resume remains a Step 6 implementation requirement rather than a current capability.
@@ -45,13 +46,14 @@ Include concrete evidence. Prefer copy/paste of relevant excerpts with context.
 - Logs / stack traces:
   - Current repo validation is green for `ruff`, `pyright`, `ty`, and the thin service entrypoints (`python -m copilot_model_provider` / `copilot-model-provider`).
 - Failing tests (name + output excerpt):
-  - None at the time of this update; validation is green with `uv run pytest -q` (`114 passed`), and the enforced coverage gate remains satisfied at `94.51%`.
+  - None at the time of this update; validation is green with `uv run pytest -q` (`138 passed`), and the enforced coverage gate remains satisfied at `94.36%`.
 - Metrics (numbers + method):
   - Not applicable for containerization design yet; this update is about operational packaging prerequisites rather than benchmark results.
 - Repro steps (minimal):
   1. Inspect repository root: `docs/`, `plans/`, `src/`, `tests/`, and project configs exist.
   2. Read `docs/design.md`.
-  3. Confirm the current provider implementation and tests are present, but that no container assets (`Dockerfile`, compose file, `.dockerignore`) exist.
+  3. Confirm the current provider implementation, packaging assets (`Dockerfile`, `.dockerignore`, `.env.example`), and tests are present.
+  4. Confirm the repository now exposes `GET /v1/models`, `POST /v1/chat/completions`, and thin `POST /v1/responses`.
 
 ## Code Reading Notes
 List the most relevant files and what you learned.
@@ -64,9 +66,11 @@ List the most relevant files and what you learned.
 - `pyproject.toml` — now also includes `fastapi`, `pydantic-settings`, `pytest`, `pytest-asyncio`, `pytest-cov`, and `httpx`, which means the repo has standardized both in-process app testing and HTTP-level contract/smoke checks.
 - `src/copilot_model_provider/` — the app/config/core/runtime seams are in place, and the first public compatibility endpoint (`GET /v1/models`) is now wired through the app.
 - `tests/` — unit tests, contract tests, and integration coverage now exist for the functional MVP, so any containerization slice should add packaging/smoke coverage rather than redefining functional behavior.
+- `src/copilot_model_provider/api/openai_responses.py`, `core/responses.py`, and `streaming/responses.py` — the later Responses follow-on reuses canonical chat/session/runtime seams instead of building a parallel execution layer.
 - `AGENTS.md` — requires evidence-driven work, reviewable increments, and Gate 1 / Gate 2 when the work spans multiple components or includes multiple design options.
 - Official `copilot-sdk` setup/auth docs — the backend-services guide recommends an external headless CLI server connected via `cliUrl`, the scaling guide recommends sticky routing or shared storage for session state and explicit locking for shared sessions, and the auth docs support OAuth/env/BYOK auth without relying on interactive logged-in-user state for server-side deployments.
 - Chosen auth baseline — the provider remains service-first rather than identity-first: callers pass a GitHub bearer token directly or via OAuth, the service forwards that credential into runtime execution, raw runtime tokens are never stored, and subject-bound session resume must be added in the packaging slice before that flow is treated as production-ready.
+- `Dockerfile` — the current container baseline now follows the uv Docker guidance more closely: pinned official uv image, cache mounts for `uv sync`, multi-stage build, and non-root runtime execution.
 - Hot files for parallel planning:
   - `src/copilot_model_provider/api/openai_chat.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
@@ -101,7 +105,7 @@ For each experiment:
   - Interpretation: parallelism should be introduced only after shared runtime/API seams stop changing rapidly, with a designated convergence owner for the hot files.
 
 ## Open Questions / Unknowns
-- Q1: None blocking the functional MVP. For containerization, the recommended default is now clear from the official docs: API container + headless CLI container, internal-only transport, persistent CLI session-state storage, and explicit runtime auth injection.
+- Q1: None blocking the current repository state. The main remaining limitation is still the SDK surface gap for per-request GitHub auth injection when `runtime_cli_url` points to an external `ExternalServerConfig`.
 
 ## Dependency / Conflict Analysis
 - Serial prerequisite chain:
@@ -125,12 +129,12 @@ For each experiment:
 - Proposed direction:
   - Use a staged base -> read-only metadata -> chat execution -> streaming/session hardening -> tools/MCP completion sequence.
   - Keep tests with the code they validate.
-  - Keep provider-native session endpoints and provider-native response-style APIs out of the first sequence.
+  - Keep provider-native session endpoints out of the first sequence; if a Responses-compatible follow-on is needed, keep it thin and OpenAI-compatible rather than inventing a provider-native execution layer.
   - Keep MVP tool support limited to server-approved tools plus MCP.
   - Introduce lightweight E2E scaffolding early and expand it incrementally instead of deferring all running-app checks to the last PR.
   - If multiple agents are used, keep `PR 1` through `PR 3` serial, then fan out streaming and session-persistence work into separate branches/worktrees, and assign a single convergence owner before Tool/MCP completion.
   - Treat the plan as **five execution phases implemented through seven mergeable branches**: `PR 1`, `PR 2`, `PR 3`, streaming branch, session branch, convergence branch, and final Tool/MCP + release-gate branch.
-  - After the functional MVP, add one operational packaging follow-on focused on containerization: formal server entrypoint, provider API image, headless CLI container connectivity through `cliUrl`, persistent CLI session-state storage, internal-only CLI networking, caller-supplied GitHub bearer-token passthrough, subject-bound session resume enforcement, and optional BYOK secret injection.
+  - After the functional MVP, add operational follow-ons for containerization and thin OpenAI-compatible Responses/Codex compatibility: formal server entrypoint, provider API image, headless CLI container connectivity through `cliUrl`, persistent CLI session-state storage, internal-only CLI networking, caller-supplied GitHub bearer-token passthrough, subject-bound session resume enforcement, and a thin `/v1/responses` adapter validated through real Codex-style traffic.
 - Risks:
   - session, streaming, and tool support touch overlapping files (`api/openai_chat.py`, `runtimes/copilot.py`, `core/sessions.py`), so the split must keep responsibilities crisp
   - premature introduction of provider-native APIs would expand the surface faster than the runtime adapter is proven

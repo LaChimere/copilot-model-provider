@@ -6,7 +6,7 @@ The goal is to expose a stable northbound API for multiple client styles while u
 
 ## Status
 
-This repository is currently in the **MVP implementation** stage.
+This repository now has the **functional MVP plus packaging and Codex-compatibility follow-ons** implemented on `main`.
 
 Today it contains:
 
@@ -15,15 +15,17 @@ Today it contains:
 - a FastAPI app scaffold with an internal health endpoint
 - a service-owned model catalog and OpenAI-compatible `GET /v1/models`
 - an OpenAI-compatible `POST /v1/chat/completions` supporting non-streaming and streaming SSE behavior
+- a thin OpenAI-compatible `POST /v1/responses` surface for Codex-style clients
 - session-backed convergence for routes configured as `sessional`, including persistent session resume and locking via `X-Copilot-Conversation-Id`
 - a Copilot SDK-backed runtime adapter for stateless and session-backed chat execution
 - basic server-approved tool mounting and policy-driven approval
 - basic MCP mounting for configured session launches
+- a container packaging baseline (`Dockerfile`, `.dockerignore`) plus a root `.env.example` for local token/config setup
 - focused release-gate integration coverage for model alias routing and policy behavior
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
 - `pytest`-based unit, contract, and lightweight integration coverage
 
-The package entrypoints are now intentionally thin service helpers: `python -m copilot_model_provider` and `copilot-model-provider` print startup guidance for the HTTP/ASGI service rather than pretending to be a separate end-user CLI. The MVP HTTP surface and minimum release-gate scenario coverage are implemented on `main`.
+The package entrypoints are now intentionally thin service launchers: `python -m copilot_model_provider` and `copilot-model-provider` start the HTTP/ASGI service through the formal `server.py` entrypoint rather than pretending to be a separate end-user CLI. The MVP HTTP surface, the packaging baseline, and the thin Responses/Codex follow-on are implemented on `main`.
 
 ## Current implemented surface
 
@@ -31,6 +33,7 @@ Available today:
 
 - `GET /v1/models`
 - `POST /v1/chat/completions` (non-streaming and streaming SSE)
+- `POST /v1/responses` (thin OpenAI-compatible Responses surface)
 - session-backed resume/locking behavior for routes configured as `sessional`
 - basic server-approved tool execution through the existing chat/runtime path
 - basic MCP mounting for configured runtime sessions
@@ -87,7 +90,7 @@ In scope:
 Out of scope for the current MVP:
 
 - provider-native session APIs
-- provider-native response-style APIs
+- provider-native response-style API families beyond the thin OpenAI-compatible `/v1/responses` route
 - Anthropic-compatible facade
 - caller-supplied tool schemas
 - multi-runtime fallback routing
@@ -140,14 +143,53 @@ This repository uses `uv` and a standard Python `src/` layout.
 uv sync
 ```
 
-### Inspect the thin package entrypoint
+### Run the service entrypoint
 
 ```bash
 uv run python -m copilot_model_provider
 uv run copilot-model-provider
 ```
 
-Both commands print the recommended ASGI startup guidance for the service package.
+Both commands start the provider through `uvicorn` using the app factory entrypoint.
+
+### Packaging-oriented runtime baseline
+
+For deployment-oriented setups, the provider can connect to an already managed headless Copilot CLI server instead of using the SDK's default subprocess mode.
+
+```bash
+export COPILOT_MODEL_PROVIDER_SERVER_HOST=0.0.0.0
+export COPILOT_MODEL_PROVIDER_SERVER_PORT=8000
+export COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL=http://copilot-cli.internal:3000
+uv run copilot-model-provider
+```
+
+When `COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL` is set, `ProviderSettings.runtime_cli_url` wires the default `CopilotRuntimeAdapter` through the SDK external-server configuration while keeping the provider as a thin API wrapper around Copilot-managed models.
+
+Request-scoped runtime auth uses the incoming `Authorization: Bearer ...` header. The provider never persists the raw bearer token; session-backed resume stores only a derived bearer-token subject fingerprint. That means one subject cannot resume another subject's Copilot session.
+
+In practice, conversation resume is bound to the original auth context. If you switch between anonymous and bearer-authenticated requests, or rotate to a different bearer token, start a new conversation ID instead of trying to resume the old one.
+
+Current limitation: the installed `github-copilot-sdk` exposes `github_token` injection only on `SubprocessConfig`, not on `ExternalServerConfig`. Because of that, request-scoped GitHub bearer-token passthrough currently works in subprocess-backed runtime mode, while `runtime_cli_url` + request-scoped GitHub bearer auth is rejected explicitly instead of silently mixing credentials.
+
+Use these deployment patterns today:
+
+- use the default subprocess-backed runtime when callers need to forward their own GitHub bearer tokens, including local Codex testing
+- use `runtime_cli_url` only when the external Copilot CLI server is already authenticated or otherwise managed as a service-scoped runtime, without per-request bearer passthrough
+
+### Local Codex / custom-provider baseline
+
+For local Codex testing, the repository now exposes a thin OpenAI-compatible `/v1/responses` route and expects Codex to forward a GitHub token through `env_key = "GITHUB_TOKEN"`.
+
+See `.env.example` for the minimal local environment contract.
+
+### Build the API image
+
+```bash
+docker build -t copilot-model-provider:local .
+docker run --rm -p 8000:8000 \
+  -e COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL=http://copilot-cli.internal:3000 \
+  copilot-model-provider:local
+```
 
 ### Lint and type-check
 
@@ -179,7 +221,7 @@ For the current MVP slug, the approved execution model is:
 5. finish release-gate E2E and cleanup
 
 The current plan describes this as **five execution phases implemented as seven mergeable branches**.
-All five phases are now implemented locally on `main`.
+All five phases are now implemented locally on `main`, and the later packaging plus thin Responses/Codex follow-ons are also complete.
 
 ## Important documents
 

@@ -5,12 +5,12 @@
 ## Objective
 - What outcome we want (1–2 sentences):
   - Implement the provider MVP as an OpenAI-compatible gateway over `copilot-sdk`, starting with `GET /v1/models` and `POST /v1/chat/completions`, while preserving the session-oriented runtime design in `docs/design.md`.
-  - Record the completed functional MVP as **five execution phases implemented as seven mergeable branches**, then track the next operational follow-on for containerized deployment without violating the SDK backend-services, scaling, and auth guidance.
+  - Record the completed functional MVP as **five execution phases implemented as seven mergeable branches**, then track the completed operational follow-ons for containerized deployment and thin OpenAI-compatible `POST /v1/responses` / Codex compatibility without violating the SDK backend-services, scaling, and auth guidance.
 
 ## Constraints
 - Compatibility constraints:
-  - MVP northbound surface is limited to `GET /v1/models` and `POST /v1/chat/completions`.
-  - Provider-native session APIs are deferred until after MVP, and provider-native response-style APIs are also deferred.
+  - The original MVP northbound surface is limited to `GET /v1/models` and `POST /v1/chat/completions`.
+  - Provider-native session APIs are deferred until after MVP. A later thin OpenAI-compatible `POST /v1/responses` follow-on is now implemented, but provider-native session APIs remain deferred.
   - Anthropic-compatible facade is out of scope for this plan.
   - MVP tool support is limited to server-approved tools plus MCP; caller-supplied tool schemas are out of scope.
 - Performance constraints:
@@ -117,45 +117,67 @@ Mark each as **Verified** or **Unverified**.
     - no temporary scaffolding is left undocumented
     - the diff remains consistent with the approved design boundaries
 
-- [ ] Step 6: Containerized deployment and production-image baseline
+- [x] Step 6: Containerized deployment and production-image baseline
   - Current execution status:
-    - not started
-    - the repository still has no `Dockerfile`, `.dockerignore`, compose file, formal server entrypoint, or `cliUrl`-based production wiring
-    - `docs/design.md` and this slug now record the official backend/scaling/auth guidance plus the chosen caller-supplied GitHub bearer-token passthrough baseline for the next slice
+    - completed
+    - Step 6.1 landed the formal `server.py` entrypoint plus `ProviderSettings.runtime_cli_url` / `COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL` external-server wiring
+    - Step 6.2 landed `Dockerfile`, `.dockerignore`, and the formal `copilot-model-provider` image startup path
+    - Step 6.3 landed request-scoped bearer-token extraction, non-persistent auth-subject fingerprinting, and same-subject session resume enforcement
+    - Step 6.4 landed full repo validation plus `docker build` and container startup smoke against `/_internal/health`
   - Planned internal sequence:
     1. server/config baseline
+       - Status:
+         - completed
        - Acceptance criteria:
          - the service startup path is formalized around `src/copilot_model_provider/server.py`
          - Step 6 configuration can represent external headless CLI connectivity
          - no service-owned identity layer is introduced
     2. container assets and startup path
+       - Status:
+         - completed
        - Acceptance criteria:
          - `Dockerfile` and `.dockerignore` are added
          - the image starts the provider through the formal server entrypoint
          - the first documented topology remains API container + internal headless CLI
     3. auth passthrough and subject-bound session resume
+       - Status:
+         - completed
        - Acceptance criteria:
-         - request-scoped GitHub bearer-token passthrough is implemented for runtime execution
+         - request-scoped GitHub bearer-token passthrough is implemented for runtime execution, with explicit fail-fast when `runtime_cli_url` points to an external CLI because the current SDK does not expose per-request GitHub auth injection for `ExternalServerConfig`
          - raw runtime tokens are not persisted
          - resumed sessions cannot cross authenticated subjects
     4. smoke validation and packaging docs
+       - Status:
+         - completed
        - Acceptance criteria:
          - image build smoke passes
          - service startup smoke passes against the container entrypoint
          - packaging docs describe the token contract, session-state storage, and internal CLI boundary
   - Acceptance criteria:
     - the provider has a formal API server entrypoint suitable for container startup
-    - the packaging model uses an external headless CLI server via `cliUrl` rather than per-request child-process spawning
-    - internal-only CLI networking, persistent CLI session-state storage, and request-scoped GitHub bearer-token runtime credential passthrough are explicit in docs and packaging
+    - the packaging model documents and configures external headless CLI connectivity via `cliUrl` rather than hiding it behind per-request child-process spawning
+    - internal-only CLI networking, persistent CLI session-state storage, and request-scoped GitHub bearer-token runtime credential handling are explicit in docs and packaging
     - raw runtime tokens are not persisted, and the packaging slice adds subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
-    - the first supported deployment topology is named explicitly before any production-readiness claim
+     - the first supported deployment topology is named explicitly before any production-readiness claim
+
+- [x] Step 7: Thin OpenAI-compatible Responses support and Codex cutover
+  - Current execution status:
+    - a thin `POST /v1/responses` route is now implemented on top of the existing canonical chat/session/runtime path rather than a separate execution layer
+    - the Responses SSE lifecycle now includes the event subset required by Codex custom providers: `response.created`, `response.output_item.added`, `response.content_part.added`, `response.output_text.delta`, `response.content_part.done`, `response.output_item.done`, and `response.completed`
+    - Docker-backed smoke now verifies `codex exec` can render the final answer through this provider when `wire_api = "responses"` and `env_key = "GITHUB_TOKEN"` are configured
+    - a root `.env.example` now documents the `GITHUB_TOKEN` contract for local Codex/provider use
+  - Acceptance criteria:
+    - `POST /v1/responses` reuses the existing routing, session, auth passthrough, and runtime execution flow instead of creating a parallel behavior layer
+    - the Responses stream terminates cleanly for Codex-style clients and renders the final answer exactly once
+    - containerized smoke validates the provider route plus a real `codex exec` path
+    - local Codex cutover is documented by example config and environment contract without introducing a service-owned identity layer
 
 ## Execution Topology
 - Base prerequisite:
   - Foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
 - Branch count / phase model:
-  - 5 completed functional phases plus 1 planned operational follow-on
-  - 7 completed mergeable branches plus 1 planned packaging branch:
+  - 5 completed functional phases plus 2 completed operational follow-ons
+  - the original 7-branch MVP sequence is complete, and the repository has since landed the packaging baseline plus the thin Responses/Codex follow-on on `main`:
     - `PR 1`
     - `PR 2`
     - `PR 3`
@@ -163,7 +185,8 @@ Mark each as **Verified** or **Unverified**.
     - `feat/mvp-session-persistence`
     - convergence branch
     - `feat/mvp-tools-mcp` as the final release-gate branch
-    - `feat/mvp-containerization` as the next operational packaging branch
+    - packaging baseline on `main`
+    - thin Responses/Codex compatibility follow-on on `main`
 - Parallel tasks:
 
 | Task | Branch | Worktree | Owns | Must not touch |
@@ -184,13 +207,17 @@ Mark each as **Verified** or **Unverified**.
   - `src/copilot_model_provider/config.py`
   - `src/copilot_model_provider/api/openai_models.py`
   - `src/copilot_model_provider/api/openai_chat.py`
+  - `src/copilot_model_provider/api/openai_responses.py`
+  - `src/copilot_model_provider/api/shared.py`
   - `src/copilot_model_provider/core/models.py`
+  - `src/copilot_model_provider/core/responses.py`
   - `src/copilot_model_provider/core/catalog.py`
   - `src/copilot_model_provider/core/routing.py`
   - `src/copilot_model_provider/core/sessions.py`
   - `src/copilot_model_provider/core/policies.py`
   - `src/copilot_model_provider/runtimes/base.py`
   - `src/copilot_model_provider/runtimes/copilot.py`
+  - `src/copilot_model_provider/streaming/responses.py`
   - `src/copilot_model_provider/streaming/sse.py`
   - `src/copilot_model_provider/streaming/translators.py`
   - `src/copilot_model_provider/tools/registry.py`
@@ -199,6 +226,7 @@ Mark each as **Verified** or **Unverified**.
   - `src/copilot_model_provider/storage/locks.py`
   - `Dockerfile`
   - `.dockerignore`
+  - `.env.example`
   - formal server/deployment startup wiring
   - `tests/unit/**`
   - `tests/contract/**`
@@ -207,6 +235,7 @@ Mark each as **Verified** or **Unverified**.
   - adds OpenAI-compatible `GET /v1/models`
   - adds OpenAI-compatible `POST /v1/chat/completions`
   - adds streaming support on the same chat endpoint
+  - adds thin OpenAI-compatible `POST /v1/responses` support for Codex-style clients
 - Data impacts:
   - session mapping state is introduced
   - no end-user data migration is expected in MVP
@@ -218,13 +247,13 @@ Mark each as **Verified** or **Unverified**.
 - [ ] L3
 
 ### Evidence to produce
-- [ ] Tests to run (exact commands):
+- [x] Tests to run (exact commands):
   - `uv run ruff check .`
   - `uv run pyright`
   - `uv run ty check .`
   - `uv run pytest -q`
   - targeted contract / integration / e2e tests as introduced per step
-- [ ] Before/after behavior proof:
+- [x] Before/after behavior proof:
   - before this slug started: repo had no provider service or compatibility endpoints
   - current after `PR 1`: app scaffold, runtime/config contracts, internal health endpoint, and E2E harness boot path exist; public provider endpoints still do not
   - current after the model-catalog slice: `GET /v1/models` works through the app without runtime execution dependencies
@@ -233,11 +262,13 @@ Mark each as **Verified** or **Unverified**.
   - after Step 3: streaming + session resume work, including focused locking evidence
   - after Step 4: tool/MCP paths work on top of the converged branch
   - after Step 5: MVP release-gate scenarios work end to end
-  - after Step 6: the service has a reproducible API-container startup path and a documented API-container + headless-CLI deployment contract
-- [ ] Logs/traces/metrics to capture:
+  - after Step 6: the service has a reproducible API-container startup path, a documented API-container + headless-CLI deployment contract, subject-bound session resume, and explicit fail-fast for unsupported `runtime_cli_url` + request-scoped GitHub bearer-token passthrough
+  - after Step 7: the service also supports `POST /v1/responses`, Docker-backed `codex exec` smoke succeeds, and local configuration can point Codex at Copilot-backed models through this provider
+- [x] Logs/traces/metrics to capture:
   - request/session lifecycle logs
   - streaming event evidence
   - tool/MCP execution evidence where applicable
+  - docker build and container startup logs for the packaging baseline
 
 ## Rollback / Recovery (if applicable)
 - Rollback plan:
@@ -261,7 +292,7 @@ Mark each as **Verified** or **Unverified**.
   - if runtime credential passthrough is implemented without subject-bound session rules in Step 6, resumed sessions could leak across callers
 - Explicit non-goals (out of scope):
   - provider-native session APIs
-  - provider-native response-style APIs
+  - provider-native session or conversation API families beyond the current compatibility surfaces
   - Anthropic-compatible facade
   - caller-supplied tool schemas
   - multi-runtime fallback routing

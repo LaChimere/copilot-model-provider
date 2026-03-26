@@ -345,6 +345,7 @@ Use the appropriate skill automatically when the request matches:
 - Treat `docs/design.md` as the current design baseline for the provider architecture.
 - Keep architecture decisions consistent with that document unless the user asks to revise the design.
 - Prefer Python ecosystem tooling already present in the repository.
+- For local development and testing in this repository, prefer validating through Docker containers when feasible, especially for provider wiring, environment/configuration, and runtime integration behavior.
 - Do not invent repository-wide process or file layout beyond what is needed for the requested change.
 - For Python code in this repository, every method/function must have a docstring.
 - Public methods/functions must have **detailed** docstrings that explain purpose plus relevant inputs, outputs, side effects, or constraints; one-line placeholder docstrings are not sufficient for public APIs.

@@ -214,11 +214,14 @@ Recommended initial endpoints for the current MVP path:
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
+Implemented compatibility extension after the MVP baseline stabilized:
+
+- `POST /v1/responses` as a thin OpenAI-compatible Responses surface for Codex-style clients
+
 Optional later:
 
 - `POST /provider/v1/conversations`
 - `POST /provider/v1/conversations/{id}/messages`
-- `POST /v1/responses` as a provider-native response-style API, if we decide to support it
 - `POST /anthropic/v1/messages`
 
 Responsibilities:
@@ -582,6 +585,8 @@ Without shared storage, use sticky routing instead.
 
 For production-oriented deployment, follow the official backend-services guidance and treat the SDK as a client that connects to an independently managed **headless Copilot CLI server** over `cliUrl`, rather than spawning a child CLI process inside request handling. [R3]
 
+This repository's current packaging baseline now exposes that contract through `ProviderSettings.runtime_cli_url` (environment variable: `COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL`), `ProviderSettings.server_host`, and `ProviderSettings.server_port`. The repository now includes a production-image baseline (`Dockerfile`, `.dockerignore`) and a formal package entrypoint (`copilot-model-provider`) that starts the FastAPI app through `uvicorn` and `copilot_model_provider.app:create_app --factory`.
+
 Recommended default container topology for this repository:
 
 - one provider API container with a formal ASGI server entrypoint
@@ -590,13 +595,19 @@ Recommended default container topology for this repository:
 - a persistent volume for the CLI session-state directory
 - request-scoped GitHub bearer-token passthrough, plus secret injection for any BYOK credentials
 
+Image/startup smoke for the current baseline is:
+
+- `docker build -t copilot-model-provider:step6-smoke .`
+- `docker run -p 18080:8000 -e COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL=http://copilot-cli.internal:3000 copilot-model-provider:step6-smoke`
+- `GET /_internal/health` returns `200 OK`
+
 Important operational implications:
 
 - do **not** rely on interactive CLI login or system keychain state inside a production image
 - for a single replica, a local persistent volume can be enough for CLI session state
 - for multiple replicas, choose either sticky routing or shared storage for CLI session state [R4]
 - if the provider API itself maintains session maps or locks, move those off node-local files before claiming multi-replica production readiness
-- Step 6 must define and implement subject-bound session resume rules so one caller cannot resume another caller's underlying Copilot session
+- subject-bound session resume is now enforced by storing only an auth-subject fingerprint derived from the presented bearer token, never the raw token itself
 - readiness should cover both provider health and CLI reachability, while keeping the CLI transport internal-only
 
 ## 10. Security Considerations
@@ -622,8 +633,15 @@ Provider design recommendation:
 - keep any optional caller auth layer separate from runtime credential passthrough
 - store BYOK secrets in a secret manager
 - never persist raw GitHub bearer tokens or API keys in session storage
-- Step 6 should add subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
+- sessional resume is now bound to the stored bearer-token subject fingerprint so one caller cannot resume another caller's Copilot session
+- switching auth mode (anonymous vs bearer) or switching bearer tokens should start a new conversation ID rather than attempting to resume the old conversation
 - in production containers, prefer request-scoped GitHub bearer-token passthrough and injected BYOK credentials over interactive logged-in-user credentials [R1][R3][R5]
+
+Current implementation caveat:
+
+- request-scoped GitHub bearer-token passthrough is implemented for subprocess-backed Copilot clients
+- when `runtime_cli_url` points to an external headless CLI server, the provider rejects request-scoped GitHub bearer-token passthrough explicitly because the current `github-copilot-sdk` surface exposes `github_token` only on `SubprocessConfig`, not on `ExternalServerConfig`
+- operator guidance: use subprocess mode for per-request GitHub bearer tokens; reserve `runtime_cli_url` for pre-authenticated or service-scoped external CLI deployments
 
 This is especially important because the official docs note that BYOK provider credentials are **not persisted** and must be re-supplied on resume. [R5][R7]
 
@@ -656,7 +674,8 @@ Start with read-only defaults in lower-trust deployments.
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - SSE streaming for chat completions
-- The current MVP baseline defers both provider-native session APIs and any provider-native response-style API until after the compatibility APIs are stable.
+- thin OpenAI-compatible `POST /v1/responses` support for Codex-style clients
+- The current MVP baseline still defers provider-native session APIs and any separate provider-native response-style API family until after the compatibility APIs are stable.
 
 ### 11.2 Session-aware extensions
 
@@ -676,6 +695,7 @@ This allows us to expose stateful behavior cleanly without forcing every concept
 - FastAPI service
 - OpenAI-compatible `/v1/models`
 - OpenAI-compatible `/v1/chat/completions`
+- thin OpenAI-compatible `/v1/responses`
 - canonical model catalog
 - Copilot runtime adapter
 - session create/resume mapping
@@ -689,7 +709,8 @@ Current implementation status:
 
 - basic tool support, basic MCP mounting, policy-controlled approval, and the remaining routing/policy release-gate scenario are all now implemented on `main`
 - the documented MVP release gate now has focused coverage for `/v1/models`, non-streaming chat, streaming, tool flow, persistent resume, and routing/policy behavior
-- containerized deployment and production-oriented packaging are **not** implemented yet; they are the next operationalization step after the functional MVP
+- containerized deployment and the production-oriented packaging baseline are now implemented on `main`
+- the thin `/v1/responses` compatibility surface is also implemented on `main` and validated against Docker-backed Codex traffic
 
 ### Out of scope
 
@@ -891,6 +912,7 @@ Characteristics:
 
 - calls `/v1/models`
 - uses `/v1/chat/completions`
+- may use `/v1/responses` when the client prefers the Responses wire surface
 - may enable streaming
 - may be mostly stateless
 
@@ -905,6 +927,7 @@ Characteristics:
 
 - may stream aggressively
 - may depend on tool calls
+- may prefer `wire_api = "responses"` and use `/v1/responses`
 - may send long prompts and iterative turns
 - often expects deterministic error shapes and low-latency chunk delivery
 
@@ -977,8 +1000,8 @@ src/
     api/
       openai_models.py
       openai_chat.py
+      openai_responses.py
       provider_conversations.py
-      provider_responses.py   # optional, only if a provider-native response-style API is added
     core/
       models.py
       events.py
@@ -987,12 +1010,14 @@ src/
       catalog.py
       sessions.py
       errors.py
+      responses.py
     runtimes/
       base.py
       copilot.py
     streaming/
       sse.py
       translators.py
+      responses.py
     tools/
       registry.py
       mcp.py
@@ -1005,7 +1030,7 @@ src/
 
 These should be resolved before implementation moves beyond MVP:
 
-1. After chat completions is stable, do we also want a provider-native response-style API? (Current baseline: later phase.)
+1. Beyond the implemented thin OpenAI-compatible `/v1/responses` route, do we also want a separate provider-native response-style API family? (Current baseline: later phase.)
 2. Do provider-native session APIs ship in MVP, or do they land in a later phase after the compatibility APIs? (Current baseline: later phase after the compatibility APIs.)
 3. What isolation level is required initially: shared CLI, per-tenant CLI, or per-user CLI?
 4. Will external callers be allowed to declare arbitrary tools, or only choose from approved tool packs? (Current baseline: approved tool packs only.)

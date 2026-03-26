@@ -5,7 +5,7 @@
 
 ## Task
 - Summary:
-  - Execute the approved `copilot-model-provider-mvp` plan through the completed functional MVP and track the next containerization follow-on for production-oriented packaging over `copilot-sdk`.
+  - Execute the approved `copilot-model-provider-mvp` plan through the completed functional MVP, then track the completed containerization and thin OpenAI-compatible Responses/Codex follow-ons over `copilot-sdk`.
 - Links:
   - `plans/copilot-model-provider-mvp/research.md`
   - `plans/copilot-model-provider-mvp/design.md`
@@ -14,9 +14,9 @@
 
 ## Plan Reference
 - Plan version/date:
-  - Parallel-work Gate 2 draft, updated after MVP completion to add the containerization follow-on
+  - Parallel-work Gate 2 draft, updated after MVP completion to add the containerization follow-on and the later thin Responses/Codex compatibility slice
 - Approved by (if applicable):
-  - Gate 2 was approved for the functional MVP sequence; this checklist now also tracks the next operational packaging item
+  - Gate 2 was approved for the functional MVP sequence; this checklist now also tracks the completed operational packaging and Responses/Codex follow-ons
 
 ## Checklist
 ### Preparation
@@ -29,7 +29,7 @@
     - captured in `plans/copilot-model-provider-mvp/plan.md`
 - [x] Confirm scope boundary for provider-native APIs
   - Acceptance criteria:
-    - provider-native session APIs and provider-native response-style APIs are explicitly deferred until after MVP in this plan slug.
+    - provider-native session APIs are explicitly deferred until after MVP in this plan slug, while the later thin OpenAI-compatible `/v1/responses` follow-on remains a compatibility extension rather than a provider-native API family.
   - Evidence:
     - captured in `plans/copilot-model-provider-mvp/design.md` and `plan.md`
 - [x] Confirm tool-scope boundary for MVP
@@ -108,28 +108,31 @@
     - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
     - `113 passed`
     - `Required test coverage of 90% reached. Total coverage: 94.48%`
-- [ ] Item 6: Containerized deployment and production-image baseline
+- [x] Item 6: Containerized deployment and production-image baseline
   - Current execution status:
-    - pending
-    - the repository still has no `Dockerfile`, `.dockerignore`, compose file, formal server entrypoint, or `cliUrl`-based production wiring
-    - the canonical design and this slug now capture the backend/scaling/auth constraints plus the chosen caller-supplied GitHub bearer-token passthrough baseline for the next packaging slice
+    - completed
+    - Step 6.1 is complete: the formal `server.py` entrypoint is in place, configuration now exposes `ProviderSettings.runtime_cli_url` / `COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL`, and the default `CopilotRuntimeAdapter` now supports the SDK external-server mode
+    - Step 6.2 is complete: `Dockerfile` and `.dockerignore` exist, and the image starts through the formal `copilot-model-provider` service entrypoint
+    - Step 6.3 is complete: request-scoped bearer-token extraction, auth-subject fingerprint persistence, and same-subject session resume enforcement are implemented without persisting raw runtime tokens
+    - Step 6.4 is complete: full repo validation, image build smoke, container startup smoke, and packaging docs are in place
+    - the canonical design and this slug now capture the backend/scaling/auth constraints plus the current external-server auth limitation of the installed SDK surface
   - Planned internal sequence:
-    - [ ] Step 6.1: server/config baseline
+    - [x] Step 6.1: server/config baseline
       - Acceptance criteria:
         - the service startup path is formalized around `src/copilot_model_provider/server.py`
         - Step 6 configuration can represent external headless CLI connectivity
         - no service-owned identity layer is introduced
-    - [ ] Step 6.2: container assets and startup path
+    - [x] Step 6.2: container assets and startup path
       - Acceptance criteria:
         - `Dockerfile` and `.dockerignore` are added
         - the image starts the provider through the formal server entrypoint
         - the first documented topology remains API container + internal headless CLI
-    - [ ] Step 6.3: auth passthrough and subject-bound session resume
+    - [x] Step 6.3: auth passthrough and subject-bound session resume
       - Acceptance criteria:
-        - request-scoped GitHub bearer-token passthrough is implemented for runtime execution
+        - request-scoped GitHub bearer-token passthrough is implemented for runtime execution, with explicit fail-fast when `runtime_cli_url` points to an external CLI because the current SDK does not expose per-request GitHub auth injection for `ExternalServerConfig`
         - raw runtime tokens are not persisted
         - resumed sessions cannot cross authenticated subjects
-    - [ ] Step 6.4: smoke validation and packaging docs
+    - [x] Step 6.4: smoke validation and packaging docs
       - Acceptance criteria:
         - image build smoke passes
         - service startup smoke passes against the container entrypoint
@@ -141,7 +144,29 @@
     - raw runtime tokens are not persisted, and the packaging slice adds subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
     - the first supported deployment topology is named explicitly
   - Evidence:
-    - pending execution
+    - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+    - `130 passed`
+    - `Required test coverage of 90% reached. Total coverage: 94.72%`
+    - `docker build -t copilot-model-provider:step6-smoke .`
+    - `docker run -d -p 18080:8000 -e COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL=http://copilot-cli.internal:3000 copilot-model-provider:step6-smoke`
+    - `GET /_internal/health` returned `200 OK`
+- [x] Item 7: Thin OpenAI-compatible Responses support and Codex cutover
+  - Current execution status:
+    - `POST /v1/responses` is now implemented as a thin adapter over the existing canonical chat/session/runtime path
+    - the Responses SSE lifecycle is aligned with Codex custom-provider expectations, including `response.output_item.done` before `response.completed`
+    - Docker-backed smoke now validates a real `codex exec` path through the provider with `wire_api = "responses"` and `env_key = "GITHUB_TOKEN"`
+    - a root `.env.example` now documents the required `GITHUB_TOKEN` contract for local Codex/provider usage
+  - Acceptance criteria:
+    - the provider reuses existing routing/session/runtime seams rather than creating a separate Responses execution stack
+    - the final streamed answer renders exactly once for Codex-style clients
+    - local configuration cutover to the provider is validated end to end
+  - Evidence:
+    - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+    - `138 passed`
+    - `Required test coverage of 90% reached. Total coverage: 94.36%`
+    - `docker build -t copilot-model-provider:responses-smoke .`
+    - `codex exec --skip-git-repo-check 'Reply with exactly HELLO.'`
+    - stdout contained `HELLO.` when driven through the provider using the real `~/.codex/config.toml`
 
 ### Acceptance Gate (before proposing PR)
 - [x] All acceptance criteria above are met with evidence
@@ -192,11 +217,24 @@ Paste concise evidence here (commands + key lines).
   - `113 passed`
   - `Required test coverage of 90% reached. Total coverage: 94.48%`
 - Containerization baseline:
-  - repository inspection confirms there is still no `Dockerfile`, `.dockerignore`, compose file, or formal server entrypoint
-  - `docs/design.md`, `plans/copilot-model-provider-mvp/research.md`, and `plans/copilot-model-provider-mvp/design.md` now record the API-container + internal headless-CLI topology as the next design baseline
+  - `Dockerfile`, `.dockerignore`, and the formal `copilot-model-provider` startup path now exist
+  - `docs/design.md`, `plans/copilot-model-provider-mvp/research.md`, and `plans/copilot-model-provider-mvp/design.md` now record the API-container + internal headless-CLI topology plus the current external-server auth limitation of the installed SDK surface
+  - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+  - `130 passed`
+  - `Required test coverage of 90% reached. Total coverage: 94.72%`
+  - `docker build -t copilot-model-provider:step6-smoke .`
+  - `GET /_internal/health` returned `200 OK` from the started container image
+- Thin Responses / Codex follow-on:
+  - `src/copilot_model_provider/api/openai_responses.py`, `core/responses.py`, `streaming/responses.py`, and Responses tests now exist
+  - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
+  - `138 passed`
+  - `Required test coverage of 90% reached. Total coverage: 94.36%`
+  - `docker build -t copilot-model-provider:responses-smoke .`
+  - `codex exec --skip-git-repo-check 'Reply with exactly HELLO.'`
+  - response output rendered `HELLO.` through the provider after the real `~/.codex/config.toml` cutover
 
 ## Result
 - Outcome:
-  - Step 1 through Step 5 are complete on `main`; Item 6 now tracks the next operational packaging follow-on.
+  - Step 1 through Step 7 are complete on `main`, including the first packaging baseline for container build/startup, safe subject-bound runtime auth handling, and thin OpenAI-compatible Responses/Codex compatibility.
 - Follow-ups (if any):
-  - Implement containerization around the documented API-container + internal headless-CLI deployment model.
+  - Revisit external headless-CLI + request-scoped GitHub bearer-token passthrough when the SDK exposes per-request auth injection for `ExternalServerConfig`.

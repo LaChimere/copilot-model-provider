@@ -6,7 +6,7 @@
 ## Objective
 - What problem are we solving (1–2 sentences):
   - We need the approved staged implementation record for the provider MVP to stay aligned with the repository now that the functional service is implemented on `main`.
-  - The slug should continue to preserve the reviewed branch decomposition, validation boundaries, and the next operational follow-on for containerized deployment in a way that still honors `docs/design.md`.
+  - The slug should continue to preserve the reviewed branch decomposition, validation boundaries, the completed operational follow-on for containerized deployment, and the later thin OpenAI-compatible Responses/Codex compatibility slice in a way that still honors `docs/design.md`.
 - Link to research: `plans/copilot-model-provider-mvp/research.md`
 
 ## Architecture / Approach
@@ -18,6 +18,7 @@
     4. add streaming + persistent session behavior
     5. add tool / MCP completion and release-gate E2E
     6. add containerized deployment and production-image packaging as an operational follow-on
+    7. add a thin OpenAI-compatible `POST /v1/responses` follow-on for Codex-style clients without introducing a separate execution layer
 - Key components / layers involved:
   - FastAPI application layer
   - OpenAI-compatible API facade
@@ -54,6 +55,11 @@ Operational follow-on: containerization
   client -> provider API container -> headless Copilot CLI container -> Copilot/BYOK provider
                                            |
                                            -> persistent session-state volume + injected runtime credentials
+
+Post-MVP compatibility follow-on: thin Responses + Codex
+  Codex custom provider -> /v1/responses -> canonical request/session reuse -> CopilotRuntimeAdapter
+                                                 |
+                                                 -> Responses SSE framing compatible with Codex rendering
 ```
 
 ## Interface / API / Schema Design
@@ -68,13 +74,14 @@ Operational follow-on: containerization
   - `PR 3`: `POST /v1/chat/completions` (non-streaming path first)
   - convergence branch: streaming chat completion on the same endpoint
   - final branch: no new public endpoint required; completes tool/MCP behavior on existing endpoint
+  - post-MVP follow-on: thin OpenAI-compatible `POST /v1/responses` for Codex-style clients
 - New or changed data models / schemas:
   - OpenAI-style models response schema
   - canonical internal request / route / event structures
   - session mapping/storage shape
 - Contract compatibility notes:
   - MVP prioritizes the OpenAI-compatible surface.
-  - Provider-native session APIs are explicitly deferred until after MVP; provider-native response-style APIs are also deferred. This plan resolves the open MVP questions in `docs/design.md` without changing the baseline architecture for later phases.
+  - Provider-native session APIs are explicitly deferred until after MVP. The later `POST /v1/responses` work is recorded here as a thin OpenAI-compatible follow-on that reuses the existing chat/session/runtime seams rather than a separate provider-native API family.
   - Anthropic-compatible facade is also deferred.
   - MVP tool support is limited to server-approved tools plus MCP; caller-supplied tool schemas are deferred.
 
@@ -140,7 +147,7 @@ Operational follow-on: containerization
   - Context:
     - Stateful session behavior is important, but provider-native session APIs remain an open question in the design baseline.
   - Choice:
-    - Defer provider-native session APIs until after MVP, defer provider-native response-style APIs as well, and implement persistent session mapping internally first.
+    - Defer provider-native session APIs until after MVP, keep provider-native response-style APIs out of the MVP sequence as well, and implement persistent session mapping internally first.
   - Rationale:
     - This keeps the first public API surface narrow while still preserving the session-oriented architecture.
 
@@ -186,6 +193,14 @@ Operational follow-on: containerization
   - Rationale:
     - This keeps the provider focused on routing/runtime compatibility, matches per-user Copilot execution semantics, and avoids introducing an unnecessary identity plane before packaging is proven.
 
+- Decision 9:
+  - Context:
+    - Codex custom providers now prefer `wire_api = "responses"`, and the repository's thin-provider direction is to translate protocol/model surfaces rather than introduce a new execution abstraction.
+  - Choice:
+    - Add a thin OpenAI-compatible `POST /v1/responses` adapter on top of the existing canonical chat/session/runtime flow and validate it through real Docker-backed `codex exec` smoke.
+  - Rationale:
+    - This keeps the provider aligned with real Codex request patterns while preserving the earlier design boundary: no extra wrapper layer, only compatibility translation and model/runtime reuse.
+
 ## Impact Assessment
 - Affected modules / services:
   - `src/copilot_model_provider/app.py`
@@ -219,11 +234,11 @@ Operational follow-on: containerization
 
 ## Feature summary
 - one-sentence summary:
-  - Build the provider MVP through five execution phases implemented as seven mergeable branches, then track containerized deployment as the next operational follow-on.
+  - Build the provider MVP through five execution phases implemented as seven mergeable branches, then track containerized deployment and thin OpenAI-compatible Responses/Codex compatibility as completed follow-ons.
 - main constraints:
   - every intermediate state must be mergeable
   - provider-native session APIs are out of MVP
-  - provider-native response-style APIs are out of MVP
+  - provider-native response-style APIs are out of scope; the later thin OpenAI-compatible `/v1/responses` route is treated as a compatibility extension instead
   - caller-supplied tool schemas are out of MVP
   - tests must ship with their implementation slices
   - `copilot-sdk` remains the primary runtime adapter
@@ -505,7 +520,7 @@ Operational follow-on: containerization
 
 ## Operational follow-on: Containerized deployment and production-image baseline
 - Status:
-  - Not started; this is the next planned extension after the completed functional MVP.
+  - Completed on `main` after the functional MVP landed.
 - Goal:
   - Package the provider for containerized deployment in a way that matches the official Copilot SDK backend-services, scaling, and auth guidance.
 - Likely directories/files:
@@ -537,30 +552,34 @@ Operational follow-on: containerization
   - the chosen first topology (single-node persistent or multi-node with sticky/shared storage) is explicit
   - packaging changes do not weaken the existing functional MVP validation story
 - Planned internal sequence:
-  1. server/config baseline
-     - Scope:
-       - formalize the service startup path and add packaging-oriented configuration for external headless CLI connectivity
-     - Acceptance criteria:
-       - `src/copilot_model_provider/server.py` remains the formal service entrypoint
-       - configuration can express the external headless CLI connection contract needed for Step 6
-       - the packaging slice does not introduce a service-owned identity layer
+   1. server/config baseline
+      - Scope:
+        - formalize the service startup path and add packaging-oriented configuration for external headless CLI connectivity
+        - landed locally with `src/copilot_model_provider/server.py` as the formal entrypoint plus `ProviderSettings.runtime_cli_url` / `COPILOT_MODEL_PROVIDER_RUNTIME_CLI_URL` wired into the default `CopilotRuntimeAdapter` external-server mode
+      - Acceptance criteria:
+        - `src/copilot_model_provider/server.py` remains the formal service entrypoint
+        - configuration can express the external headless CLI connection contract needed for Step 6
+        - the packaging slice does not introduce a service-owned identity layer
   2. container assets and startup path
      - Scope:
-       - add the API image and the minimal startup assets for the first supported deployment topology
+        - add the API image and the minimal startup assets for the first supported deployment topology
+        - landed locally with `Dockerfile`, `.dockerignore`, formal `copilot-model-provider` -> `uvicorn ... --factory` startup, and a passing image/startup smoke run
      - Acceptance criteria:
        - `Dockerfile` and `.dockerignore` exist and are consistent with the Python/uv project layout
        - the image starts the provider through the formal server entrypoint
        - the documented first topology is still a thin API container talking to an internal headless CLI
   3. auth passthrough and subject-bound session resume
      - Scope:
-       - add request-scoped GitHub bearer-token passthrough and the session-binding rules required to keep resume behavior safe
+        - add request-scoped GitHub bearer-token passthrough and the session-binding rules required to keep resume behavior safe
+        - landed locally as `Authorization: Bearer ...` extraction, auth-subject fingerprint persistence, same-subject resume enforcement, and explicit fail-fast for `runtime_cli_url` + request-scoped GitHub bearer-token passthrough because the current SDK only exposes `github_token` on `SubprocessConfig`
      - Acceptance criteria:
        - runtime credentials are handled per request instead of through interactive container login state
        - raw runtime tokens are not stored in session persistence
        - resumed sessions are rejected when the caller does not match the bound subject
   4. smoke validation and packaging docs
      - Scope:
-       - validate the image/startup path and document the operational contract for the first deployment model
+        - validate the image/startup path and document the operational contract for the first deployment model
+        - landed locally with full repo validation plus `docker build` and container startup smoke against `/_internal/health`
      - Acceptance criteria:
        - image build smoke passes
        - service startup smoke passes against the container entrypoint
@@ -571,6 +590,47 @@ Operational follow-on: containerization
   - service startup smoke against the container entrypoint
 - Mergeability notes:
   - keep this slice operational and packaging-focused; do not mix it with new model, protocol, or tool-surface changes.
+
+## Post-MVP follow-on: Thin OpenAI-compatible Responses and Codex cutover
+- Status:
+  - Completed on `main` after the packaging baseline.
+- Goal:
+  - Add a thin `POST /v1/responses` compatibility surface for Codex-style clients while reusing the existing canonical chat/session/runtime path and preserving the thin-provider architecture.
+- Likely directories/files:
+  - `src/copilot_model_provider/api/openai_responses.py`
+  - `src/copilot_model_provider/api/shared.py`
+  - `src/copilot_model_provider/core/responses.py`
+  - `src/copilot_model_provider/core/models.py`
+  - `src/copilot_model_provider/streaming/responses.py`
+  - `tests/unit_tests/test_responses.py`
+  - `tests/contract_tests/test_openai_responses.py`
+  - `tests/integration_tests/test_responses_streaming.py`
+  - `.env.example`
+- Dependencies:
+  - Operational packaging baseline
+- Allowed changes:
+  - OpenAI-compatible Responses request/response normalization
+  - thin SSE event translation required by Codex custom providers
+  - request-scoped auth/session reuse on the existing runtime path
+  - Docker-backed Codex smoke validation and local configuration examples
+- Prohibited changes:
+  - introducing a separate Responses execution stack
+  - adding a service-owned identity layer
+  - expanding into provider-native session APIs or secondary protocol facades
+- Acceptance criteria:
+  - `POST /v1/responses` reuses the current routing, session, and runtime execution seams
+  - the final streamed answer renders exactly once for Codex-style clients
+  - Docker-backed `codex exec` smoke succeeds through the provider
+  - local environment/config examples document the `GITHUB_TOKEN` contract clearly
+- Validation commands:
+  - `uv run ruff check .`
+  - `uv run pyright`
+  - `uv run ty check .`
+  - `uv run pytest -q`
+  - `docker build -t copilot-model-provider:responses-smoke .`
+  - `codex exec --skip-git-repo-check 'Reply with exactly HELLO.'`
+- Mergeability notes:
+  - keep the slice compatibility-focused; reuse the existing execution path instead of introducing protocol-specific orchestration.
 
 ## Parallel execution design
 
@@ -638,7 +698,7 @@ Notes:
 - conflict hotspots:
   - `api/openai_chat.py`, the runtime adapter, and test harness files will be touched repeatedly across the middle PRs.
 - rollback considerations:
-  - each PR should be independently revertible; do not merge provider-native session APIs, provider-native response-style APIs, or secondary protocol facades into this sequence.
+  - each PR should be independently revertible; do not merge provider-native session APIs or secondary protocol facades into this sequence beyond the completed thin OpenAI-compatible Responses extension.
 
 ## Open Questions
 - Q1:
