@@ -1,19 +1,24 @@
 """Service entrypoint helpers for the provider package."""
 
+from __future__ import annotations
+
+import os
+import shutil
 from typing import Final
 
 import structlog
 
+from .config import ProviderSettings
+
 ASGI_APP_IMPORT_PATH = 'copilot_model_provider.app:app'
 ASGI_FACTORY_IMPORT_PATH = 'copilot_model_provider.app:create_app'
+UVICORN_EXECUTABLE_NAME = 'uvicorn'
 
 _logger = structlog.get_logger(__name__)
 
-_SERVICE_SUMMARY: Final[str] = (
-    'copilot-model-provider is a service package, not an end-user CLI.'
-)
+_SERVICE_SUMMARY: Final[str] = 'copilot-model-provider is a service package.'
 _ASGI_SERVER_REQUIREMENT: Final[str] = (
-    'Use an installed ASGI server such as uvicorn to run the service.'
+    'An installed ASGI server such as uvicorn is required to run the service.'
 )
 
 
@@ -29,6 +34,7 @@ def build_startup_guidance_fields() -> dict[str, str]:
     return {
         'summary': _SERVICE_SUMMARY,
         'asgi_server_requirement': _ASGI_SERVER_REQUIREMENT,
+        'package_command': 'copilot-model-provider',
         'asgi_app_import_path': ASGI_APP_IMPORT_PATH,
         'asgi_factory_import_path': ASGI_FACTORY_IMPORT_PATH,
         'example_command': f'uvicorn {ASGI_APP_IMPORT_PATH}',
@@ -49,20 +55,90 @@ def build_startup_guidance() -> str:
     return (
         f'{fields["summary"]}\n'
         f'{fields["asgi_server_requirement"]}\n'
-        'For example:\n'
+        'Run the packaged service entrypoint:\n'
+        f'  {fields["package_command"]}\n'
+        'Or invoke uvicorn directly:\n'
         f'  {fields["example_command"]}\n'
-        'or use the factory entrypoint when explicit app construction is needed:\n'
+        'Use the factory entrypoint when explicit app construction is needed:\n'
         f'  {fields["factory_command"]}\n'
     )
 
 
-def main() -> None:
-    """Log service startup guidance for package-based invocation.
+def build_server_command(*, settings: ProviderSettings) -> tuple[str, ...]:
+    """Build the uvicorn command used by the package entrypoint.
 
-    This thin entrypoint preserves ``python -m copilot_model_provider`` and the
-    installed console script for local discovery while making it explicit that
-    the repository's main deliverable is the HTTP/ASGI service, not a separate
-    interactive CLI product.
+    Args:
+        settings: Validated provider settings controlling bind host and port.
+
+    Returns:
+        The complete argv tuple for launching the service through uvicorn using
+        the application's factory import path.
 
     """
-    _logger.info('service_entrypoint_guidance', **build_startup_guidance_fields())
+    return (
+        UVICORN_EXECUTABLE_NAME,
+        ASGI_FACTORY_IMPORT_PATH,
+        '--factory',
+        '--host',
+        settings.server_host,
+        '--port',
+        str(settings.server_port),
+    )
+
+
+def _resolve_uvicorn_executable() -> str:
+    """Resolve the installed uvicorn executable path for process replacement.
+
+    Returns:
+        The absolute path to the installed ``uvicorn`` executable.
+
+    Raises:
+        RuntimeError: If ``uvicorn`` is not available on ``PATH``.
+
+    """
+    executable_path = shutil.which(UVICORN_EXECUTABLE_NAME)
+    if executable_path is None:
+        msg = (
+            'copilot-model-provider requires an installed "uvicorn" executable '
+            'to start the HTTP service'
+        )
+        raise RuntimeError(msg)
+
+    return executable_path
+
+
+def _exec_server_command(*, executable_path: str, command: tuple[str, ...]) -> None:
+    """Replace the current process with the configured uvicorn server process.
+
+    Args:
+        executable_path: Absolute path to the resolved ``uvicorn`` executable.
+        command: Complete argv tuple returned by ``build_server_command``.
+
+    """
+    os.execv(executable_path, command)  # noqa: S606 - formal process entrypoint
+
+
+def main() -> None:
+    """Start the provider through the formal external ASGI server entrypoint.
+
+    The package entrypoint resolves environment-backed settings, builds the
+    canonical uvicorn command for the app factory, logs the startup contract,
+    and then replaces the current process with the external ASGI server.
+
+    """
+    settings = ProviderSettings.from_env()
+    command = build_server_command(settings=settings)
+    executable_path = _resolve_uvicorn_executable()
+
+    _logger.info(
+        'service_starting',
+        executable=UVICORN_EXECUTABLE_NAME,
+        host=settings.server_host,
+        port=settings.server_port,
+        runtime_connection_mode=(
+            'external_server' if settings.runtime_cli_url is not None else 'subprocess'
+        ),
+        cli_url_configured=settings.runtime_cli_url is not None,
+        factory_import_path=ASGI_FACTORY_IMPORT_PATH,
+    )
+    _exec_server_command(executable_path=executable_path, command=command)

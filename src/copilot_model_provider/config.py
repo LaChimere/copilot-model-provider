@@ -12,6 +12,8 @@ from .tools import (
 )
 
 EnvironmentName = Literal['development', 'test', 'production']
+MIN_SERVER_PORT = 1
+MAX_SERVER_PORT = 65535
 
 
 class ProviderSettings(BaseSettings):
@@ -27,11 +29,14 @@ class ProviderSettings(BaseSettings):
 
     app_name: str = 'copilot-model-provider'
     environment: EnvironmentName = 'development'
+    server_host: str = '127.0.0.1'
+    server_port: int = 8000
     enable_internal_health: bool = True
     internal_health_path: str = '/_internal/health'
     default_runtime: str = 'copilot'
     runtime_timeout_seconds: float = 60.0
     runtime_working_directory: str | None = None
+    runtime_cli_url: str | None = None
     mcp_servers: tuple[MCPServerDefinition, ...] = ()
 
     @field_validator('internal_health_path')
@@ -44,6 +49,35 @@ class ProviderSettings(BaseSettings):
         """Ensure the internal health route stays absolute for FastAPI routing."""
         if not value.startswith('/'):
             msg = 'internal_health_path must start with "/"'
+            raise ValueError(msg)
+
+        return value
+
+    @field_validator('server_host')
+    @classmethod
+    def _validate_server_host(
+        cls,
+        value: str,
+        _info: ValidationInfo,
+    ) -> str:
+        """Ensure the configured bind host is present after normalization."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            msg = 'server_host must not be empty'
+            raise ValueError(msg)
+
+        return normalized_value
+
+    @field_validator('server_port')
+    @classmethod
+    def _validate_server_port(
+        cls,
+        value: int,
+        _info: ValidationInfo,
+    ) -> int:
+        """Ensure the configured bind port stays within the TCP port range."""
+        if value < MIN_SERVER_PORT or value > MAX_SERVER_PORT:
+            msg = f'server_port must be between {MIN_SERVER_PORT} and {MAX_SERVER_PORT}'
             raise ValueError(msg)
 
         return value
@@ -76,6 +110,31 @@ class ProviderSettings(BaseSettings):
             raise ValueError(msg)
 
         return value
+
+    @field_validator('runtime_cli_url')
+    @classmethod
+    def _validate_runtime_cli_url(
+        cls,
+        value: str | None,
+        _info: ValidationInfo,
+    ) -> str | None:
+        """Ensure the optional external CLI URL is either absent or non-empty.
+
+        The Copilot SDK accepts multiple URL forms for external servers
+        (``host:port``, ``http://host:port``, or just ``port``), so this
+        validator only normalizes surrounding whitespace and rejects empty
+        values instead of enforcing a stricter URL format.
+
+        """
+        if value is None:
+            return None
+
+        normalized_value = value.strip()
+        if not normalized_value:
+            msg = 'runtime_cli_url must not be empty when provided'
+            raise ValueError(msg)
+
+        return normalized_value
 
     @classmethod
     def from_env(cls) -> Self:

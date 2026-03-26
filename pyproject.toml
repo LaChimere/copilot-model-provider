@@ -9,6 +9,7 @@ dependencies = [
     "github-copilot-sdk>=0.2.0",
     "pydantic-settings>=2.13.1",
     "structlog>=25.5.0",
+    "uvicorn>=0.38.0",
 ]
 
 [project.scripts]
