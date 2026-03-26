@@ -23,7 +23,7 @@ Today it contains:
 - project tooling (`uv`, `ruff`, `pyright`, `ty`)
 - `pytest`-based unit, contract, and lightweight integration coverage
 
-The current package entrypoint is still a placeholder CLI, but the MVP HTTP surface and minimum release-gate scenario coverage are now implemented locally on `main`.
+The package entrypoints are now intentionally thin service helpers: `python -m copilot_model_provider` and `copilot-model-provider` print startup guidance for the HTTP/ASGI service rather than pretending to be a separate end-user CLI. The MVP HTTP surface and minimum release-gate scenario coverage are implemented on `main`.
 
 ## Current implemented surface
 
@@ -117,10 +117,10 @@ src/
     __init__.py
     __main__.py
     api/
-    cli.py
     config.py
     core/
     runtimes/
+    server.py
 
 tests/
 ```
@@ -140,12 +140,14 @@ This repository uses `uv` and a standard Python `src/` layout.
 uv sync
 ```
 
-### Run the current placeholder package entrypoint
+### Inspect the thin package entrypoint
 
 ```bash
 uv run python -m copilot_model_provider
 uv run copilot-model-provider
 ```
+
+Both commands print the recommended ASGI startup guidance for the service package.
 
 ### Lint and type-check
 

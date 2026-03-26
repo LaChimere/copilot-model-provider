@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-copilot-model-provider = "copilot_model_provider.cli:main"
+copilot-model-provider = "copilot_model_provider.server:main"
 
 [dependency-groups]
 dev = [

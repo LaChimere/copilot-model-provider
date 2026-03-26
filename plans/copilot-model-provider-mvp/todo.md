@@ -5,7 +5,7 @@
 
 ## Task
 - Summary:
-  - Execute the approved `copilot-model-provider-mvp` plan through five execution phases implemented as seven mergeable branches that build the provider MVP over `copilot-sdk`.
+  - Execute the approved `copilot-model-provider-mvp` plan through the completed functional MVP and track the next containerization follow-on for production-oriented packaging over `copilot-sdk`.
 - Links:
   - `plans/copilot-model-provider-mvp/research.md`
   - `plans/copilot-model-provider-mvp/design.md`
@@ -14,9 +14,9 @@
 
 ## Plan Reference
 - Plan version/date:
-  - Parallel-work Gate 2 draft, 2026-03-25
+  - Parallel-work Gate 2 draft, updated after MVP completion to add the containerization follow-on
 - Approved by (if applicable):
-  - Pending Gate 2 approval
+  - Gate 2 was approved for the functional MVP sequence; this checklist now also tracks the next operational packaging item
 
 ## Checklist
 ### Preparation
@@ -74,7 +74,7 @@
     - both branches passed branch-scoped validation before merge and review findings were resolved before landing
 - [x] Item 3: Converge streaming and session branches
   - Current execution status:
-    - the shared hot files are integrated locally on `main`
+    - the shared hot files are integrated on `main`
     - streaming SSE, session persistence/resume, and locking behavior are now wired into `/v1/chat/completions`
     - the review-found streaming setup cleanup leak was fixed before completion
   - Acceptance criteria:
@@ -108,6 +108,40 @@
     - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
     - `113 passed`
     - `Required test coverage of 90% reached. Total coverage: 94.48%`
+- [ ] Item 6: Containerized deployment and production-image baseline
+  - Current execution status:
+    - pending
+    - the repository still has no `Dockerfile`, `.dockerignore`, compose file, formal server entrypoint, or `cliUrl`-based production wiring
+    - the canonical design and this slug now capture the backend/scaling/auth constraints plus the chosen caller-supplied GitHub bearer-token passthrough baseline for the next packaging slice
+  - Planned internal sequence:
+    - [ ] Step 6.1: server/config baseline
+      - Acceptance criteria:
+        - the service startup path is formalized around `src/copilot_model_provider/server.py`
+        - Step 6 configuration can represent external headless CLI connectivity
+        - no service-owned identity layer is introduced
+    - [ ] Step 6.2: container assets and startup path
+      - Acceptance criteria:
+        - `Dockerfile` and `.dockerignore` are added
+        - the image starts the provider through the formal server entrypoint
+        - the first documented topology remains API container + internal headless CLI
+    - [ ] Step 6.3: auth passthrough and subject-bound session resume
+      - Acceptance criteria:
+        - request-scoped GitHub bearer-token passthrough is implemented for runtime execution
+        - raw runtime tokens are not persisted
+        - resumed sessions cannot cross authenticated subjects
+    - [ ] Step 6.4: smoke validation and packaging docs
+      - Acceptance criteria:
+        - image build smoke passes
+        - service startup smoke passes against the container entrypoint
+        - packaging docs describe the token contract, session-state storage, and internal CLI boundary
+  - Acceptance criteria:
+    - container startup uses a formal API server entrypoint
+    - the provider connects to an internal headless CLI server instead of depending on per-request child-process spawning
+    - session-state persistence and request-scoped GitHub bearer-token runtime credential passthrough are explicit in docs and packaging
+    - raw runtime tokens are not persisted, and the packaging slice adds subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
+    - the first supported deployment topology is named explicitly
+  - Evidence:
+    - pending execution
 
 ### Acceptance Gate (before proposing PR)
 - [x] All acceptance criteria above are met with evidence
@@ -157,9 +191,12 @@ Paste concise evidence here (commands + key lines).
   - `uv run ruff check . && uv run pyright && uv run ty check . && uv run pytest -q`
   - `113 passed`
   - `Required test coverage of 90% reached. Total coverage: 94.48%`
+- Containerization baseline:
+  - repository inspection confirms there is still no `Dockerfile`, `.dockerignore`, compose file, or formal server entrypoint
+  - `docs/design.md`, `plans/copilot-model-provider-mvp/research.md`, and `plans/copilot-model-provider-mvp/design.md` now record the API-container + internal headless-CLI topology as the next design baseline
 
 ## Result
 - Outcome:
-  - Step 1 through Step 5 are complete locally on `main`; the MVP release-gate checklist is covered at the agreed minimum depth.
+  - Step 1 through Step 5 are complete on `main`; Item 6 now tracks the next operational packaging follow-on.
 - Follow-ups (if any):
-  - None required for this MVP slug beyond normal commit/push/release handling.
+  - Implement containerization around the documented API-container + internal headless-CLI deployment model.

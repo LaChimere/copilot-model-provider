@@ -223,7 +223,7 @@ Optional later:
 
 Responsibilities:
 
-- authentication and tenant resolution
+- request credential extraction / passthrough and optional tenant resolution
 - request validation
 - compatibility translation
 - SSE framing
@@ -578,21 +578,52 @@ If sessions must survive failover across CLI servers, mount shared persistent st
 
 Without shared storage, use sticky routing instead.
 
+### 9.4 Containerized backend deployment
+
+For production-oriented deployment, follow the official backend-services guidance and treat the SDK as a client that connects to an independently managed **headless Copilot CLI server** over `cliUrl`, rather than spawning a child CLI process inside request handling. [R3]
+
+Recommended default container topology for this repository:
+
+- one provider API container with a formal ASGI server entrypoint
+- one headless Copilot CLI container or sidecar
+- private network connectivity only between the API and the CLI
+- a persistent volume for the CLI session-state directory
+- request-scoped GitHub bearer-token passthrough, plus secret injection for any BYOK credentials
+
+Important operational implications:
+
+- do **not** rely on interactive CLI login or system keychain state inside a production image
+- for a single replica, a local persistent volume can be enough for CLI session state
+- for multiple replicas, choose either sticky routing or shared storage for CLI session state [R4]
+- if the provider API itself maintains session maps or locks, move those off node-local files before claiming multi-replica production readiness
+- Step 6 must define and implement subject-bound session resume rules so one caller cannot resume another caller's underlying Copilot session
+- readiness should cover both provider health and CLI reachability, while keeping the CLI transport internal-only
+
 ## 10. Security Considerations
 
 ### 10.1 Authentication
 
-Possible modes:
+Possible runtime credential modes:
 
-- service-level GitHub token
-- per-user GitHub token
+- caller-supplied GitHub bearer token
+- caller-supplied GitHub bearer token obtained through OAuth
+- service-level GitHub token for server-to-server scenarios
 - BYOK provider credentials [R1][R3][R5]
+
+Preferred baseline for this repository:
+
+- callers supply a GitHub bearer token directly, or obtain one through GitHub OAuth and forward it per request
+- the provider treats that token as runtime credential material for Copilot execution, not as the basis for its own user/account system
+- BYOK credentials remain a separate optional runtime/provider concern
 
 Provider design recommendation:
 
-- keep external client auth separate from runtime auth
+- do **not** build a separate service-owned identity system for the MVP baseline
+- keep any optional caller auth layer separate from runtime credential passthrough
 - store BYOK secrets in a secret manager
-- never persist raw API keys in session storage
+- never persist raw GitHub bearer tokens or API keys in session storage
+- Step 6 should add subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
+- in production containers, prefer request-scoped GitHub bearer-token passthrough and injected BYOK credentials over interactive logged-in-user credentials [R1][R3][R5]
 
 This is especially important because the official docs note that BYOK provider credentials are **not persisted** and must be re-supplied on resume. [R5][R7]
 
@@ -625,7 +656,7 @@ Start with read-only defaults in lower-trust deployments.
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - SSE streaming for chat completions
-- The current MVP plan slug defers both provider-native session APIs and any provider-native response-style API until after the compatibility APIs are stable.
+- The current MVP baseline defers both provider-native session APIs and any provider-native response-style API until after the compatibility APIs are stable.
 
 ### 11.2 Session-aware extensions
 
@@ -656,8 +687,9 @@ This allows us to expose stateful behavior cleanly without forcing every concept
 
 Current implementation status:
 
-- basic tool support, basic MCP mounting, policy-controlled approval, and the remaining routing/policy release-gate scenario are all now implemented locally on `main`
+- basic tool support, basic MCP mounting, policy-controlled approval, and the remaining routing/policy release-gate scenario are all now implemented on `main`
 - the documented MVP release gate now has focused coverage for `/v1/models`, non-streaming chat, streaming, tool flow, persistent resume, and routing/policy behavior
+- containerized deployment and production-oriented packaging are **not** implemented yet; they are the next operationalization step after the functional MVP
 
 ### Out of scope
 
@@ -667,6 +699,15 @@ Current implementation status:
 - advanced quota billing engine
 - admin UI
 - cross-region active-active session mobility
+
+### Operationalization follow-on
+
+After the functional MVP, the next tracked extension should package the provider for containerized deployment:
+
+- add a formal server entrypoint for the FastAPI service
+- build a provider API image intended to connect to an external headless CLI server
+- document the default API-container + CLI-container topology
+- define persistent session-state storage, internal CLI networking, and secret-injection requirements before claiming production readiness
 
 ## 13. Validation Strategy and Real-Client Test Scenarios
 
@@ -964,10 +1005,10 @@ src/
 
 These should be resolved before implementation moves beyond MVP:
 
-1. After chat completions is stable, do we also want a provider-native response-style API? (Current `copilot-model-provider-mvp` slug: later phase.)
-2. Do provider-native session APIs ship in MVP, or do they land in a later phase after the compatibility APIs? (Current `copilot-model-provider-mvp` slug: later phase after the compatibility APIs.)
+1. After chat completions is stable, do we also want a provider-native response-style API? (Current baseline: later phase.)
+2. Do provider-native session APIs ship in MVP, or do they land in a later phase after the compatibility APIs? (Current baseline: later phase after the compatibility APIs.)
 3. What isolation level is required initially: shared CLI, per-tenant CLI, or per-user CLI?
-4. Will external callers be allowed to declare arbitrary tools, or only choose from approved tool packs? (Current `copilot-model-provider-mvp` slug: approved tool packs only.)
+4. Will external callers be allowed to declare arbitrary tools, or only choose from approved tool packs? (Current baseline: approved tool packs only.)
 5. Should model aliases be global, tenant-scoped, or app-scoped?
 6. Do we need durable request logs and tool transcripts for audit on day one?
 

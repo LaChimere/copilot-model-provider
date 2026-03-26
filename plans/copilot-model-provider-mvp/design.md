@@ -5,8 +5,8 @@
 
 ## Objective
 - What problem are we solving (1–2 sentences):
-  - We need a staged implementation plan for the provider MVP so the repository can move from design-only state to a working service through a sequence of small, mergeable PRs.
-  - The split must preserve trunk safety, keep validation attached to each behavior slice, and honor the architecture in `docs/design.md`.
+  - We need the approved staged implementation record for the provider MVP to stay aligned with the repository now that the functional service is implemented on `main`.
+  - The slug should continue to preserve the reviewed branch decomposition, validation boundaries, and the next operational follow-on for containerized deployment in a way that still honors `docs/design.md`.
 - Link to research: `plans/copilot-model-provider-mvp/research.md`
 
 ## Architecture / Approach
@@ -17,6 +17,7 @@
     3. add non-streaming chat execution
     4. add streaming + persistent session behavior
     5. add tool / MCP completion and release-gate E2E
+    6. add containerized deployment and production-image packaging as an operational follow-on
 - Key components / layers involved:
   - FastAPI application layer
   - OpenAI-compatible API facade
@@ -24,6 +25,7 @@
   - Copilot runtime adapter
   - streaming translation
   - tool / MCP control plane
+  - container packaging and runtime topology
   - tests and E2E harness
 - Interaction / data flow (describe or diagram):
 
@@ -47,6 +49,11 @@ Convergence branch:
 
 Final branch: tools + MCP + release-gate E2E
   client -> tool-capable request -> policy/tool registry/MCP mounts -> runtime -> validated end-to-end
+
+Operational follow-on: containerization
+  client -> provider API container -> headless Copilot CLI container -> Copilot/BYOK provider
+                                           |
+                                           -> persistent session-state volume + injected runtime credentials
 ```
 
 ## Interface / API / Schema Design
@@ -115,7 +122,7 @@ Final branch: tools + MCP + release-gate E2E
 ## Key Design Decisions
 - Decision 1:
   - Context:
-    - The current repo has no provider implementation yet, only package scaffolding and a design document.
+    - At the start of this slug, the repo had no provider implementation yet, only package scaffolding and a design document.
   - Choice:
     - Start with a base PR that introduces app/config/core/runtime interfaces but does not ship the full provider behavior yet.
   - Rationale:
@@ -161,6 +168,24 @@ Final branch: tools + MCP + release-gate E2E
   - Rationale:
     - This keeps the first release narrower, safer, and easier to validate while still exercising the core tool/mounting path.
 
+- Decision 7:
+  - Context:
+    - The functional MVP is now implemented, but the repository still has no container assets, no formal server entrypoint, and no production deployment packaging.
+    - The official Copilot SDK backend-services guide recommends an external headless CLI server connected through `cliUrl`, while the scaling and auth docs recommend explicit session-state persistence, internal-only CLI transport, and explicit auth injection for backend deployments.
+  - Choice:
+    - Track containerization as the next operational follow-on in this slug, with a default production topology of one provider API container plus one headless Copilot CLI container or sidecar, connected over an internal network.
+  - Rationale:
+    - This preserves the SDK's intended backend deployment model, avoids baking interactive login state into the image, and gives the provider a clean path from functional MVP to reproducible API-container packaging.
+
+- Decision 8:
+  - Context:
+    - The user wants the provider to remain a wrapped service rather than a separate identity system.
+    - The official auth docs allow per-user GitHub bearer credentials, including OAuth-issued bearer tokens, while the backend-services guidance still requires private SDK-to-CLI transport and careful session handling.
+  - Choice:
+    - Use caller-supplied GitHub bearer tokens as the baseline auth model for the next slice: direct bearer-token passthrough or OAuth-issued bearer-token passthrough per request, with no service-owned user/account layer.
+  - Rationale:
+    - This keeps the provider focused on routing/runtime compatibility, matches per-user Copilot execution semantics, and avoids introducing an unnecessary identity plane before packaging is proven.
+
 ## Impact Assessment
 - Affected modules / services:
   - `src/copilot_model_provider/app.py`
@@ -171,6 +196,9 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/streaming/**`
   - `src/copilot_model_provider/tools/**`
   - `src/copilot_model_provider/storage/**`
+  - `Dockerfile`
+  - `.dockerignore`
+  - deployment/container docs and scripts
   - `tests/**`
 - Public API / schema compatibility:
   - adds new OpenAI-compatible HTTP surfaces incrementally
@@ -183,6 +211,7 @@ Final branch: tools + MCP + release-gate E2E
   - streaming/session/tool slices will determine latency and concurrency behavior
 - Security considerations:
   - external auth vs runtime auth must remain separate
+  - runtime credential passthrough should remain request-scoped, and Step 6 must add subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
   - tool permissions and MCP mounting must be policy-controlled
   - headless CLI connectivity remains internal-only
 
@@ -190,7 +219,7 @@ Final branch: tools + MCP + release-gate E2E
 
 ## Feature summary
 - one-sentence summary:
-  - Build the provider MVP through five execution phases implemented as seven mergeable branches that progressively add the API surface, runtime execution path, and high-risk behavior.
+  - Build the provider MVP through five execution phases implemented as seven mergeable branches, then track containerized deployment as the next operational follow-on.
 - main constraints:
   - every intermediate state must be mergeable
   - provider-native session APIs are out of MVP
@@ -215,7 +244,7 @@ Final branch: tools + MCP + release-gate E2E
   - `src/copilot_model_provider/__init__.py`
   - `tests/unit_tests/test_config.py`
   - `tests/unit_tests/test_app_boot.py`
-  - `tests/unit_tests/test_cli.py`
+  - `tests/unit_tests/test_server_entrypoint.py`
   - `tests/unit_tests/test_errors.py`
   - `tests/unit_tests/test_runtime_base.py`
   - `tests/integration_tests/harness.py`
@@ -396,7 +425,7 @@ Final branch: tools + MCP + release-gate E2E
 
 ## Convergence PR: Streaming and session integration
 - Status:
-  - Implemented locally on `main`; the shared hot files now integrate streaming SSE, session persistence/resume, and locking behavior, and local validation is green before Tool/MCP work begins.
+  - Implemented on `main`; the shared hot files now integrate streaming SSE, session persistence/resume, and locking behavior, and validation is green before Tool/MCP work begins.
 - Goal:
   - Integrate the streaming and session fan-out branches into the shared hot files and validate the combined resumed-follow-up behavior.
 - Likely directories/files:
@@ -435,7 +464,7 @@ Final branch: tools + MCP + release-gate E2E
 
 ## Final PR: Tool / MCP completion and MVP release gate
 - Status:
-  - Tool/MCP completion and the minimum MVP release-gate coverage are now implemented locally on `main`: server-approved tools are mounted into SDK sessions, MCP servers are mounted through app/runtime configuration, and focused integration coverage now also validates the remaining routing/policy scenario through alias-based model routing.
+  - Tool/MCP completion and the minimum MVP release-gate coverage are now implemented on `main`: server-approved tools are mounted into SDK sessions, MCP servers are mounted through app/runtime configuration, and focused integration coverage now also validates the remaining routing/policy scenario through alias-based model routing.
 - Goal:
   - Complete the MVP’s tool and MCP story on top of the existing chat surface, remove temporary limitations that were only acceptable for earlier slices, and add the minimum release-gate E2E coverage.
 - Likely directories/files:
@@ -473,6 +502,75 @@ Final branch: tools + MCP + release-gate E2E
   - MVP E2E scenarios covering `/v1/models`, non-streaming chat, streaming, session resume, and routing/tool behavior
 - Mergeability notes:
   - this is the final MVP-enabling PR; after it lands, the repo should satisfy the documented minimum release gate.
+
+## Operational follow-on: Containerized deployment and production-image baseline
+- Status:
+  - Not started; this is the next planned extension after the completed functional MVP.
+- Goal:
+  - Package the provider for containerized deployment in a way that matches the official Copilot SDK backend-services, scaling, and auth guidance.
+- Likely directories/files:
+  - `Dockerfile`
+  - `.dockerignore`
+  - `src/copilot_model_provider/server.py` or equivalent formal server entrypoint
+  - deployment runbook/config docs
+  - focused container or process-level smoke coverage where practical
+- Dependencies:
+  - Final PR
+- Allowed changes:
+  - formal API server entrypoint for the FastAPI app
+  - provider API image build
+  - configuration for external `cliUrl` / headless CLI connectivity
+  - documented persistent session-state storage contract
+  - documented request-scoped GitHub bearer-token passthrough or OAuth-issued bearer-token passthrough contract, plus any required BYOK secret injection
+  - health/readiness design for API + CLI connectivity
+- Prohibited changes:
+  - exposing the headless CLI publicly
+  - baking long-lived secrets or interactive login state into the image
+  - introducing a separate service-owned user/account system in this packaging slice
+  - claiming multi-replica production readiness while session-state or provider locks remain node-local
+  - unrelated public API expansion
+- Acceptance criteria:
+  - the provider has a formal server entrypoint suitable for container startup
+  - the API image is designed to connect to an external headless CLI server instead of relying on per-request child-process spawning
+  - container docs clearly define internal-only CLI networking, session-state persistence, request-scoped GitHub bearer-token passthrough, and any optional BYOK secret injection
+  - raw runtime tokens are not persisted, and the packaging slice implements subject-bound resume enforcement so resumed sessions cannot cross authenticated subjects
+  - the chosen first topology (single-node persistent or multi-node with sticky/shared storage) is explicit
+  - packaging changes do not weaken the existing functional MVP validation story
+- Planned internal sequence:
+  1. server/config baseline
+     - Scope:
+       - formalize the service startup path and add packaging-oriented configuration for external headless CLI connectivity
+     - Acceptance criteria:
+       - `src/copilot_model_provider/server.py` remains the formal service entrypoint
+       - configuration can express the external headless CLI connection contract needed for Step 6
+       - the packaging slice does not introduce a service-owned identity layer
+  2. container assets and startup path
+     - Scope:
+       - add the API image and the minimal startup assets for the first supported deployment topology
+     - Acceptance criteria:
+       - `Dockerfile` and `.dockerignore` exist and are consistent with the Python/uv project layout
+       - the image starts the provider through the formal server entrypoint
+       - the documented first topology is still a thin API container talking to an internal headless CLI
+  3. auth passthrough and subject-bound session resume
+     - Scope:
+       - add request-scoped GitHub bearer-token passthrough and the session-binding rules required to keep resume behavior safe
+     - Acceptance criteria:
+       - runtime credentials are handled per request instead of through interactive container login state
+       - raw runtime tokens are not stored in session persistence
+       - resumed sessions are rejected when the caller does not match the bound subject
+  4. smoke validation and packaging docs
+     - Scope:
+       - validate the image/startup path and document the operational contract for the first deployment model
+     - Acceptance criteria:
+       - image build smoke passes
+       - service startup smoke passes against the container entrypoint
+       - packaging docs describe internal-only CLI networking, persistent session-state storage, and the request-scoped token contract
+- Validation commands:
+  - existing repo validation stack
+  - image build smoke
+  - service startup smoke against the container entrypoint
+- Mergeability notes:
+  - keep this slice operational and packaging-focused; do not mix it with new model, protocol, or tool-surface changes.
 
 ## Parallel execution design
 

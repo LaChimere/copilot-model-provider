@@ -5,7 +5,7 @@
 ## Objective
 - What outcome we want (1–2 sentences):
   - Implement the provider MVP as an OpenAI-compatible gateway over `copilot-sdk`, starting with `GET /v1/models` and `POST /v1/chat/completions`, while preserving the session-oriented runtime design in `docs/design.md`.
-  - Deliver the work through **five execution phases implemented as seven mergeable branches** so the foundation chain stays serial, safe fan-out happens only after contracts stabilize, and convergence is explicitly owned.
+  - Record the completed functional MVP as **five execution phases implemented as seven mergeable branches**, then track the next operational follow-on for containerized deployment without violating the SDK backend-services, scaling, and auth guidance.
 
 ## Constraints
 - Compatibility constraints:
@@ -18,12 +18,16 @@
   - session mapping must not create duplicate or conflicting resumes under normal request flow
 - Security/safety constraints:
   - external client auth must stay separate from runtime auth
+  - the service should not introduce a separate end-user identity system in the first packaging slice
   - tool and MCP access must be policy-controlled
   - the headless CLI transport remains internal-only
+  - production packaging must use caller-supplied GitHub bearer-token passthrough or OAuth-issued bearer tokens, not interactive logged-in-user state inside the image
+  - raw runtime tokens must not be persisted, and Step 6 must add subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
 - Timeline/rollout constraints (if any):
   - use staged, mergeable PRs rather than a single MVP branch
   - use one agent per branch and one branch per worktree
   - keep `src/copilot_model_provider/api/openai_chat.py`, `src/copilot_model_provider/runtimes/copilot.py`, `src/copilot_model_provider/core/sessions.py`, and `tests/integration_tests/harness.py` under convergence-owner control once fan-out begins
+  - track containerization as a separate operational packaging branch after the completed functional MVP
 
 ## Assumptions
 Mark each as **Verified** or **Unverified**.
@@ -34,6 +38,7 @@ Mark each as **Verified** or **Unverified**.
 - [x] (Verified) A5: The first session-mapping backend may be local/file-backed as long as the abstraction keeps room for later shared-storage evolution.
 - [x] (Verified) A6: MVP tool support is limited to server-approved tools plus MCP, not caller-supplied tool schemas.
 - [x] (Verified) A7: If multiple agents are used, the foundation chain (`PR 1` -> `PR 2` -> `PR 3`) remains serial before any fan-out begins.
+- [x] (Verified) A8: The first production-oriented container topology should use a provider API container connected to an internal headless Copilot CLI server via `cliUrl`, with persistent CLI session-state storage and caller-supplied GitHub bearer-token runtime credential passthrough.
 
 ## Options Considered (if applicable)
 ### Option A
@@ -83,7 +88,7 @@ Mark each as **Verified** or **Unverified**.
 
 - [x] Step 3: Converge streaming and session work under a single owner
   - Current execution status:
-    - the shared hot files are now integrated locally on `main`
+    - the shared hot files are now integrated on `main`
     - `/v1/chat/completions` now supports streaming SSE in addition to non-streaming behavior
     - session persistence/resume and locking are now wired through the convergence path for session-backed routes
     - the streaming setup cleanup issue found during review has been resolved locally
@@ -112,12 +117,45 @@ Mark each as **Verified** or **Unverified**.
     - no temporary scaffolding is left undocumented
     - the diff remains consistent with the approved design boundaries
 
+- [ ] Step 6: Containerized deployment and production-image baseline
+  - Current execution status:
+    - not started
+    - the repository still has no `Dockerfile`, `.dockerignore`, compose file, formal server entrypoint, or `cliUrl`-based production wiring
+    - `docs/design.md` and this slug now record the official backend/scaling/auth guidance plus the chosen caller-supplied GitHub bearer-token passthrough baseline for the next slice
+  - Planned internal sequence:
+    1. server/config baseline
+       - Acceptance criteria:
+         - the service startup path is formalized around `src/copilot_model_provider/server.py`
+         - Step 6 configuration can represent external headless CLI connectivity
+         - no service-owned identity layer is introduced
+    2. container assets and startup path
+       - Acceptance criteria:
+         - `Dockerfile` and `.dockerignore` are added
+         - the image starts the provider through the formal server entrypoint
+         - the first documented topology remains API container + internal headless CLI
+    3. auth passthrough and subject-bound session resume
+       - Acceptance criteria:
+         - request-scoped GitHub bearer-token passthrough is implemented for runtime execution
+         - raw runtime tokens are not persisted
+         - resumed sessions cannot cross authenticated subjects
+    4. smoke validation and packaging docs
+       - Acceptance criteria:
+         - image build smoke passes
+         - service startup smoke passes against the container entrypoint
+         - packaging docs describe the token contract, session-state storage, and internal CLI boundary
+  - Acceptance criteria:
+    - the provider has a formal API server entrypoint suitable for container startup
+    - the packaging model uses an external headless CLI server via `cliUrl` rather than per-request child-process spawning
+    - internal-only CLI networking, persistent CLI session-state storage, and request-scoped GitHub bearer-token runtime credential passthrough are explicit in docs and packaging
+    - raw runtime tokens are not persisted, and the packaging slice adds subject-bound resume enforcement before sessional auth passthrough is treated as production-ready
+    - the first supported deployment topology is named explicitly before any production-readiness claim
+
 ## Execution Topology
 - Base prerequisite:
   - Foundation chain (`PR 1` -> `PR 2` -> `PR 3`)
 - Branch count / phase model:
-  - 5 execution phases
-  - 7 mergeable branches:
+  - 5 completed functional phases plus 1 planned operational follow-on
+  - 7 completed mergeable branches plus 1 planned packaging branch:
     - `PR 1`
     - `PR 2`
     - `PR 3`
@@ -125,6 +163,7 @@ Mark each as **Verified** or **Unverified**.
     - `feat/mvp-session-persistence`
     - convergence branch
     - `feat/mvp-tools-mcp` as the final release-gate branch
+    - `feat/mvp-containerization` as the next operational packaging branch
 - Parallel tasks:
 
 | Task | Branch | Worktree | Owns | Must not touch |
@@ -158,9 +197,11 @@ Mark each as **Verified** or **Unverified**.
   - `src/copilot_model_provider/tools/mcp.py`
   - `src/copilot_model_provider/storage/session_map.py`
   - `src/copilot_model_provider/storage/locks.py`
+  - `Dockerfile`
+  - `.dockerignore`
+  - formal server/deployment startup wiring
   - `tests/unit/**`
   - `tests/contract/**`
-  - `tests/integration_tests/**`
   - `tests/integration_tests/**`
 - Public API / schema impacts:
   - adds OpenAI-compatible `GET /v1/models`
@@ -184,7 +225,7 @@ Mark each as **Verified** or **Unverified**.
   - `uv run pytest -q`
   - targeted contract / integration / e2e tests as introduced per step
 - [ ] Before/after behavior proof:
-  - before: repo has no provider service or compatibility endpoints
+  - before this slug started: repo had no provider service or compatibility endpoints
   - current after `PR 1`: app scaffold, runtime/config contracts, internal health endpoint, and E2E harness boot path exist; public provider endpoints still do not
   - current after the model-catalog slice: `GET /v1/models` works through the app without runtime execution dependencies
   - current after the non-streaming chat slice: `POST /v1/chat/completions` executes one stateless Copilot-backed request path and rejects streaming with the shared error envelope
@@ -192,6 +233,7 @@ Mark each as **Verified** or **Unverified**.
   - after Step 3: streaming + session resume work, including focused locking evidence
   - after Step 4: tool/MCP paths work on top of the converged branch
   - after Step 5: MVP release-gate scenarios work end to end
+  - after Step 6: the service has a reproducible API-container startup path and a documented API-container + headless-CLI deployment contract
 - [ ] Logs/traces/metrics to capture:
   - request/session lifecycle logs
   - streaming event evidence
@@ -215,6 +257,8 @@ Mark each as **Verified** or **Unverified**.
   - session resume semantics can become incorrect if locking and ownership are underspecified
   - if lightweight E2E is not introduced early, later PRs may inherit already-merged wire-compatibility mistakes
   - if agents cross ownership boundaries during fan-out, convergence will collapse back into a large manual merge
+  - a naive container design that exposes the CLI publicly or depends on interactive login state would violate the deployment baseline from the official SDK docs
+  - if runtime credential passthrough is implemented without subject-bound session rules in Step 6, resumed sessions could leak across callers
 - Explicit non-goals (out of scope):
   - provider-native session APIs
   - provider-native response-style APIs
