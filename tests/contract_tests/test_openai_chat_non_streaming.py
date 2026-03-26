@@ -14,7 +14,7 @@ from copilot_model_provider.core.models import (
     RuntimeHealth,
 )
 from copilot_model_provider.runtimes.base import RuntimeAdapter, RuntimeEventStream
-from tests.integration_tests.harness import build_async_client
+from tests.harness import build_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.integration_tests.harness import build_async_client
+from tests.harness import build_async_client
 
 
 @pytest.mark.asyncio

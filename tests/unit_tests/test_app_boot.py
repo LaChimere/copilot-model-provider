@@ -28,7 +28,7 @@ from copilot_model_provider.tools import (
     ToolDefinition,
     ToolRegistry,
 )
-from tests.integration_tests.harness import build_test_app
+from tests.harness import build_test_app
 from tests.session_persistence_helpers import managed_scratch_directory
 
 if TYPE_CHECKING:
