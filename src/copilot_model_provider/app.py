@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING
 import structlog
 from fastapi import FastAPI, Request, Response
 
+from .api.anthropic_messages import (
+    install_anthropic_count_tokens_route,
+    install_anthropic_messages_route,
+)
 from .api.openai_chat import install_openai_chat_route
 from .api.openai_models import install_openai_models_route
 from .api.openai_responses import install_openai_responses_route
@@ -35,7 +39,7 @@ def create_app(
     When callers do not provide explicit settings or a runtime, this function
     resolves environment-backed defaults and installs the Copilot runtime for
     the thin stateless provider. The returned app exposes
-    model listing plus OpenAI-compatible chat and Responses routes.
+    model listing plus OpenAI- and Anthropic-compatible routes.
 
     Args:
         settings: Optional pre-built settings to bind onto the application.
@@ -90,6 +94,17 @@ def create_app(
         default_runtime_auth_token=resolved_settings.runtime_auth_token,
         model_router=resolved_router,
         runtime=resolved_runtime,
+    )
+    install_anthropic_messages_route(
+        app,
+        default_runtime_auth_token=resolved_settings.runtime_auth_token,
+        model_router=resolved_router,
+        runtime=resolved_runtime,
+    )
+    install_anthropic_count_tokens_route(
+        app,
+        default_runtime_auth_token=resolved_settings.runtime_auth_token,
+        model_router=resolved_router,
     )
 
     if resolved_settings.enable_internal_health:

@@ -25,7 +25,7 @@ model = "leave-this-alone"
         source,
         model='gpt-5.4',
         provider_id='copilot-model-provider-local',
-        base_url='http://127.0.0.1:8000/v1',
+        base_url='http://127.0.0.1:8000/openai/v1',
     )
     payload = tomllib.loads(updated)
 
@@ -45,13 +45,13 @@ model_provider = "copilot-model-provider-local"
 
 [model_providers."copilot-model-provider-local"]
 name = "Stale Local Provider"
-base_url = "http://127.0.0.1:9999/v1"
+base_url = "http://127.0.0.1:9999/openai/v1"
 
 [model_providers."copilot-model-provider-local".headers]
 authorization = "Bearer stale"
 
 [[model_providers."copilot-model-provider-local".endpoints]]
-path = "/v1/responses"
+path = "/openai/v1/responses"
 
 [mcp_servers.fetch]
 enabled = true
@@ -61,19 +61,19 @@ enabled = true
         source,
         model='gpt-5.4',
         provider_id='copilot-model-provider-local',
-        base_url='http://127.0.0.1:8000/v1',
+        base_url='http://127.0.0.1:8000/openai/v1',
     )
     payload = tomllib.loads(updated)
     provider = payload['model_providers']['copilot-model-provider-local']
 
     assert provider == {
         'name': 'Local Copilot Model Provider',
-        'base_url': 'http://127.0.0.1:8000/v1',
+        'base_url': 'http://127.0.0.1:8000/openai/v1',
         'wire_api': 'responses',
     }
     assert payload['mcp_servers']['fetch']['enabled'] is True
     assert 'authorization = "Bearer stale"' not in updated
-    assert 'path = "/v1/responses"' not in updated
+    assert 'path = "/openai/v1/responses"' not in updated
 
 
 def test_update_codex_config_rejects_invalid_existing_toml() -> None:
@@ -88,5 +88,5 @@ model = "second"
             source,
             model='gpt-5.4',
             provider_id='copilot-model-provider-local',
-            base_url='http://127.0.0.1:8000/v1',
+            base_url='http://127.0.0.1:8000/openai/v1',
         )

@@ -15,7 +15,7 @@ def test_container_chat_completion_supports_live_model_id(
 ) -> None:
     """Verify that one live model ID completes through the real container runtime."""
     response = integration_client.post(
-        '/v1/chat/completions',
+        '/openai/v1/chat/completions',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
             'model': integration_model_id,
@@ -41,7 +41,7 @@ def test_container_chat_completion_rejects_unknown_model_id(
 ) -> None:
     """Verify that unknown live model IDs fail with the structured error contract."""
     response = integration_client.post(
-        '/v1/chat/completions',
+        '/openai/v1/chat/completions',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
             'model': 'missing-model-id',

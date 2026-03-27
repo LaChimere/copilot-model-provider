@@ -169,7 +169,7 @@ async def test_post_chat_completions_returns_openai_compatible_payload() -> None
     runtime = _FakeChatRuntime()
     async with build_async_client(runtime=runtime) as client:
         response = await client.post(
-            '/v1/chat/completions',
+            '/openai/v1/chat/completions',
             json={
                 'model': 'gpt-5.4',
                 'messages': [{'role': 'user', 'content': 'Hello'}],
@@ -207,7 +207,7 @@ async def test_post_chat_completions_extracts_bearer_token() -> None:
     runtime = _FakeChatRuntime()
     async with build_async_client(runtime=runtime) as client:
         response = await client.post(
-            '/v1/chat/completions',
+            '/openai/v1/chat/completions',
             headers={'Authorization': 'Bearer github-token-123'},
             json={
                 'model': 'gpt-5.4',
@@ -232,7 +232,7 @@ async def test_post_chat_completions_fall_back_to_configured_runtime_token() -> 
         ),
     ) as client:
         response = await client.post(
-            '/v1/chat/completions',
+            '/openai/v1/chat/completions',
             json={
                 'model': 'gpt-5.4',
                 'messages': [{'role': 'user', 'content': 'Hello'}],
@@ -258,7 +258,7 @@ async def test_post_chat_completions_prefer_request_auth_over_configured_runtime
         ),
     ) as client:
         response = await client.post(
-            '/v1/chat/completions',
+            '/openai/v1/chat/completions',
             headers={'Authorization': 'Bearer github-token-123'},
             json={
                 'model': 'gpt-5.4',
@@ -276,7 +276,7 @@ async def test_post_chat_completions_rejects_non_bearer_authorization_headers() 
     """Verify that malformed Authorization headers fail fast."""
     async with build_async_client(runtime=_FakeChatRuntime()) as client:
         response = await client.post(
-            '/v1/chat/completions',
+            '/openai/v1/chat/completions',
             headers={'Authorization': 'Token github-token-123'},
             json={
                 'model': 'gpt-5.4',
@@ -295,7 +295,7 @@ async def test_post_chat_completions_streams_openai_compatible_sse_frames() -> N
         build_async_client(runtime=_FakeChatRuntime()) as client,
         client.stream(
             'POST',
-            '/v1/chat/completions',
+            '/openai/v1/chat/completions',
             json={
                 'model': 'gpt-5.4',
                 'stream': True,
@@ -321,7 +321,7 @@ async def test_post_chat_completions_streaming_deduplicates_final_aggregate_mess
         build_async_client(runtime=_FakeChatAggregateRuntime()) as client,
         client.stream(
             'POST',
-            '/v1/chat/completions',
+            '/openai/v1/chat/completions',
             json={
                 'model': 'gpt-5.4',
                 'stream': True,

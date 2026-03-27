@@ -1,4 +1,4 @@
-"""Shared HTTP helpers for the OpenAI-compatible API routes."""
+"""Shared HTTP helpers for the HTTP compatibility routes."""
 
 from __future__ import annotations
 
@@ -146,6 +146,44 @@ def resolve_runtime_auth_token(
     request_token = normalize_bearer_token(value=authorization_header)
     if request_token is not None:
         return request_token
+
+    return normalize_optional_header_value(value=default_token)
+
+
+def resolve_runtime_auth_token_from_anthropic_headers(
+    *,
+    authorization_header: str | None,
+    api_key_header: str | None,
+    default_token: str | None,
+) -> str | None:
+    """Resolve the runtime auth token from Anthropic-compatible auth headers.
+
+    Claude gateway mode may authenticate with either ``Authorization: Bearer`` or
+    ``X-Api-Key``. For the provider's thin request-scoped runtime auth model, both
+    are accepted as opaque token carriers. Bearer auth takes precedence, followed
+    by ``X-Api-Key``, followed by the service-level fallback token.
+
+    Args:
+        authorization_header: Raw ``Authorization`` header from the request.
+        api_key_header: Raw ``X-Api-Key`` header from the request.
+        default_token: Optional configured fallback token for the running service.
+
+    Returns:
+        The request-scoped auth token when one is present, otherwise the
+        normalized fallback token.
+
+    Raises:
+        ProviderError: If the request supplied an ``Authorization`` header that is
+            present but not in ``Bearer <token>`` format.
+
+    """
+    request_token = normalize_bearer_token(value=authorization_header)
+    if request_token is not None:
+        return request_token
+
+    api_key_token = normalize_optional_header_value(value=api_key_header)
+    if api_key_token is not None:
+        return api_key_token
 
     return normalize_optional_header_value(value=default_token)
 

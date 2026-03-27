@@ -13,7 +13,7 @@ def test_container_serves_auth_context_live_model_catalog(
     integration_model_ids: list[str],
 ) -> None:
     """Verify that the production container serves auth-context live model IDs."""
-    response = integration_client.get('/v1/models')
+    response = integration_client.get('/openai/v1/models')
 
     assert response.status_code == 200
     payload = response.json()

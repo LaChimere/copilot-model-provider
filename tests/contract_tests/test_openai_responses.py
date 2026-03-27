@@ -180,7 +180,7 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
     }
     async with build_async_client(runtime=runtime) as client:
         response = await client.post(
-            '/v1/responses',
+            '/openai/v1/responses',
             json=payload,
         )
 
@@ -213,7 +213,7 @@ async def test_post_responses_extracts_bearer_token() -> None:
     runtime = _FakeResponsesRuntime()
     async with build_async_client(runtime=runtime) as client:
         response = await client.post(
-            '/v1/responses',
+            '/openai/v1/responses',
             headers={
                 'Authorization': 'Bearer github-token-123',
             },
@@ -240,7 +240,7 @@ async def test_post_responses_fall_back_to_configured_runtime_token() -> None:
         ),
     ) as client:
         response = await client.post(
-            '/v1/responses',
+            '/openai/v1/responses',
             json={
                 'model': 'gpt-5.4',
                 'input': 'Hello',
@@ -266,7 +266,7 @@ async def test_post_responses_prefer_request_auth_over_configured_runtime_token(
         ),
     ) as client:
         response = await client.post(
-            '/v1/responses',
+            '/openai/v1/responses',
             headers={'Authorization': 'Bearer github-token-123'},
             json={
                 'model': 'gpt-5.4',
@@ -286,7 +286,7 @@ async def test_post_responses_streams_openai_compatible_sse_frames() -> None:
         build_async_client(runtime=_FakeResponsesRuntime()) as client,
         client.stream(
             'POST',
-            '/v1/responses',
+            '/openai/v1/responses',
             json={
                 'model': 'gpt-5.4',
                 'stream': True,
@@ -311,7 +311,7 @@ async def test_post_responses_streaming_deduplicates_final_aggregate_message() -
         build_async_client(runtime=_FakeResponsesAggregateRuntime()) as client,
         client.stream(
             'POST',
-            '/v1/responses',
+            '/openai/v1/responses',
             json={
                 'model': 'gpt-5.4',
                 'stream': True,

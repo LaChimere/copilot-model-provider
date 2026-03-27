@@ -15,7 +15,7 @@ def test_container_responses_non_streaming_supports_live_model_id(
 ) -> None:
     """Verify that the Responses JSON surface works with one live model ID."""
     response = integration_client.post(
-        '/v1/responses',
+        '/openai/v1/responses',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
             'model': integration_model_id,
@@ -39,7 +39,7 @@ def test_container_responses_streaming_emits_expected_lifecycle(
     """Verify that the containerized SSE stream emits the expected Responses frames."""
     with integration_client.stream(
         'POST',
-        '/v1/responses',
+        '/openai/v1/responses',
         headers={'Authorization': f'Bearer {integration_github_token}'},
         json={
             'model': integration_model_id,

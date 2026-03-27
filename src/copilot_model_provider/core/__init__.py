@@ -13,6 +13,11 @@ from .errors import (
     install_error_handlers,
 )
 from .models import (
+    AnthropicCountTokensResponse,
+    AnthropicMessageResponse,
+    AnthropicMessagesCountTokensRequest,
+    AnthropicMessagesCreateRequest,
+    AnthropicUsage,
     CanonicalChatMessage,
     CanonicalChatRequest,
     InternalHealthResponse,
@@ -31,6 +36,11 @@ from .models import (
 from .routing import ModelRouter, ModelRouterProtocol
 
 __all__ = [
+    'AnthropicCountTokensResponse',
+    'AnthropicMessageResponse',
+    'AnthropicMessagesCountTokensRequest',
+    'AnthropicMessagesCreateRequest',
+    'AnthropicUsage',
     'CanonicalChatMessage',
     'CanonicalChatRequest',
     'ErrorDetail',

@@ -173,7 +173,7 @@ async def _run_live_chat_sweep(
     github_token: str,
     model_ids: list[str],
 ) -> list[str]:
-    """Run the live chat sweep through ``POST /v1/chat/completions``.
+    """Run the live chat sweep through ``POST /openai/v1/chat/completions``.
 
     Args:
         github_token: Real GitHub bearer token used for runtime execution.
@@ -193,7 +193,7 @@ async def _run_live_chat_sweep(
     async with build_async_client(settings=settings) as client:
         for model_id in model_ids:
             response = await client.post(
-                '/v1/chat/completions',
+                '/openai/v1/chat/completions',
                 headers={'Authorization': f'Bearer {github_token}'},
                 json={
                     'model': model_id,
@@ -225,7 +225,7 @@ async def _run_live_responses_sweep(
     github_token: str,
     model_ids: list[str],
 ) -> list[str]:
-    """Run the live Responses sweep through ``POST /v1/responses``.
+    """Run the live Responses sweep through ``POST /openai/v1/responses``.
 
     Args:
         github_token: Real GitHub bearer token used for runtime execution.
@@ -245,7 +245,7 @@ async def _run_live_responses_sweep(
     async with build_async_client(settings=settings) as client:
         for model_id in model_ids:
             response = await client.post(
-                '/v1/responses',
+                '/openai/v1/responses',
                 headers={'Authorization': f'Bearer {github_token}'},
                 json={
                     'model': model_id,
@@ -305,7 +305,7 @@ async def test_live_models_complete_successfully() -> None:
 
 @pytest.mark.asyncio
 async def test_live_models_responses_complete_successfully() -> None:
-    """Verify that the configured live Responses sweep succeeds through `/v1/responses`.
+    """Verify that the configured live Responses sweep succeeds through `/openai/v1/responses`.
 
     This complements the chat-completions live sweep so the provider's two
     implemented northbound execution routes are both covered under the same

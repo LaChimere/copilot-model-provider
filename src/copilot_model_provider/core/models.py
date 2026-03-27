@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+AnthropicStopReason = Literal['end_turn', 'max_tokens', 'stop_sequence', 'tool_use']
+
 
 class RuntimeHealth(BaseModel):
     """Health metadata for a runtime backend."""
@@ -146,6 +148,11 @@ def _empty_responses_output_text_list() -> list[OpenAIResponsesOutputText]:
 
 def _empty_responses_output_message_list() -> list[OpenAIResponsesOutputMessage]:
     """Return a typed empty list for Responses output-message collections."""
+    return []
+
+
+def _empty_anthropic_content_block_list() -> list[AnthropicTextContentBlock]:
+    """Return a typed empty list for Anthropic content-block collections."""
     return []
 
 
@@ -354,6 +361,166 @@ class OpenAIResponsesCompletedEvent(BaseModel):
     type: Literal['response.completed'] = 'response.completed'
     sequence_number: int = Field(ge=0)
     response: OpenAIResponse
+
+
+class AnthropicTextContentBlock(BaseModel):
+    """Minimal text content block accepted and returned by the Anthropic facade."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['text'] = 'text'
+    text: str = ''
+
+
+class AnthropicMessageInput(BaseModel):
+    """One Anthropic Messages API input message."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal['user', 'assistant']
+    content: str | list[dict[str, Any]] = Field(min_length=1)
+
+
+class AnthropicMessagesCreateRequest(BaseModel):
+    """Minimal Anthropic Messages request accepted by the provider facade.
+
+    The provider intentionally accepts the fields Claude Code sends in gateway
+    mode, but only normalizes the text-bearing subset onto the internal
+    ``CanonicalChatRequest`` path. Tool definitions are accepted for compatibility
+    and preserved in the request model, but the current provider does not execute
+    Anthropic tool-use flows northbound.
+
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str = Field(min_length=1)
+    messages: list[AnthropicMessageInput] = Field(min_length=1)
+    system: str | list[dict[str, Any]] | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    stream: bool = False
+    metadata: dict[str, Any] | None = None
+    tools: list[dict[str, Any]] = Field(default_factory=_empty_json_object_list)
+
+
+class AnthropicMessagesCountTokensRequest(BaseModel):
+    """Anthropic-compatible request body for ``POST /v1/messages/count_tokens``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str = Field(min_length=1)
+    messages: list[AnthropicMessageInput] = Field(min_length=1)
+    system: str | list[dict[str, Any]] | None = None
+    metadata: dict[str, Any] | None = None
+    tools: list[dict[str, Any]] = Field(default_factory=_empty_json_object_list)
+
+
+class AnthropicUsage(BaseModel):
+    """Token accounting returned by the Anthropic Messages facade."""
+
+    model_config = ConfigDict(frozen=True)
+
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
+class AnthropicCountTokensResponse(BaseModel):
+    """Anthropic-compatible response body for ``POST /v1/messages/count_tokens``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    input_tokens: int = Field(ge=0)
+
+
+class AnthropicMessageResponse(BaseModel):
+    """Minimal Anthropic-compatible response body for ``POST /v1/messages``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1)
+    type: Literal['message'] = 'message'
+    role: Literal['assistant'] = 'assistant'
+    model: str = Field(min_length=1)
+    content: list[AnthropicTextContentBlock] = Field(
+        default_factory=_empty_anthropic_content_block_list
+    )
+    stop_reason: AnthropicStopReason | None = 'end_turn'
+    stop_sequence: str | None = None
+    usage: AnthropicUsage | None = None
+
+
+class AnthropicMessageStartEvent(BaseModel):
+    """Streaming event emitted when an Anthropic message stream starts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['message_start'] = 'message_start'
+    message: AnthropicMessageResponse
+
+
+class AnthropicContentBlockStartEvent(BaseModel):
+    """Streaming event emitted when an Anthropic content block starts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['content_block_start'] = 'content_block_start'
+    index: int = Field(ge=0, default=0)
+    content_block: AnthropicTextContentBlock
+
+
+class AnthropicTextDelta(BaseModel):
+    """Text delta payload emitted inside Anthropic content-block events."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['text_delta'] = 'text_delta'
+    text: str = Field(min_length=1)
+
+
+class AnthropicContentBlockDeltaEvent(BaseModel):
+    """Streaming event emitted for one Anthropic text delta."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['content_block_delta'] = 'content_block_delta'
+    index: int = Field(ge=0, default=0)
+    delta: AnthropicTextDelta
+
+
+class AnthropicContentBlockStopEvent(BaseModel):
+    """Streaming event emitted when an Anthropic content block completes."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['content_block_stop'] = 'content_block_stop'
+    index: int = Field(ge=0, default=0)
+
+
+class AnthropicMessageDelta(BaseModel):
+    """Top-level Anthropic message delta emitted near stream completion."""
+
+    model_config = ConfigDict(frozen=True)
+
+    stop_reason: AnthropicStopReason | None = 'end_turn'
+    stop_sequence: str | None = None
+
+
+class AnthropicMessageDeltaEvent(BaseModel):
+    """Streaming event emitted for top-level Anthropic message updates."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['message_delta'] = 'message_delta'
+    delta: AnthropicMessageDelta
+    usage: AnthropicUsage | None = None
+
+
+class AnthropicMessageStopEvent(BaseModel):
+    """Streaming event emitted when an Anthropic message stream completes."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['message_stop'] = 'message_stop'
 
 
 class ResolvedRoute(BaseModel):

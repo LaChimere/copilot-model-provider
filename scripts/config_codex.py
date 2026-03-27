@@ -121,14 +121,14 @@ def run_config_codex(
 
     The flow validates prerequisites, resolves the user's GitHub token via
     ``gh``, restarts the local provider container, validates that the requested
-    model is visible from ``/v1/models``, backs up ``~/.codex/config.toml``,
+    model is visible from ``/openai/v1/models``, backs up ``~/.codex/config.toml``,
     and rewrites the Codex config to point at the local provider.
     """
     ensure_required_commands(('docker', 'gh'))
     ensure_gh_authenticated()
     github_token = resolve_github_token()
 
-    base_url = f'http://127.0.0.1:{options.port}/v1'
+    base_url = f'http://127.0.0.1:{options.port}/openai/v1'
     container_name = DEFAULT_CONTAINER_NAME
     codex_dir = (home_directory or Path.home()) / '.codex'
     config_path = codex_dir / 'config.toml'
@@ -415,7 +415,7 @@ def wait_for_health(health_url: str) -> None:
 
 
 def fetch_visible_model_ids(base_url: str) -> list[str]:
-    """Fetch visible model ids from the provider's ``/v1/models`` endpoint."""
+    """Fetch visible model ids from the provider's ``/openai/v1/models`` endpoint."""
     payload = _fetch_json_document(f'{base_url}/models')
     data = payload.get('data')
     if not isinstance(data, list):

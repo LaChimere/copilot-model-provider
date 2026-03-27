@@ -103,7 +103,7 @@ def test_run_config_codex_updates_config_and_creates_backup(
     payload = tomllib.loads(config_path.read_text(encoding='utf-8'))
     backup_files = list((codex_dir / 'backups').glob('config.toml.*.bak'))
 
-    assert result.base_url == 'http://127.0.0.1:27070/v1'
+    assert result.base_url == 'http://127.0.0.1:27070/openai/v1'
     assert result.container_name == 'copilot-model-provider'
     assert restart_calls == [
         (
@@ -119,7 +119,7 @@ def test_run_config_codex_updates_config_and_creates_backup(
     assert payload['model_provider'] == 'copilot-model-provider-local'
     assert (
         payload['model_providers']['copilot-model-provider-local']['base_url']
-        == 'http://127.0.0.1:27070/v1'
+        == 'http://127.0.0.1:27070/openai/v1'
     )
     assert len(backup_files) == 1
     assert backup_files[0].read_text(encoding='utf-8') == original_config

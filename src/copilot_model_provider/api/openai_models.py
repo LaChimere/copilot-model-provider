@@ -20,6 +20,7 @@ def install_openai_models_route(
     *,
     default_runtime_auth_token: str | None = None,
     model_router: ModelRouterProtocol,
+    path: str = '/openai/v1/models',
 ) -> None:
     """Install the OpenAI-compatible ``GET /v1/models`` route.
 
@@ -29,6 +30,7 @@ def install_openai_models_route(
             when the request omits ``Authorization``.
         model_router: The router that resolves live model visibility for the
             active auth context.
+        path: Public HTTP path where the OpenAI facade should be installed.
 
     """
 
@@ -48,7 +50,7 @@ def install_openai_models_route(
         )
 
     app.add_api_route(
-        '/v1/models',
+        path,
         _list_models,
         methods=['GET'],
         response_model=OpenAIModelListResponse,

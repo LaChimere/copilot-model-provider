@@ -59,8 +59,19 @@ def install_openai_responses_route(
     default_runtime_auth_token: str | None = None,
     model_router: ModelRouterProtocol,
     runtime: RuntimeProtocol,
+    path: str = '/openai/v1/responses',
 ) -> None:
-    """Install the OpenAI-compatible ``POST /v1/responses`` route."""
+    """Install the OpenAI-compatible ``POST /openai/v1/responses`` route.
+
+    Args:
+        app: Application instance that should serve the Responses route.
+        default_runtime_auth_token: Optional configured fallback auth token used
+            when the request omits ``Authorization``.
+        model_router: Router that validates visible models for the auth context.
+        runtime: Runtime implementation that executes the normalized request.
+        path: Public HTTP path where the OpenAI facade should be installed.
+
+    """
 
     async def _create_response(
         request: OpenAIResponsesCreateRequest,
@@ -110,7 +121,7 @@ def install_openai_responses_route(
         )
 
     app.add_api_route(
-        '/v1/responses',
+        path,
         _create_response,
         methods=['POST'],
         response_model=OpenAIResponse,

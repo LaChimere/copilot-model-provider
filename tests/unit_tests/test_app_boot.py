@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 
 class _FakeModelsRuntime(RuntimeProtocol):
-    """Minimal runtime used by app boot tests that hit `/v1/models`."""
+    """Minimal runtime used by app boot tests that hit `/openai/v1/models`."""
 
     @property
     @override
@@ -128,10 +128,16 @@ def test_internal_health_route_is_optional() -> None:
         settings=ProviderSettings(enable_internal_health=False),
     )
 
-    assert '/v1/models' in _route_paths(enabled_app)
-    assert '/v1/models' in _route_paths(disabled_app)
-    assert '/v1/chat/completions' in _route_paths(enabled_app)
-    assert '/v1/chat/completions' in _route_paths(disabled_app)
+    assert '/openai/v1/models' in _route_paths(enabled_app)
+    assert '/openai/v1/models' in _route_paths(disabled_app)
+    assert '/openai/v1/chat/completions' in _route_paths(enabled_app)
+    assert '/openai/v1/chat/completions' in _route_paths(disabled_app)
+    assert '/openai/v1/responses' in _route_paths(enabled_app)
+    assert '/openai/v1/responses' in _route_paths(disabled_app)
+    assert '/anthropic/v1/messages' in _route_paths(enabled_app)
+    assert '/anthropic/v1/messages' in _route_paths(disabled_app)
+    assert '/anthropic/v1/messages/count_tokens' in _route_paths(enabled_app)
+    assert '/anthropic/v1/messages/count_tokens' in _route_paths(disabled_app)
     assert '/_internal/health' in _route_paths(enabled_app)
     assert '/_internal/health' not in _route_paths(disabled_app)
 
@@ -229,7 +235,7 @@ async def test_request_logging_middleware_emits_structured_completion_event(
         runtime=_FakeModelsRuntime(),
         model_router=_StaticModelRouter(),
     ) as client:
-        response = await client.get('/v1/models')
+        response = await client.get('/openai/v1/models')
 
     assert response.status_code == 200
     completion_events = [
@@ -239,7 +245,7 @@ async def test_request_logging_middleware_emits_structured_completion_event(
     ]
     assert len(completion_events) == 1
     assert completion_events[0]['method'] == 'GET'
-    assert completion_events[0]['path'] == '/v1/models'
+    assert completion_events[0]['path'] == '/openai/v1/models'
     assert completion_events[0]['status_code'] == 200
 
 
