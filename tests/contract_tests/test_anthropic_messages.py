@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import pytest
 from copilot.generated.session_events import SessionEvent
 
-from copilot_model_provider.api.anthropic_protocol import (
+from copilot_model_provider.api.anthropic.protocol import (
     estimate_anthropic_input_tokens,
 )
 from copilot_model_provider.config import ProviderSettings

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import FastAPI, Header
 from fastapi.responses import StreamingResponse
 
-from copilot_model_provider.api.anthropic_protocol import (
+from copilot_model_provider.api.anthropic.protocol import (
     build_anthropic_content_block_delta_event,
     build_anthropic_content_block_start_event,
     build_anthropic_content_block_stop_event,

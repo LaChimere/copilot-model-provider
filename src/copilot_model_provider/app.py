@@ -8,14 +8,16 @@ from typing import TYPE_CHECKING
 import structlog
 from fastapi import FastAPI, Request, Response
 
-from .api.anthropic_messages import (
+from .api.anthropic import (
     install_anthropic_count_tokens_route,
     install_anthropic_messages_route,
+    install_anthropic_models_route,
 )
-from .api.anthropic_models import install_anthropic_models_route
-from .api.openai_chat import install_openai_chat_route
-from .api.openai_models import install_openai_models_route
-from .api.openai_responses import install_openai_responses_route
+from .api.openai import (
+    install_openai_chat_route,
+    install_openai_models_route,
+    install_openai_responses_route,
+)
 from .config import ProviderSettings
 from .core.errors import install_error_handlers
 from .core.models import InternalHealthResponse

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Header
 
-from copilot_model_provider.api.anthropic_protocol import (
+from copilot_model_provider.api.anthropic.protocol import (
     build_anthropic_model_list_response,
 )
 from copilot_model_provider.api.shared import (
