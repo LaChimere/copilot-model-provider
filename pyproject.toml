@@ -3,6 +3,7 @@ name = "copilot-model-provider"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.135.2",

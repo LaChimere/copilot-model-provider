@@ -209,3 +209,7 @@ COPILOT_MODEL_PROVIDER_RUN_LIVE_MODEL_SWEEP_ALL=1 \
 
 - `docs/design.md` for the architecture and protocol-facade design
 - `AGENTS.md` for the repository's agent workflow contract
+
+## License
+
+MIT. See `LICENSE`.
