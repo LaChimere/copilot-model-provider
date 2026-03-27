@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 import urllib.request
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ from scripts.config_codex import (
     ConfigCodexError,
     ConfigCodexOptions,
     _fetch_json_document,
+    ensure_gh_authenticated,
     run_config_codex,
 )
 
@@ -102,10 +104,10 @@ def test_run_config_codex_updates_config_and_creates_backup(
     backup_files = list((codex_dir / 'backups').glob('config.toml.*.bak'))
 
     assert result.base_url == 'http://127.0.0.1:27070/v1'
-    assert result.container_name == 'copilot-model-provider-local-27070'
+    assert result.container_name == 'copilot-model-provider'
     assert restart_calls == [
         (
-            'copilot-model-provider-local-27070',
+            'copilot-model-provider',
             'copilot-model-provider:local',
             27070,
             8000,
@@ -198,3 +200,98 @@ def test_fetch_json_document_wraps_connection_reset(
 
     with pytest.raises(ConfigCodexError, match='Unable to fetch'):
         _fetch_json_document('http://127.0.0.1:8000/_internal/health')
+
+
+def test_ensure_gh_authenticated_skips_login_when_status_is_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the script does not launch login when ``gh auth status`` succeeds."""
+    calls: list[list[str]] = []
+
+    def _command_path(command: str) -> str:
+        """Return the command name unchanged for deterministic test assertions."""
+        return command
+
+    def _run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        """Capture subprocess invocations and return an authenticated status."""
+        del kwargs
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+
+    monkeypatch.setattr('scripts.config_codex._command_path', _command_path)
+    monkeypatch.setattr('scripts.config_codex.subprocess.run', _run)
+
+    ensure_gh_authenticated()
+
+    assert calls == [['gh', 'auth', 'status']]
+
+
+def test_ensure_gh_authenticated_runs_oauth_login_when_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify an unauthenticated ``gh`` session triggers browser-based login."""
+    calls: list[list[str]] = []
+    results: list[subprocess.CompletedProcess[str]] = [
+        subprocess.CompletedProcess(['gh', 'auth', 'status'], 1, stdout='', stderr=''),
+        subprocess.CompletedProcess(['gh', 'auth', 'login', '--web'], 0),
+        subprocess.CompletedProcess(['gh', 'auth', 'status'], 0, stdout='', stderr=''),
+    ]
+
+    def _command_path(command: str) -> str:
+        """Return the command name unchanged for deterministic test assertions."""
+        return command
+
+    def _run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        """Capture subprocess invocations and replay the expected flow."""
+        del kwargs
+        calls.append(command)
+        return results.pop(0)
+
+    monkeypatch.setattr('scripts.config_codex._command_path', _command_path)
+    monkeypatch.setattr('scripts.config_codex.subprocess.run', _run)
+
+    ensure_gh_authenticated()
+
+    assert calls == [
+        ['gh', 'auth', 'status'],
+        ['gh', 'auth', 'login', '--web'],
+        ['gh', 'auth', 'status'],
+    ]
+
+
+def test_ensure_gh_authenticated_raises_when_login_does_not_create_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify a completed login still fails if ``gh auth status`` stays red."""
+    results: list[subprocess.CompletedProcess[str]] = [
+        subprocess.CompletedProcess(['gh', 'auth', 'status'], 1, stdout='', stderr=''),
+        subprocess.CompletedProcess(['gh', 'auth', 'login', '--web'], 0),
+        subprocess.CompletedProcess(['gh', 'auth', 'status'], 1, stdout='', stderr=''),
+    ]
+
+    def _command_path(command: str) -> str:
+        """Return the command name unchanged for deterministic test assertions."""
+        return command
+
+    def _run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        """Replay a login flow that never produces an authenticated session."""
+        del command, kwargs
+        return results.pop(0)
+
+    monkeypatch.setattr('scripts.config_codex._command_path', _command_path)
+    monkeypatch.setattr('scripts.config_codex.subprocess.run', _run)
+
+    with pytest.raises(
+        ConfigCodexError,
+        match='no authenticated session is available',
+    ):
+        ensure_gh_authenticated()

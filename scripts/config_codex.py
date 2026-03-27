@@ -23,6 +23,7 @@ DEFAULT_PORT = 8000
 DEFAULT_IMAGE = 'copilot-model-provider:local'
 DEFAULT_MODEL = 'gpt-5.4'
 DEFAULT_PROVIDER_ID = 'copilot-model-provider-local'
+DEFAULT_CONTAINER_NAME = 'copilot-model-provider'
 DEFAULT_CONTAINER_PORT = 8000
 MAX_PORT = 65535
 HEALTH_CHECK_ATTEMPTS = 30
@@ -128,7 +129,7 @@ def run_config_codex(
     github_token = resolve_github_token()
 
     base_url = f'http://127.0.0.1:{options.port}/v1'
-    container_name = f'{options.provider_id}-{options.port}'
+    container_name = DEFAULT_CONTAINER_NAME
     codex_dir = (home_directory or Path.home()) / '.codex'
     config_path = codex_dir / 'config.toml'
     backup_dir = codex_dir / 'backups'
@@ -170,21 +171,44 @@ def ensure_required_commands(commands: tuple[str, ...]) -> None:
 
 
 def ensure_gh_authenticated() -> None:
-    """Require the user to have an authenticated GitHub CLI session."""
-    result = subprocess.run(  # noqa: S603 - argv is explicit and shell=False
-        [_command_path('gh'), 'auth', 'status'],
-        check=False,
-        capture_output=True,
-        text=True,
+    """Ensure the user has an authenticated GitHub CLI session.
+
+    The local provider container relies on the token returned by
+    ``gh auth token``. When ``gh`` is not currently authenticated, this helper
+    launches an interactive browser-based OAuth login flow and verifies that the
+    login completed before returning.
+
+    Raises:
+        ConfigCodexError: If ``gh`` login fails or authentication is still
+            unavailable after the login flow completes.
+
+    """
+    if _gh_auth_status_is_authenticated():
+        return
+
+    print(
+        'GitHub CLI is not authenticated; launching `gh auth login --web`...',
+        file=sys.stderr,
     )
-    if result.returncode == 0:
+    result = subprocess.run(  # noqa: S603 - argv is explicit and shell=False
+        [_command_path('gh'), 'auth', 'login', '--web'],
+        check=False,
+    )
+    if result.returncode != 0:
+        msg = (
+            'GitHub CLI login did not complete successfully.\n\n'
+            'Please rerun:\n'
+            '  gh auth login --web'
+        )
+        raise ConfigCodexError(msg)
+
+    if _gh_auth_status_is_authenticated():
         return
 
     msg = (
-        'GitHub CLI is not authenticated.\n\n'
-        'Please run:\n'
-        '  gh auth login\n\n'
-        'Then rerun this script.'
+        'GitHub CLI login finished, but no authenticated session is available.\n\n'
+        'Please verify with:\n'
+        '  gh auth status'
     )
     raise ConfigCodexError(msg)
 
@@ -215,6 +239,17 @@ def resolve_github_token() -> str:
         '  gh auth login'
     )
     raise ConfigCodexError(msg)
+
+
+def _gh_auth_status_is_authenticated() -> bool:
+    """Return whether ``gh auth status`` reports an authenticated session."""
+    result = subprocess.run(  # noqa: S603 - argv is explicit and shell=False
+        [_command_path('gh'), 'auth', 'status'],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def backup_codex_config(config_path: Path, backup_dir: Path) -> str:
