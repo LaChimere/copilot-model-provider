@@ -11,6 +11,7 @@ from scripts.config_claude import (
     ConfigClaudeError,
     ConfigClaudeOptions,
     build_claude_env_overrides,
+    parse_args,
     run_config_claude,
     select_default_claude_model,
     update_claude_settings_payload,
@@ -228,6 +229,21 @@ def test_run_config_claude_rejects_missing_visible_claude_models(
             ),
             home_directory=tmp_path,
         )
+
+
+def test_parse_args_release_channel_uses_published_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify release-channel CLI parsing resolves the published GHCR image."""
+    monkeypatch.delenv('CLAUDE_PROVIDER_IMAGE', raising=False)
+    monkeypatch.delenv('CLAUDE_PROVIDER_CHANNEL', raising=False)
+    monkeypatch.delenv('CLAUDE_PROVIDER_VERSION', raising=False)
+
+    options = parse_args(['--channel', 'release', '--version', 'v0.1.0'])
+
+    assert options.image == 'ghcr.io/lachimere/copilot-model-provider:v0.1.0'
+    assert options.image_channel == 'release'
+    assert options.release_version == 'v0.1.0'
 
 
 def test_update_claude_settings_text_rejects_invalid_existing_json() -> None:

@@ -14,6 +14,8 @@ from scripts.config_codex import (
     ConfigCodexOptions,
     _fetch_json_document,
     ensure_gh_authenticated,
+    parse_args,
+    resolve_provider_image,
     run_config_codex,
 )
 
@@ -185,6 +187,35 @@ def test_run_config_codex_rejects_model_ids_not_visible_from_service(
             ),
             home_directory=tmp_path,
         )
+
+
+def test_parse_args_release_channel_uses_published_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify release-channel CLI parsing resolves the published GHCR image."""
+    monkeypatch.delenv('CODEX_PROVIDER_IMAGE', raising=False)
+    monkeypatch.delenv('CODEX_PROVIDER_CHANNEL', raising=False)
+    monkeypatch.delenv('CODEX_PROVIDER_VERSION', raising=False)
+
+    options = parse_args(
+        ['--channel', 'release', '--version', 'v0.1.0', '--model', 'gpt-5.4'],
+    )
+
+    assert options.image == 'ghcr.io/lachimere/copilot-model-provider:v0.1.0'
+    assert options.image_channel == 'release'
+    assert options.release_version == 'v0.1.0'
+
+
+def test_resolve_provider_image_prefers_explicit_override() -> None:
+    """Verify an explicit image override wins over the derived release image."""
+    assert (
+        resolve_provider_image(
+            explicit_image='ghcr.io/example/custom:demo',
+            image_channel='release',
+            release_version='v0.1.0',
+        )
+        == 'ghcr.io/example/custom:demo'
+    )
 
 
 def test_fetch_json_document_wraps_connection_reset(

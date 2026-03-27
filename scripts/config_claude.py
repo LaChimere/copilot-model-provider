@@ -11,20 +11,24 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 try:
     from scripts.config_codex import (
         DEFAULT_CONTAINER_NAME,
         DEFAULT_CONTAINER_PORT,
         DEFAULT_IMAGE,
+        DEFAULT_IMAGE_CHANNEL,
         DEFAULT_PORT,
+        DEFAULT_RELEASE_VERSION,
+        RELEASE_IMAGE_REPOSITORY,
         ConfigCodexError,
         _parse_port,
         ensure_gh_authenticated,
         ensure_required_commands,
         fetch_visible_anthropic_model_ids,
         resolve_github_token,
+        resolve_provider_image,
         restart_container,
         wait_for_health,
     )
@@ -33,13 +37,17 @@ except ModuleNotFoundError:
         DEFAULT_CONTAINER_NAME,
         DEFAULT_CONTAINER_PORT,
         DEFAULT_IMAGE,
+        DEFAULT_IMAGE_CHANNEL,
         DEFAULT_PORT,
+        DEFAULT_RELEASE_VERSION,
+        RELEASE_IMAGE_REPOSITORY,
         ConfigCodexError,
         _parse_port,
         ensure_gh_authenticated,
         ensure_required_commands,
         fetch_visible_anthropic_model_ids,
         resolve_github_token,
+        resolve_provider_image,
         restart_container,
         wait_for_health,
     )
@@ -47,6 +55,8 @@ except ModuleNotFoundError:
 DEFAULT_MODEL_ENV_VAR = 'CLAUDE_PROVIDER_MODEL'
 DEFAULT_PORT_ENV_VAR = 'CLAUDE_PROVIDER_PORT'
 DEFAULT_IMAGE_ENV_VAR = 'CLAUDE_PROVIDER_IMAGE'
+DEFAULT_CHANNEL_ENV_VAR = 'CLAUDE_PROVIDER_CHANNEL'
+DEFAULT_VERSION_ENV_VAR = 'CLAUDE_PROVIDER_VERSION'
 DEFAULT_CLAUDE_CONFIG_DIR_ENV_VAR = 'CLAUDE_CONFIG_DIR'
 DEFAULT_SETTINGS_FILE_NAME = 'settings.json'
 DEFAULT_BACKUP_DIR_NAME = 'backups'
@@ -65,6 +75,10 @@ class ConfigClaudeOptions:
         image: Docker image tag to run for the provider container.
         model: Optional Claude-family model id to force for the configured
             default session.
+        image_channel: Image selection mode used when ``image`` is not explicitly
+            supplied.
+        release_version: Published image version used when ``image_channel`` is
+            ``release`` and ``image`` is not explicitly supplied.
         container_port: Internal container port exposed by the provider image.
 
     """
@@ -72,6 +86,8 @@ class ConfigClaudeOptions:
     port: int
     image: str
     model: str | None = None
+    image_channel: Literal['local', 'release'] = DEFAULT_IMAGE_CHANNEL
+    release_version: str = DEFAULT_RELEASE_VERSION
     container_port: int = DEFAULT_CONTAINER_PORT
 
 
@@ -116,9 +132,31 @@ def parse_args(argv: list[str] | None = None) -> ConfigClaudeOptions:
         help=f'Host port that maps to the service container (default: {DEFAULT_PORT})',
     )
     parser.add_argument(
+        '--channel',
+        choices=('local', 'release'),
+        default=os.environ.get(DEFAULT_CHANNEL_ENV_VAR, DEFAULT_IMAGE_CHANNEL),
+        help=(
+            'Image source to use when --image is not provided: '
+            f'"local" -> {DEFAULT_IMAGE}; '
+            f'"release" -> {RELEASE_IMAGE_REPOSITORY}:<version> '
+            f'(default: {DEFAULT_IMAGE_CHANNEL})'
+        ),
+    )
+    parser.add_argument(
+        '--version',
+        default=os.environ.get(DEFAULT_VERSION_ENV_VAR, DEFAULT_RELEASE_VERSION),
+        help=(
+            'Published image version to use together with --channel release '
+            f'(default: {DEFAULT_RELEASE_VERSION})'
+        ),
+    )
+    parser.add_argument(
         '--image',
-        default=os.environ.get(DEFAULT_IMAGE_ENV_VAR, DEFAULT_IMAGE),
-        help=f'Docker image name to run (default: {DEFAULT_IMAGE})',
+        default=os.environ.get(DEFAULT_IMAGE_ENV_VAR),
+        help=(
+            'Explicit Docker image name to run. When omitted, the script derives '
+            'the image from --channel and --version.'
+        ),
     )
     parser.add_argument(
         '--model',
@@ -131,8 +169,14 @@ def parse_args(argv: list[str] | None = None) -> ConfigClaudeOptions:
     args = parser.parse_args(argv)
     return ConfigClaudeOptions(
         port=args.port,
-        image=args.image,
+        image=resolve_provider_image(
+            explicit_image=args.image,
+            image_channel=cast("Literal['local', 'release']", args.channel),
+            release_version=args.version,
+        ),
         model=args.model,
+        image_channel=cast("Literal['local', 'release']", args.channel),
+        release_version=args.version,
     )
 
 

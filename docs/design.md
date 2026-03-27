@@ -10,11 +10,11 @@ It is intentionally implementation-first:
 - it does **not** treat historical planning artifacts as normative
 - it does **not** depend on or reference historical planning artifacts as design sources
 
-At the time of writing, the repository implements a **thin, stateless, subprocess-backed OpenAI-compatible provider** on top of `github-copilot-sdk`.
+At the time of writing, the repository implements a **thin, stateless, subprocess-backed dual-protocol provider** on top of `github-copilot-sdk`.
 
 ## 2. System Overview
 
-The service is a FastAPI application that exposes a small OpenAI-compatible HTTP surface and translates those requests into ephemeral Copilot SDK sessions.
+The service is a FastAPI application that exposes small OpenAI-compatible and Anthropic-compatible HTTP facades and translates those requests into ephemeral Copilot SDK sessions.
 
 The core design choice is to keep the provider layer intentionally thin:
 
@@ -119,7 +119,7 @@ Responsibilities:
 - parse HTTP requests
 - normalize auth headers
 - resolve public model IDs into runtime routes
-- convert OpenAI-compatible requests into canonical internal requests
+- convert OpenAI-compatible and Anthropic-compatible requests into canonical internal requests
 - format HTTP responses and SSE streams
 
 ### 4.3 Canonical core
@@ -129,7 +129,7 @@ Implemented in `src/copilot_model_provider/core/`.
 Responsibilities:
 
 - define internal request/response models
-- normalize OpenAI chat and Responses requests
+- normalize supported OpenAI and Anthropic request shapes
 - render prompts for the runtime
 - define the live model-catalog snapshot and model router
 - translate runtime completions into northbound response shapes
@@ -155,8 +155,8 @@ Implemented in `src/copilot_model_provider/streaming/`.
 Responsibilities:
 
 - translate Copilot SDK session events into canonical stream events
-- translate canonical stream events into OpenAI-compatible chat chunks
-- encode SSE frames for chat and Responses streaming
+- translate canonical stream events into protocol-specific streaming payloads
+- encode SSE frames for chat, Responses, and Anthropic streaming
 
 ## 5. Request Normalization
 
@@ -505,12 +505,12 @@ The current implementation does **not** provide these capabilities:
 - MCP mounting or MCP tool execution
 - external CLI runtime mode
 - provider-native conversation/session APIs
-- Anthropic-compatible facade
+- broader Anthropic compatibility features beyond the current models/messages/count-tokens surface
 - multi-runtime fallback routing
 - rate limiting, quotas, or billing
 - advanced OpenAI compatibility features beyond the current thin chat/responses surface
 
-This is intentional. The provider currently optimizes for a minimal, reliable, OpenAI-compatible surface over Copilot-backed execution.
+This is intentional. The provider currently optimizes for a minimal, reliable, protocol-compatible surface over Copilot-backed execution.
 
 ## 13. Validation Strategy
 
@@ -582,7 +582,7 @@ Primary entrypoints and modules:
 
 The current repository is best understood as:
 
-- a thin OpenAI-compatible HTTP facade
+- thin OpenAI-compatible and Anthropic-compatible HTTP facades
 - a small internal normalization and routing layer
 - a subprocess-backed Copilot SDK runtime
 - a stateless provider with request-scoped auth passthrough
