@@ -13,9 +13,10 @@ Today it contains:
 - the canonical architecture/design document in `docs/design.md`
 - an approved MVP planning slug in `plans/copilot-model-provider-mvp/`
 - a FastAPI app scaffold with an internal health endpoint
-- auth-aware live model discovery and OpenAI-compatible `GET /v1/models`
-- an OpenAI-compatible `POST /v1/chat/completions` supporting non-streaming and streaming SSE behavior
-- a thin OpenAI-compatible `POST /v1/responses` surface for Codex-style clients
+- auth-aware live model discovery for both OpenAI- and Anthropic-compatible facades
+- an OpenAI-compatible `POST /openai/v1/chat/completions` supporting non-streaming and streaming SSE behavior
+- a thin OpenAI-compatible `POST /openai/v1/responses` surface for Codex-style clients
+- an Anthropic-compatible `GET /anthropic/v1/models`, `POST /anthropic/v1/messages`, and `POST /anthropic/v1/messages/count_tokens` surface for Claude-style clients
 - a Copilot SDK-backed runtime for thin stateless chat execution
 - a container packaging baseline (`Dockerfile`, `.dockerignore`) plus a root `.env.example` for local token/config setup
 - focused release-gate integration coverage for models, chat, Responses, and Docker-backed end-to-end execution
@@ -28,17 +29,21 @@ The package entrypoints are now intentionally thin service launchers: `python -m
 
 Available today:
 
-- `GET /v1/models`
-- `POST /v1/chat/completions` (non-streaming and streaming SSE)
-- `POST /v1/responses` (thin OpenAI-compatible Responses surface)
+- `GET /openai/v1/models`
+- `POST /openai/v1/chat/completions` (non-streaming and streaming SSE)
+- `POST /openai/v1/responses` (thin OpenAI-compatible Responses surface)
+- `GET /anthropic/v1/models`
+- `POST /anthropic/v1/messages`
+- `POST /anthropic/v1/messages/count_tokens`
 - `GET /_internal/health`
 
 Minimum release-gate coverage now includes:
 
-- `/v1/models` live model advertisement
+- `/openai/v1/models` live model advertisement
 - non-streaming chat
 - streaming SSE framing
-- thin `/v1/responses` compatibility
+- thin `/openai/v1/responses` compatibility
+- Anthropic-compatible models, messages, and count-tokens behavior
 - Docker-backed black-box integration coverage
 
 ## What this project is trying to build
@@ -46,7 +51,7 @@ Minimum release-gate coverage now includes:
 At a high level, the target system is:
 
 1. a **northbound compatibility layer**
-   for OpenAI-style clients first, with room for additional protocol facades later
+   for OpenAI-style and Anthropic-style clients
 2. a **canonical core**
    for request normalization, live model discovery, routing, and event translation
 3. a **Copilot runtime**
@@ -67,10 +72,13 @@ The current MVP direction is intentionally narrow.
 
 In scope:
 
-- `GET /v1/models`
-- `POST /v1/chat/completions`
+- `GET /openai/v1/models`
+- `POST /openai/v1/chat/completions`
 - SSE streaming for chat completions
-- thin OpenAI-compatible `/v1/responses`
+- thin OpenAI-compatible `/openai/v1/responses`
+- `GET /anthropic/v1/models`
+- `POST /anthropic/v1/messages`
+- `POST /anthropic/v1/messages/count_tokens`
 - auth-aware live Copilot model exposure
 - a Copilot runtime
 - subprocess-backed request-scoped GitHub bearer-token passthrough
@@ -80,8 +88,7 @@ Out of scope for the current MVP:
 - provider-native session APIs
 - server-side tool/MCP control planes
 - external CLI runtime mode
-- provider-native response-style API families beyond the thin OpenAI-compatible `/v1/responses` route
-- Anthropic-compatible facade
+- provider-native response-style API families beyond the thin OpenAI-compatible `/openai/v1/responses` route
 - caller-supplied tool schemas
 - multi-runtime fallback routing
 
@@ -182,7 +189,7 @@ The provider forwards the selected token into a short-lived subprocess-backed Co
 
 ### Local Codex / custom-provider baseline
 
-For local Codex testing, the repository now exposes a thin OpenAI-compatible `/v1/responses` route and includes `scripts/config_codex.py` to:
+For local Codex testing, the repository now exposes a thin OpenAI-compatible `/openai/v1/responses` route and includes `scripts/config_codex.py` to:
 
 - resolve `gh auth token`
 - start or restart the local container on the requested port
@@ -191,7 +198,20 @@ For local Codex testing, the repository now exposes a thin OpenAI-compatible `/v
 - default the configured model to `gpt-5.4`
 - fail fast if the requested model is not visible from the running service's auth context
 
-Visible model IDs depend on the bearer token or fallback container token that the running provider sees. `GET /v1/models` is the canonical source of truth for what Codex may request.
+Visible model IDs depend on the bearer token or fallback container token that the running provider sees. `GET /openai/v1/models` is the canonical source of truth for what Codex may request.
+
+### Local Claude baseline
+
+For local Claude testing, the repository includes `scripts/config_claude.py` to:
+
+- resolve `gh auth token`
+- start or restart the local container on the requested port
+- back up `~/.claude/settings.json`
+- point Claude at the local provider through `ANTHROPIC_BASE_URL`
+- discover visible Claude-family models from `GET /anthropic/v1/models`
+- persist `ANTHROPIC_MODEL` plus Claude tier defaults into `settings.json`
+
+Once configured, plain `claude` invocations use the provider's Anthropic-compatible facade.
 
 See `.env.example` for the minimal local environment contract.
 

@@ -84,6 +84,28 @@ class OpenAIModelListResponse(BaseModel):
     data: list[OpenAIModelCard]
 
 
+class AnthropicModelInfo(BaseModel):
+    """Minimal Anthropic-compatible model info returned from ``GET /v1/models``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1)
+    type: Literal['model'] = 'model'
+    display_name: str = Field(min_length=1)
+    created_at: str = Field(min_length=1)
+
+
+class AnthropicModelListResponse(BaseModel):
+    """Anthropic-compatible response body for the models catalog endpoint."""
+
+    model_config = ConfigDict(frozen=True)
+
+    data: list[AnthropicModelInfo]
+    first_id: str | None = None
+    has_more: bool = False
+    last_id: str | None = None
+
+
 class OpenAIChatMessage(BaseModel):
     """OpenAI-compatible chat message representation."""
 

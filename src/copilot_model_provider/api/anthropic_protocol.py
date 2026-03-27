@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -20,18 +21,23 @@ from copilot_model_provider.core.models import (
     AnthropicMessagesCreateRequest,
     AnthropicMessageStartEvent,
     AnthropicMessageStopEvent,
+    AnthropicModelInfo,
+    AnthropicModelListResponse,
     AnthropicStopReason,
     AnthropicTextContentBlock,
     AnthropicTextDelta,
     AnthropicUsage,
     CanonicalChatMessage,
     CanonicalChatRequest,
+    OpenAIModelListResponse,
     RuntimeCompletion,
 )
 
 type AnthropicTokenCountableRequest = (
     AnthropicMessagesCreateRequest | AnthropicMessagesCountTokensRequest
 )
+
+_DISPLAY_NAME_ACRONYM_MAX_LENGTH = 3
 
 
 def normalize_anthropic_messages_request(
@@ -84,6 +90,29 @@ def build_anthropic_count_tokens_response(
     """Build a minimal Anthropic count-tokens response."""
     return AnthropicCountTokensResponse(
         input_tokens=estimate_anthropic_input_tokens(request=request)
+    )
+
+
+def build_anthropic_model_list_response(
+    *,
+    openai_response: OpenAIModelListResponse,
+) -> AnthropicModelListResponse:
+    """Translate the shared live model catalog into Anthropic model objects."""
+    anthropic_models = [
+        AnthropicModelInfo(
+            id=model.id,
+            display_name=_build_anthropic_display_name(model_id=model.id),
+            created_at=_format_anthropic_created_at(created=model.created),
+        )
+        for model in openai_response.data
+    ]
+    first_id = anthropic_models[0].id if anthropic_models else None
+    last_id = anthropic_models[-1].id if anthropic_models else None
+    return AnthropicModelListResponse(
+        data=anthropic_models,
+        first_id=first_id,
+        has_more=False,
+        last_id=last_id,
     )
 
 
@@ -279,3 +308,22 @@ def _normalize_stop_reason(
     if stop_reason is None:
         return None
     return 'end_turn'
+
+
+def _build_anthropic_display_name(*, model_id: str) -> str:
+    """Build a readable display name from one provider-exposed model identifier."""
+    return ' '.join(
+        (
+            part.upper()
+            if part.isalpha() and len(part) <= _DISPLAY_NAME_ACRONYM_MAX_LENGTH
+            else part.capitalize()
+        )
+        for part in model_id.split('-')
+    )
+
+
+def _format_anthropic_created_at(*, created: int) -> str:
+    """Format an OpenAI-style epoch timestamp for Anthropic model metadata."""
+    if created <= 0:
+        return '1970-01-01T00:00:00Z'
+    return datetime.fromtimestamp(created, tz=UTC).isoformat().replace('+00:00', 'Z')

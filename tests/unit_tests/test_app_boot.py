@@ -134,6 +134,8 @@ def test_internal_health_route_is_optional() -> None:
     assert '/openai/v1/chat/completions' in _route_paths(disabled_app)
     assert '/openai/v1/responses' in _route_paths(enabled_app)
     assert '/openai/v1/responses' in _route_paths(disabled_app)
+    assert '/anthropic/v1/models' in _route_paths(enabled_app)
+    assert '/anthropic/v1/models' in _route_paths(disabled_app)
     assert '/anthropic/v1/messages' in _route_paths(enabled_app)
     assert '/anthropic/v1/messages' in _route_paths(disabled_app)
     assert '/anthropic/v1/messages/count_tokens' in _route_paths(enabled_app)

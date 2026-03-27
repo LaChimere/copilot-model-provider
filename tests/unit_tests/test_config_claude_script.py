@@ -86,7 +86,7 @@ def test_run_config_claude_updates_settings_and_creates_backup(
     monkeypatch.setattr('scripts.config_claude.restart_container', _restart)
     monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
     monkeypatch.setattr(
-        'scripts.config_claude.fetch_visible_model_ids', _visible_models
+        'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
     )
 
     result = run_config_claude(
@@ -101,7 +101,7 @@ def test_run_config_claude_updates_settings_and_creates_backup(
     backup_files = list((claude_dir / 'backups').glob('settings.json.*.bak'))
 
     assert result.base_url == 'http://127.0.0.1:28080/anthropic'
-    assert result.discovery_base_url == 'http://127.0.0.1:28080/openai/v1'
+    assert result.discovery_base_url == 'http://127.0.0.1:28080/anthropic/v1'
     assert result.container_name == 'copilot-model-provider'
     assert result.model == 'claude-sonnet-4.6'
     assert result.settings_path == str(settings_path)
@@ -161,7 +161,7 @@ def test_run_config_claude_validates_explicit_model(
     monkeypatch.setattr('scripts.config_claude.restart_container', _restart)
     monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
     monkeypatch.setattr(
-        'scripts.config_claude.fetch_visible_model_ids', _visible_models
+        'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
     )
 
     result = run_config_claude(
@@ -215,7 +215,7 @@ def test_run_config_claude_rejects_missing_visible_claude_models(
     monkeypatch.setattr('scripts.config_claude.restart_container', _restart)
     monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
     monkeypatch.setattr(
-        'scripts.config_claude.fetch_visible_model_ids', _visible_models
+        'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
     )
 
     with pytest.raises(

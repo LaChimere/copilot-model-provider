@@ -30,7 +30,7 @@ In practical terms, the provider behaves like a compatibility gateway plus a sma
 
 The service currently exposes these endpoints:
 
-### 3.1 `GET /v1/models`
+### 3.1 `GET /openai/v1/models`
 
 Implemented in `src/copilot_model_provider/api/openai_models.py`.
 
@@ -42,7 +42,20 @@ Behavior:
   - `Authorization: Bearer ...`
   - otherwise the configured runtime fallback token
 
-### 3.2 `POST /v1/chat/completions`
+### 3.2 `GET /anthropic/v1/models`
+
+Implemented in `src/copilot_model_provider/api/anthropic_models.py`.
+
+Behavior:
+
+- reuses the shared live model catalog already built for the active auth context
+- returns an Anthropic-compatible model list response
+- resolves auth from either:
+  - `Authorization: Bearer ...`
+  - `X-Api-Key`
+  - otherwise the configured runtime fallback token
+
+### 3.3 `POST /openai/v1/chat/completions`
 
 Implemented in `src/copilot_model_provider/api/openai_chat.py`.
 
@@ -53,7 +66,7 @@ Behavior:
 - resolves the requested public model ID through the model router
 - forwards optional bearer auth into the runtime layer
 
-### 3.3 `POST /v1/responses`
+### 3.4 `POST /openai/v1/responses`
 
 Implemented in `src/copilot_model_provider/api/openai_responses.py`.
 
@@ -64,7 +77,7 @@ Behavior:
 - reuses the same canonical chat/runtime path as `POST /v1/chat/completions`
 - exposes Responses-specific lifecycle events for streaming
 
-### 3.4 `GET /_internal/health`
+### 3.5 `GET /_internal/health`
 
 Installed from `src/copilot_model_provider/app.py` when `enable_internal_health` is enabled.
 
@@ -217,7 +230,7 @@ Each entry maps:
 
 In the current implementation, the public model ID and runtime model identifier are the same string.
 
-`GET /v1/models` is therefore the canonical source of truth for what callers may request.
+`GET /openai/v1/models` and `GET /anthropic/v1/models` are therefore the canonical source-of-truth views for what callers may request through each public facade.
 
 ### 6.2 Model router
 
@@ -228,7 +241,8 @@ Behavior:
 - validates a public model ID against the live model set for the current auth context
 - resolves that model ID to `ResolvedRoute(runtime, runtime_model_id)`
 - raises a structured `model_not_found` error for unknown model IDs
-- produces the OpenAI-compatible `/v1/models` payload from the catalog
+- produces the OpenAI-compatible `/openai/v1/models` payload from the catalog
+- also supports Anthropic-compatible `/anthropic/v1/models` translation from the same live catalog
 - caches auth-context-specific catalog snapshots for a short TTL so repeated requests do not rediscover the same upstream model set on every call
 - coalesces concurrent requests for the same auth context so only one in-flight live-model discovery runs at a time
 
@@ -527,7 +541,7 @@ Validate:
 
 - the built image
 - real HTTP execution against the running provider container
-- `/v1/models`, chat, and Responses behavior with real runtime auth
+- `/openai/v1/models`, `/anthropic/v1/models`, chat, and Responses behavior with real runtime auth
 
 ### 13.4 Opt-in live sweeps
 
@@ -547,6 +561,8 @@ Primary entrypoints and modules:
 - `src/copilot_model_provider/server.py`
 - `src/copilot_model_provider/logging_config.py`
 - `src/copilot_model_provider/api/openai_models.py`
+- `src/copilot_model_provider/api/anthropic_models.py`
+- `src/copilot_model_provider/api/anthropic_protocol.py`
 - `src/copilot_model_provider/api/openai_chat.py`
 - `src/copilot_model_provider/api/openai_responses.py`
 - `src/copilot_model_provider/api/shared.py`

@@ -23,7 +23,7 @@ try:
         _parse_port,
         ensure_gh_authenticated,
         ensure_required_commands,
-        fetch_visible_model_ids,
+        fetch_visible_anthropic_model_ids,
         resolve_github_token,
         restart_container,
         wait_for_health,
@@ -38,7 +38,7 @@ except ModuleNotFoundError:
         _parse_port,
         ensure_gh_authenticated,
         ensure_required_commands,
-        fetch_visible_model_ids,
+        fetch_visible_anthropic_model_ids,
         resolve_github_token,
         restart_container,
         wait_for_health,
@@ -81,7 +81,7 @@ class ConfigClaudeResult:
 
     Attributes:
         base_url: Anthropic-compatible provider base URL written to settings.
-        discovery_base_url: OpenAI-compatible provider base URL used to validate
+        discovery_base_url: Anthropic-compatible provider base URL used to validate
             visible models before writing settings.
         container_name: Docker container name started for the local provider.
         image: Docker image tag used for the running container.
@@ -144,8 +144,8 @@ def run_config_claude(
     """Run the full local Claude configuration flow.
 
     The flow validates prerequisites, resolves the user's GitHub token via
-    ``gh``, restarts the local provider container, validates the visible
-    Claude-family models from ``/openai/v1/models``, backs up Claude's user
+        ``gh``, restarts the local provider container, validates the visible
+        Claude-family models from ``/anthropic/v1/models``, backs up Claude's user
     ``settings.json``, and rewrites the persistent env block so future
     ``claude`` invocations route through the local provider.
 
@@ -168,7 +168,7 @@ def run_config_claude(
         github_token = resolve_github_token()
 
         base_url = f'http://127.0.0.1:{options.port}/anthropic'
-        discovery_base_url = f'http://127.0.0.1:{options.port}/openai/v1'
+        discovery_base_url = f'http://127.0.0.1:{options.port}/anthropic/v1'
         container_name = DEFAULT_CONTAINER_NAME
         config_dir = resolve_claude_config_dir(home_directory=home_directory)
         settings_path = config_dir / DEFAULT_SETTINGS_FILE_NAME
@@ -183,7 +183,7 @@ def run_config_claude(
         )
         wait_for_health(f'http://127.0.0.1:{options.port}/_internal/health')
 
-        visible_models = fetch_visible_model_ids(discovery_base_url)
+        visible_models = fetch_visible_anthropic_model_ids(discovery_base_url)
         selected_model = resolve_claude_model(
             preferred_model=options.model,
             visible_models=visible_models,

@@ -18,6 +18,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 DEFAULT_PORT = 8000
 DEFAULT_IMAGE = 'copilot-model-provider:local'
@@ -422,7 +423,23 @@ def fetch_visible_model_ids(base_url: str) -> list[str]:
         return []
 
     model_ids: list[str] = []
-    for item in data:
+    for item in cast('list[object]', data):
+        model_id = _extract_string_field(item, field_name='id')
+        if model_id is not None:
+            model_ids.append(model_id)
+
+    return model_ids
+
+
+def fetch_visible_anthropic_model_ids(base_url: str) -> list[str]:
+    """Fetch visible model ids from the provider's ``/anthropic/v1/models`` endpoint."""
+    payload = _fetch_json_document(f'{base_url}/models')
+    data = payload.get('data')
+    if not isinstance(data, list):
+        return []
+
+    model_ids: list[str] = []
+    for item in cast('list[object]', data):
         model_id = _extract_string_field(item, field_name='id')
         if model_id is not None:
             model_ids.append(model_id)
@@ -662,7 +679,8 @@ def _extract_string_field(item: object, *, field_name: str) -> str | None:
     if not isinstance(item, dict):
         return None
 
-    for key, value in item.items():
+    typed_item = cast('dict[object, object]', item)
+    for key, value in typed_item.items():
         if key == field_name and isinstance(value, str):
             return value
 

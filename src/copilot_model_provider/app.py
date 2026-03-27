@@ -12,6 +12,7 @@ from .api.anthropic_messages import (
     install_anthropic_count_tokens_route,
     install_anthropic_messages_route,
 )
+from .api.anthropic_models import install_anthropic_models_route
 from .api.openai_chat import install_openai_chat_route
 from .api.openai_models import install_openai_models_route
 from .api.openai_responses import install_openai_responses_route
@@ -100,6 +101,11 @@ def create_app(
         default_runtime_auth_token=resolved_settings.runtime_auth_token,
         model_router=resolved_router,
         runtime=resolved_runtime,
+    )
+    install_anthropic_models_route(
+        app,
+        default_runtime_auth_token=resolved_settings.runtime_auth_token,
+        model_router=resolved_router,
     )
     install_anthropic_count_tokens_route(
         app,
