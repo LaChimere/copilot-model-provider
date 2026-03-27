@@ -18,10 +18,13 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 DEFAULT_PORT = 8000
 DEFAULT_IMAGE = 'copilot-model-provider:local'
+DEFAULT_IMAGE_CHANNEL = 'local'
+DEFAULT_RELEASE_VERSION = 'latest'
+RELEASE_IMAGE_REPOSITORY = 'ghcr.io/lachimere/copilot-model-provider'
 DEFAULT_MODEL = 'gpt-5.4'
 DEFAULT_PROVIDER_ID = 'copilot-model-provider-local'
 DEFAULT_CONTAINER_NAME = 'copilot-model-provider'
@@ -47,6 +50,10 @@ class ConfigCodexOptions:
     Attributes:
         port: Host port exposed by the local provider container.
         image: Docker image tag to run for the provider container.
+        image_channel: Image selection mode used when ``image`` is not explicitly
+            supplied.
+        release_version: Published image version used when ``image_channel`` is
+            ``release`` and ``image`` is not explicitly supplied.
         model: Codex model id that should be written into ``config.toml``.
         provider_id: Provider identifier stored in the Codex config.
         container_port: Internal container port exposed by the provider image.
@@ -56,6 +63,8 @@ class ConfigCodexOptions:
     port: int
     image: str
     model: str
+    image_channel: Literal['local', 'release'] = DEFAULT_IMAGE_CHANNEL
+    release_version: str = DEFAULT_RELEASE_VERSION
     provider_id: str = DEFAULT_PROVIDER_ID
     container_port: int = DEFAULT_CONTAINER_PORT
 
@@ -96,9 +105,31 @@ def parse_args(argv: list[str] | None = None) -> ConfigCodexOptions:
         help=f'Host port that maps to the service container (default: {DEFAULT_PORT})',
     )
     parser.add_argument(
+        '--channel',
+        choices=('local', 'release'),
+        default=os.environ.get('CODEX_PROVIDER_CHANNEL', DEFAULT_IMAGE_CHANNEL),
+        help=(
+            'Image source to use when --image is not provided: '
+            f'"local" -> {DEFAULT_IMAGE}; '
+            f'"release" -> {RELEASE_IMAGE_REPOSITORY}:<version> '
+            f'(default: {DEFAULT_IMAGE_CHANNEL})'
+        ),
+    )
+    parser.add_argument(
+        '--version',
+        default=os.environ.get('CODEX_PROVIDER_VERSION', DEFAULT_RELEASE_VERSION),
+        help=(
+            'Published image version to use together with --channel release '
+            f'(default: {DEFAULT_RELEASE_VERSION})'
+        ),
+    )
+    parser.add_argument(
         '--image',
-        default=os.environ.get('CODEX_PROVIDER_IMAGE', DEFAULT_IMAGE),
-        help=f'Docker image name to run (default: {DEFAULT_IMAGE})',
+        default=os.environ.get('CODEX_PROVIDER_IMAGE'),
+        help=(
+            'Explicit Docker image name to run. When omitted, the script derives '
+            'the image from --channel and --version.'
+        ),
     )
     parser.add_argument(
         '--model',
@@ -108,9 +139,53 @@ def parse_args(argv: list[str] | None = None) -> ConfigCodexOptions:
     args = parser.parse_args(argv)
     return ConfigCodexOptions(
         port=args.port,
-        image=args.image,
+        image=resolve_provider_image(
+            explicit_image=args.image,
+            image_channel=args.channel,
+            release_version=args.version,
+        ),
+        image_channel=cast("Literal['local', 'release']", args.channel),
+        release_version=args.version,
         model=args.model,
     )
+
+
+def resolve_provider_image(
+    *,
+    explicit_image: str | None,
+    image_channel: Literal['local', 'release'],
+    release_version: str,
+) -> str:
+    """Resolve the Docker image reference used for one configuration run.
+
+    Args:
+        explicit_image: Optional explicit image reference supplied by the user.
+        image_channel: Image source to use when no explicit image is provided.
+        release_version: Published image tag used for the release channel.
+
+    Returns:
+        The Docker image reference that should be started locally.
+
+    Raises:
+        ConfigCodexError: If the explicit image or release version is empty after
+            trimming.
+
+    """
+    if explicit_image is not None:
+        normalized_image = explicit_image.strip()
+        if normalized_image:
+            return normalized_image
+        msg = 'Explicit image override cannot be empty.'
+        raise ConfigCodexError(msg)
+
+    if image_channel == 'local':
+        return DEFAULT_IMAGE
+
+    normalized_version = release_version.strip()
+    if not normalized_version:
+        msg = 'Release image version cannot be empty when --channel release is used.'
+        raise ConfigCodexError(msg)
+    return f'{RELEASE_IMAGE_REPOSITORY}:{normalized_version}'
 
 
 def run_config_codex(
