@@ -32,7 +32,7 @@ The service currently exposes these endpoints:
 
 ### 3.1 `GET /openai/v1/models`
 
-Implemented in `src/copilot_model_provider/api/openai_models.py`.
+Implemented in `src/copilot_model_provider/api/openai/models.py`.
 
 Behavior:
 
@@ -44,7 +44,7 @@ Behavior:
 
 ### 3.2 `GET /anthropic/v1/models`
 
-Implemented in `src/copilot_model_provider/api/anthropic_models.py`.
+Implemented in `src/copilot_model_provider/api/anthropic/models.py`.
 
 Behavior:
 
@@ -57,7 +57,7 @@ Behavior:
 
 ### 3.3 `POST /openai/v1/chat/completions`
 
-Implemented in `src/copilot_model_provider/api/openai_chat.py`.
+Implemented in `src/copilot_model_provider/api/openai/chat.py`.
 
 Behavior:
 
@@ -68,7 +68,7 @@ Behavior:
 
 ### 3.4 `POST /openai/v1/responses`
 
-Implemented in `src/copilot_model_provider/api/openai_responses.py`.
+Implemented in `src/copilot_model_provider/api/openai/responses.py`.
 
 Behavior:
 
@@ -420,7 +420,7 @@ Ignored event families:
 
 ### 9.2 OpenAI chat SSE
 
-Implemented in `src/copilot_model_provider/api/openai_chat.py` plus `streaming/sse.py`.
+Implemented in `src/copilot_model_provider/api/openai/chat.py` plus `streaming/sse.py`.
 
 Behavior:
 
@@ -431,7 +431,7 @@ Behavior:
 
 ### 9.3 Responses SSE
 
-Implemented in `src/copilot_model_provider/api/openai_responses.py` plus `streaming/responses.py`.
+Implemented in `src/copilot_model_provider/api/openai/responses.py` plus `streaming/responses.py`.
 
 Behavior:
 
@@ -560,11 +560,11 @@ Primary entrypoints and modules:
 - `src/copilot_model_provider/config.py`
 - `src/copilot_model_provider/server.py`
 - `src/copilot_model_provider/logging_config.py`
-- `src/copilot_model_provider/api/openai_models.py`
-- `src/copilot_model_provider/api/anthropic_models.py`
-- `src/copilot_model_provider/api/anthropic_protocol.py`
-- `src/copilot_model_provider/api/openai_chat.py`
-- `src/copilot_model_provider/api/openai_responses.py`
+- `src/copilot_model_provider/api/openai/models.py`
+- `src/copilot_model_provider/api/anthropic/models.py`
+- `src/copilot_model_provider/api/anthropic/protocol.py`
+- `src/copilot_model_provider/api/openai/chat.py`
+- `src/copilot_model_provider/api/openai/responses.py`
 - `src/copilot_model_provider/api/shared.py`
 - `src/copilot_model_provider/core/models.py`
 - `src/copilot_model_provider/core/chat.py`
