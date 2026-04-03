@@ -30,6 +30,7 @@ def test_classify_request_fields_marks_current_responses_optional_fields_ignore(
         payload={
             'model': 'gpt-5.4',
             'input': 'Hello',
+            'truncation': 'auto',
             'tools': [],
             'reasoning': {'effort': 'medium'},
         },
@@ -37,6 +38,7 @@ def test_classify_request_fields_marks_current_responses_optional_fields_ignore(
 
     assert classified_fields['model'].handling is FieldHandling.SUPPORTED
     assert classified_fields['input'].handling is FieldHandling.SUPPORTED
+    assert classified_fields['truncation'].handling is FieldHandling.ACCEPT_IGNORE
     assert classified_fields['tools'].handling is FieldHandling.ACCEPT_IGNORE
     assert classified_fields['reasoning'].handling is FieldHandling.ACCEPT_IGNORE
 

@@ -89,6 +89,26 @@ def test_translate_session_event_normalizes_turn_end_finish_reasons(
     assert stream_event == AssistantTurnCompleteEvent(finish_reason=expected)
 
 
+def test_translate_session_event_preserves_turn_end_token_counts() -> None:
+    """Verify that turn-end token accounting is retained for downstream usage."""
+    stream_event = translate_session_event(
+        event=_build_session_event(
+            event_type='assistant.turn_end',
+            data={
+                'reason': 'stop',
+                'inputTokens': 9,
+                'outputTokens': 6,
+            },
+        )
+    )
+
+    assert stream_event == AssistantTurnCompleteEvent(
+        finish_reason='stop',
+        prompt_tokens=9,
+        completion_tokens=6,
+    )
+
+
 def test_translate_session_event_maps_session_errors_to_canonical_error_events() -> (
     None
 ):

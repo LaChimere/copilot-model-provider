@@ -56,6 +56,10 @@ _SURFACE_RULES: dict[ProtocolSurface, dict[str, FieldCompatibilityRule]] = {
             handling=FieldHandling.ACCEPT_IGNORE,
             note='Accepted for compatibility but not persisted by the provider.',
         ),
+        'truncation': FieldCompatibilityRule(
+            handling=FieldHandling.ACCEPT_IGNORE,
+            note='Context truncation policy remains runtime-managed.',
+        ),
         'previous_response_id': FieldCompatibilityRule(
             handling=FieldHandling.ACCEPT_IGNORE,
             note='Accepted as opaque client state without provider-owned session state.',

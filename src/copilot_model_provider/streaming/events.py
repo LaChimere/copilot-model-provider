@@ -56,6 +56,8 @@ class AssistantTurnCompleteEvent(BaseModel):
 
     kind: Literal['assistant_turn_complete'] = 'assistant_turn_complete'
     finish_reason: StreamFinishReason = 'stop'
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
 
 
 class StreamingErrorEvent(BaseModel):

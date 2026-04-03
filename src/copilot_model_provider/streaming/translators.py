@@ -118,7 +118,13 @@ def translate_session_event(*, event: SessionEvent) -> CanonicalStreamingEvent |
 
     if event.type == SessionEventType.ASSISTANT_TURN_END:
         return AssistantTurnCompleteEvent(
-            finish_reason=_normalize_finish_reason(reason=data.reason)
+            finish_reason=_normalize_finish_reason(reason=data.reason),
+            prompt_tokens=_normalize_optional_non_negative_int(
+                value=getattr(data, 'input_tokens', None)
+            ),
+            completion_tokens=_normalize_optional_non_negative_int(
+                value=getattr(data, 'output_tokens', None)
+            ),
         )
 
     if event.type == SessionEventType.SESSION_ERROR:
@@ -315,3 +321,27 @@ def _normalize_chunk_timestamp(*, created: int | None) -> int:
         return int(time())
 
     return created
+
+
+def _normalize_optional_non_negative_int(
+    *,
+    value: int | float | str | None,
+) -> int | None:
+    """Normalize optional non-negative numeric metadata from SDK events.
+
+    Args:
+        value: Raw value read from the SDK event payload.
+
+    Returns:
+        The integer form of ``value`` when it is present and non-negative,
+        otherwise ``None``.
+
+    """
+    if value is None:
+        return None
+
+    normalized_value = int(value)
+    if normalized_value < 0:
+        return None
+
+    return normalized_value

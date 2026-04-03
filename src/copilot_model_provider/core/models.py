@@ -213,6 +213,7 @@ class OpenAIResponsesCreateRequest(BaseModel):
     instructions: str | list[OpenAIResponsesInputMessage] | None = None
     stream: bool = False
     store: bool = False
+    truncation: Literal['auto', 'disabled'] | None = None
     previous_response_id: str | None = None
     parallel_tool_calls: bool = False
     tool_choice: str | dict[str, Any] | None = None

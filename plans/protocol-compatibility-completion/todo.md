@@ -38,7 +38,7 @@
     - `src/copilot_model_provider/core/errors.py`
     - `tests/contract_tests/helpers.py`
     - `tests/contract_tests/test_compat_scaffolding.py`
-- [ ] PR 2: OpenAI compatibility completion
+- [x] PR 2: OpenAI compatibility completion
   - Acceptance criteria:
     - `chat/completions` remains first-class with explicit compatibility coverage.
     - `chat/completions` contract tests cover the approved field/error/streaming behavior, including a dedicated chat streaming contract case.
@@ -105,7 +105,9 @@ Paste concise evidence here (commands + key lines).
 - before/after: evidence
 - `uv run ruff check . && uv run ty check . && uv run pyright`: all checks passed
 - `uv run pytest -q`: `131 passed, 2 skipped`, coverage `94.40%`
+- OpenAI external re-check: current Codex guidance still centers `responses`; provider keeps `chat/completions` first-class for broader clients
+- `uv run pytest -q`: `133 passed, 2 skipped`, coverage `94.38%`
 
 ## Result
-- Outcome: PR 1 scaffolding is implemented locally and ready for commit.
+- Outcome: PR 2 OpenAI compatibility slice is implemented locally and ready for commit.
 - Follow-ups (if any):
