@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from fastapi.responses import JSONResponse
@@ -21,11 +22,44 @@ class ErrorDetail(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    """Top-level API error response."""
+    """Top-level OpenAI-style API error response."""
 
     model_config = ConfigDict(frozen=True)
 
     error: ErrorDetail
+
+
+class AnthropicErrorType(StrEnum):
+    """Supported Anthropic-compatible error categories."""
+
+    INVALID_REQUEST = 'invalid_request_error'
+    AUTHENTICATION = 'authentication_error'
+    API = 'api_error'
+
+
+class AnthropicErrorDetail(BaseModel):
+    """Structured detail for an Anthropic-compatible error response."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: AnthropicErrorType
+    message: str = Field(min_length=1)
+
+
+class AnthropicErrorResponse(BaseModel):
+    """Top-level Anthropic-compatible error response."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: str = 'error'
+    error: AnthropicErrorDetail
+
+
+class ErrorResponseFormat(StrEnum):
+    """Select the public error envelope format a caller needs."""
+
+    OPENAI = 'openai'
+    ANTHROPIC = 'anthropic'
 
 
 class ProviderError(Exception):
@@ -46,16 +80,50 @@ class ProviderError(Exception):
         self.status_code = status_code
 
 
-def build_error_response(error: ProviderError) -> ErrorResponse:
-    """Convert a provider exception into the repository's error envelope.
+def map_provider_error_to_anthropic_type(*, error: ProviderError) -> AnthropicErrorType:
+    """Map an internal provider error onto an Anthropic-compatible error type.
+
+    Args:
+        error: Structured provider error raised by the application.
+
+    Returns:
+        The Anthropic error category that best matches the current provider error
+        code while preserving a conservative ``api_error`` fallback.
+
+    """
+    if error.code == 'invalid_authorization_header':
+        return AnthropicErrorType.AUTHENTICATION
+
+    if error.code == 'model_not_found':
+        return AnthropicErrorType.INVALID_REQUEST
+
+    return AnthropicErrorType.API
+
+
+def build_error_response(
+    error: ProviderError,
+    *,
+    response_format: ErrorResponseFormat = ErrorResponseFormat.OPENAI,
+) -> ErrorResponse | AnthropicErrorResponse:
+    """Convert a provider exception into the requested public error envelope.
 
     Args:
         error: The structured provider exception raised by application code.
+        response_format: Public wire format whose error envelope should be used.
 
     Returns:
-        An ``ErrorResponse`` instance ready to serialize as JSON.
+        An OpenAI-style or Anthropic-style error response model ready to serialize
+        as JSON.
 
     """
+    if response_format is ErrorResponseFormat.ANTHROPIC:
+        return AnthropicErrorResponse(
+            error=AnthropicErrorDetail(
+                type=map_provider_error_to_anthropic_type(error=error),
+                message=error.message,
+            )
+        )
+
     return ErrorResponse(error=ErrorDetail(code=error.code, message=error.message))
 
 

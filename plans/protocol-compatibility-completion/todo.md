@@ -20,22 +20,24 @@
 
 ## Checklist
 ### Preparation
-- [ ] Sync/confirm baseline (main branch / clean state)
-- [ ] Confirm verification level target (L2)
+- [x] Sync/confirm baseline (main branch / clean state)
+- [x] Confirm verification level target (L2)
 - [ ] Re-verify fast-moving external requirements for:
   - Codex `responses` vs `chat/completions` wording
   - Claude Code gateway header contract
   - Anthropic thinking / streaming usage expectations
 
 ### Implementation
-- [ ] PR 1: Compatibility scaffolding and contract harness
+- [x] PR 1: Compatibility scaffolding and contract harness
   - Acceptance criteria:
     - Shared compatibility classification helpers exist.
     - Shared error-abstraction seam exists for protocol-specific envelopes.
     - Test scaffolding is ready for later PRs.
   - Evidence:
-    - Shared helper code paths
-    - Focused contract-test utility coverage
+    - `src/copilot_model_provider/core/compat.py`
+    - `src/copilot_model_provider/core/errors.py`
+    - `tests/contract_tests/helpers.py`
+    - `tests/contract_tests/test_compat_scaffolding.py`
 - [ ] PR 2: OpenAI compatibility completion
   - Acceptance criteria:
     - `chat/completions` remains first-class with explicit compatibility coverage.
@@ -101,7 +103,9 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 Paste concise evidence here (commands + key lines).
 - `command`: output excerpt
 - before/after: evidence
+- `uv run ruff check . && uv run ty check . && uv run pyright`: all checks passed
+- `uv run pytest -q`: `131 passed, 2 skipped`, coverage `94.40%`
 
 ## Result
-- Outcome:
+- Outcome: PR 1 scaffolding is implemented locally and ready for commit.
 - Follow-ups (if any):
