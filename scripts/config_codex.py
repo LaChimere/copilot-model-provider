@@ -25,7 +25,6 @@ DEFAULT_IMAGE = 'copilot-model-provider:local'
 DEFAULT_IMAGE_CHANNEL = 'local'
 DEFAULT_RELEASE_VERSION = 'latest'
 RELEASE_IMAGE_REPOSITORY = 'ghcr.io/lachimere/copilot-model-provider'
-DEFAULT_MODEL = 'gpt-5.4'
 DEFAULT_PROVIDER_ID = 'copilot-model-provider-local'
 DEFAULT_CONTAINER_NAME = 'copilot-model-provider'
 DEFAULT_CONTAINER_PORT = 8000
@@ -54,7 +53,8 @@ class ConfigCodexOptions:
             supplied.
         release_version: Published image version used when ``image_channel`` is
             ``release`` and ``image`` is not explicitly supplied.
-        model: Codex model id that should be written into ``config.toml``.
+        model: Optional Codex model id that should be written into ``config.toml``.
+            When omitted, the script auto-selects a preferred visible live model.
         provider_id: Provider identifier stored in the Codex config.
         container_port: Internal container port exposed by the provider image.
 
@@ -62,7 +62,7 @@ class ConfigCodexOptions:
 
     port: int
     image: str
-    model: str
+    model: str | None
     image_channel: Literal['local', 'release'] = DEFAULT_IMAGE_CHANNEL
     release_version: str = DEFAULT_RELEASE_VERSION
     provider_id: str = DEFAULT_PROVIDER_ID
@@ -133,8 +133,11 @@ def parse_args(argv: list[str] | None = None) -> ConfigCodexOptions:
     )
     parser.add_argument(
         '--model',
-        default=os.environ.get('CODEX_PROVIDER_MODEL', DEFAULT_MODEL),
-        help=f'Codex model ID to select (default: {DEFAULT_MODEL})',
+        default=os.environ.get('CODEX_PROVIDER_MODEL'),
+        help=(
+            'Codex model ID to select. When omitted, the script auto-selects '
+            'a preferred visible live model.'
+        ),
     )
     args = parser.parse_args(argv)
     return ConfigCodexOptions(
@@ -221,11 +224,14 @@ def run_config_codex(
     wait_for_health(f'http://127.0.0.1:{options.port}/_internal/health')
 
     visible_models = fetch_visible_model_ids(base_url)
-    ensure_model_is_visible(options.model, visible_models)
+    selected_model = resolve_codex_model(
+        preferred_model=options.model,
+        visible_models=visible_models,
+    )
 
     write_updated_codex_config(
         config_path,
-        model=options.model,
+        model=selected_model,
         provider_id=options.provider_id,
         base_url=base_url,
     )
@@ -233,7 +239,7 @@ def run_config_codex(
         base_url=base_url,
         container_name=container_name,
         image=options.image,
-        model=options.model,
+        model=selected_model,
         backup_path=backup_path,
     )
 
@@ -533,6 +539,69 @@ def ensure_model_is_visible(model: str, visible_models: list[str]) -> None:
         f'Available models: {available_models}'
     )
     raise ConfigCodexError(msg)
+
+
+def resolve_codex_model(
+    *,
+    preferred_model: str | None,
+    visible_models: list[str],
+) -> str:
+    """Resolve the Codex model that should be persisted in config.
+
+    Args:
+        preferred_model: Optional user-specified model identifier.
+        visible_models: Live model identifiers visible from the running provider.
+
+    Returns:
+        The explicit model when it is visible, otherwise the preferred visible
+        default selected from the live catalog.
+
+    Raises:
+        ConfigCodexError: If the explicit model is not visible or no visible model
+            can be selected automatically.
+
+    """
+    if preferred_model is not None:
+        ensure_model_is_visible(preferred_model, visible_models)
+        return preferred_model
+
+    selected_model = select_default_codex_model(visible_models=visible_models)
+    if selected_model is not None:
+        return selected_model
+
+    msg = 'Unable to choose a default model from the running service.'
+    raise ConfigCodexError(msg)
+
+
+def select_default_codex_model(*, visible_models: list[str]) -> str | None:
+    """Select a preferred visible model for Codex when no explicit model is set.
+
+    Preference order is:
+
+    1. `gpt-5.4`
+    2. `gpt-5.4-mini`
+    3. `gpt-4.1`
+    4. any remaining model identifier in provider order
+
+    This keeps one-click setup aligned with the current auth-context live catalog
+    while still preferring the models most likely to be a good default Codex fit.
+
+    Args:
+        visible_models: Live model identifiers visible from the provider.
+
+    Returns:
+        The preferred visible model identifier, or ``None`` when the provider
+        exposes no models.
+
+    """
+    for preferred_model in ('gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1'):
+        if preferred_model in visible_models:
+            return preferred_model
+
+    if visible_models:
+        return visible_models[0]
+
+    return None
 
 
 def _fetch_json_document(url: str) -> dict[str, object]:

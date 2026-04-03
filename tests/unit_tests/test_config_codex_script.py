@@ -17,6 +17,7 @@ from scripts.config_codex import (
     parse_args,
     resolve_provider_image,
     run_config_codex,
+    select_default_codex_model,
 )
 
 if TYPE_CHECKING:
@@ -127,6 +128,73 @@ def test_run_config_codex_updates_config_and_creates_backup(
     assert backup_files[0].read_text(encoding='utf-8') == original_config
 
 
+def test_run_config_codex_auto_selects_visible_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify the script auto-selects a preferred visible model when omitted."""
+
+    def _ignore_commands(_commands: tuple[str, ...]) -> None:
+        """Ignore command checks during unit tests."""
+
+    def _ignore_auth() -> None:
+        """Ignore GitHub auth checks during unit tests."""
+
+    def _resolve_token() -> str:
+        """Return a deterministic token for unit tests."""
+        return 'github-token'
+
+    def _restart(**_: object) -> None:
+        """Ignore Docker restarts during the auto-selection test."""
+
+    def _wait(_url: str) -> None:
+        """Skip health polling during the auto-selection test."""
+
+    def _visible_models(_base_url: str) -> list[str]:
+        """Return live models that exclude the old hard-coded default."""
+        return ['gpt-4.1', 'claude-sonnet-4.6']
+
+    monkeypatch.setattr(
+        'scripts.config_codex.ensure_required_commands',
+        _ignore_commands,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.ensure_gh_authenticated',
+        _ignore_auth,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.resolve_github_token',
+        _resolve_token,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.restart_container',
+        _restart,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.wait_for_health',
+        _wait,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.fetch_visible_model_ids',
+        _visible_models,
+    )
+
+    result = run_config_codex(
+        ConfigCodexOptions(
+            port=28080,
+            image='copilot-model-provider:local',
+            model=None,
+        ),
+        home_directory=tmp_path,
+    )
+
+    payload = tomllib.loads(
+        (tmp_path / '.codex' / 'config.toml').read_text(encoding='utf-8')
+    )
+    assert result.model == 'gpt-4.1'
+    assert payload['model'] == 'gpt-4.1'
+
+
 def test_run_config_codex_rejects_model_ids_not_visible_from_service(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -204,6 +272,20 @@ def test_parse_args_release_channel_uses_published_image(
     assert options.image == 'ghcr.io/lachimere/copilot-model-provider:v0.1.0'
     assert options.image_channel == 'release'
     assert options.release_version == 'v0.1.0'
+
+
+def test_select_default_codex_model_prefers_gpt_54_then_fallbacks() -> None:
+    """Verify Codex default selection follows the intended preference order."""
+    assert select_default_codex_model(visible_models=['gpt-5.4-mini', 'gpt-4.1']) == (
+        'gpt-5.4-mini'
+    )
+    assert select_default_codex_model(
+        visible_models=['gpt-4.1', 'claude-sonnet-4.6']
+    ) == ('gpt-4.1')
+    assert select_default_codex_model(visible_models=['claude-sonnet-4.6']) == (
+        'claude-sonnet-4.6'
+    )
+    assert select_default_codex_model(visible_models=[]) is None
 
 
 def test_resolve_provider_image_prefers_explicit_override() -> None:
