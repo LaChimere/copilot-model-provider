@@ -109,6 +109,33 @@ async def test_install_error_handlers_registers_provider_handler() -> None:
 
 
 @pytest.mark.asyncio
+async def test_install_error_handlers_uses_anthropic_error_shape_for_anthropic_paths() -> (
+    None
+):
+    """Verify that Anthropic routes receive Anthropic-compatible error envelopes."""
+    app = FastAPI()
+    install_error_handlers(app)
+    handler = cast('ExceptionHandler', app.exception_handlers[ProviderError])
+    request = _build_request(path='/anthropic/v1/messages')
+    error = ProviderError(
+        code='invalid_authorization_header',
+        message='Denied',
+        status_code=403,
+    )
+
+    response = await handler(request, error)
+
+    assert response.status_code == 403
+    assert json.loads(bytes(response.body)) == {
+        'type': 'error',
+        'error': {
+            'type': 'authentication_error',
+            'message': 'Denied',
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_install_error_handlers_rejects_unexpected_exception_types() -> None:
     """Verify that the provider handler fails loudly on unexpected exceptions."""
     app = FastAPI()
@@ -120,7 +147,7 @@ async def test_install_error_handlers_rejects_unexpected_exception_types() -> No
         await handler(request, Exception('boom'))
 
 
-def _build_request() -> Request:
+def _build_request(*, path: str = '/') -> Request:
     """Construct a minimal Starlette request object for handler tests."""
     return Request(
         {
@@ -128,8 +155,8 @@ def _build_request() -> Request:
             'http_version': '1.1',
             'method': 'GET',
             'scheme': 'http',
-            'path': '/',
-            'raw_path': b'/',
+            'path': path,
+            'raw_path': path.encode(),
             'query_string': b'',
             'root_path': '',
             'headers': [],

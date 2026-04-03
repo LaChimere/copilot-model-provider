@@ -50,13 +50,13 @@
     - OpenAI contract test assertions
     - Chat streaming contract assertions
     - Responses usage assertions or before/after event samples
-- [ ] PR 3: Anthropic correctness slice
+- [x] PR 3: Anthropic correctness slice
   - Acceptance criteria:
     - Non-streaming Anthropic errors match Anthropic format.
     - `anthropic-version`, `anthropic-beta`, `X-Claude-Code-Session-Id` are accepted/surfaced as approved.
   - Evidence:
-    - Anthropic error-shape assertions
-    - Header-handling tests or request traces
+    - Anthropic error-shape assertions in `tests/contract_tests/test_anthropic_messages.py`
+    - Header normalization/logging assertions in `tests/contract_tests/test_anthropic_messages.py`
 - [ ] PR 4: Anthropic behavior slice
   - Acceptance criteria:
     - `thinking` is accepted on Anthropic requests.
@@ -107,7 +107,9 @@ Paste concise evidence here (commands + key lines).
 - `uv run pytest -q`: `131 passed, 2 skipped`, coverage `94.40%`
 - OpenAI external re-check: current Codex guidance still centers `responses`; provider keeps `chat/completions` first-class for broader clients
 - `uv run pytest -q`: `133 passed, 2 skipped`, coverage `94.38%`
+- Anthropic external re-check: current Messages / Claude Code gateway docs still require `anthropic-version`, preserve `anthropic-beta`, and use `X-Claude-Code-Session-Id` for session tracking
+- `uv run pytest -q`: `137 passed, 2 skipped`, coverage `94.47%`
 
 ## Result
-- Outcome: PR 2 OpenAI compatibility slice is implemented locally and ready for commit.
+- Outcome: PR 3 Anthropic correctness slice is implemented locally and ready for commit.
 - Follow-ups (if any):

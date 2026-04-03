@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from copilot.generated.session_events import SessionEventType
+from pydantic import BaseModel, ConfigDict
 
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.streaming.events import AssistantTextDeltaEvent
@@ -21,6 +22,16 @@ if TYPE_CHECKING:
         RuntimeProtocol,
     )
     from copilot_model_provider.streaming.events import CanonicalStreamingEvent
+
+
+class AnthropicGatewayHeaders(BaseModel):
+    """Normalized Claude gateway headers accepted by the Anthropic facade."""
+
+    model_config = ConfigDict(frozen=True)
+
+    anthropic_version: str | None = None
+    anthropic_beta: str | None = None
+    claude_code_session_id: str | None = None
 
 
 async def open_runtime_event_stream(
@@ -186,6 +197,35 @@ def resolve_runtime_auth_token_from_anthropic_headers(
         return api_key_token
 
     return normalize_optional_header_value(value=default_token)
+
+
+def normalize_anthropic_gateway_headers(
+    *,
+    anthropic_version_header: str | None,
+    anthropic_beta_header: str | None,
+    claude_code_session_id_header: str | None,
+) -> AnthropicGatewayHeaders:
+    """Normalize optional Claude gateway headers for observability and routing.
+
+    Args:
+        anthropic_version_header: Raw ``anthropic-version`` header from the request.
+        anthropic_beta_header: Raw ``anthropic-beta`` header from the request.
+        claude_code_session_id_header: Raw ``X-Claude-Code-Session-Id`` header.
+
+    Returns:
+        A normalized header bundle with blank values collapsed to ``None`` so route
+        code can log or forward only meaningful gateway metadata.
+
+    """
+    return AnthropicGatewayHeaders(
+        anthropic_version=normalize_optional_header_value(
+            value=anthropic_version_header
+        ),
+        anthropic_beta=normalize_optional_header_value(value=anthropic_beta_header),
+        claude_code_session_id=normalize_optional_header_value(
+            value=claude_code_session_id_header
+        ),
+    )
 
 
 async def close_runtime_event_stream(*, runtime_stream: RuntimeEventStream) -> None:

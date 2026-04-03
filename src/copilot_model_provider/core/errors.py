@@ -137,7 +137,7 @@ def install_error_handlers(app: FastAPI) -> None:
     """
 
     async def _handle_provider_error(
-        _request: Request,
+        request: Request,
         error: Exception,
     ) -> JSONResponse:
         """Serialize provider failures into the shared response shape."""
@@ -145,7 +145,15 @@ def install_error_handlers(app: FastAPI) -> None:
             msg = f'Unexpected exception type: {type(error)!r}'
             raise TypeError(msg)
 
-        payload = build_error_response(error).model_dump()
+        response_format = (
+            ErrorResponseFormat.ANTHROPIC
+            if request.url.path.startswith('/anthropic/')
+            else ErrorResponseFormat.OPENAI
+        )
+        payload = build_error_response(
+            error,
+            response_format=response_format,
+        ).model_dump(mode='json')
         return JSONResponse(status_code=error.status_code, content=payload)
 
     app.add_exception_handler(ProviderError, _handle_provider_error)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
@@ -26,6 +27,18 @@ from tests.harness import build_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+class _CapturedLogger:
+    """Record Anthropic route header logs for contract verification."""
+
+    def __init__(self) -> None:
+        """Initialize the in-memory event sink."""
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        """Record one informational log event."""
+        self.events.append((event, kwargs))
 
 
 class _FakeAnthropicRuntime(RuntimeProtocol):
@@ -214,6 +227,71 @@ async def test_post_messages_fall_back_to_configured_runtime_token() -> None:
     assert response.status_code == 200
     assert runtime.last_request is not None
     assert runtime.last_request.runtime_auth_token == 'github-token-789'  # noqa: S105 - deterministic test token
+
+
+@pytest.mark.asyncio
+async def test_post_messages_logs_gateway_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that Anthropic gateway headers are surfaced through structured logs."""
+    messages_module = importlib.import_module(
+        'copilot_model_provider.api.anthropic.messages'
+    )
+    captured_logger = _CapturedLogger()
+    monkeypatch.setattr(messages_module, '_logger', captured_logger)
+
+    async with build_async_client(runtime=_FakeAnthropicRuntime()) as client:
+        response = await client.post(
+            '/anthropic/v1/messages',
+            headers={
+                'x-api-key': 'github-token-123',
+                'anthropic-version': '2023-06-01',
+                'anthropic-beta': 'tools-2025-01-01',
+                'X-Claude-Code-Session-Id': 'session-123',
+            },
+            json={
+                'model': 'claude-sonnet-4-20250514',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured_logger.events == [
+        (
+            'anthropic_gateway_headers',
+            {
+                'surface': 'messages',
+                'anthropic_version': '2023-06-01',
+                'anthropic_beta': 'tools-2025-01-01',
+                'claude_code_session_id': 'session-123',
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_messages_rejects_invalid_authorization_headers_with_anthropic_error_shape() -> (
+    None
+):
+    """Verify that malformed auth uses the Anthropic non-streaming error envelope."""
+    async with build_async_client(runtime=_FakeAnthropicRuntime()) as client:
+        response = await client.post(
+            '/anthropic/v1/messages',
+            headers={'Authorization': 'Token github-token-123'},
+            json={
+                'model': 'claude-sonnet-4-20250514',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        'type': 'error',
+        'error': {
+            'type': 'authentication_error',
+            'message': 'Authorization header must use the Bearer token format.',
+        },
+    }
 
 
 @pytest.mark.asyncio
