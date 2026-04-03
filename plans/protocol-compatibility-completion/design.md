@@ -233,9 +233,10 @@ Based on deep-dive research into latest official Codex, Claude Code, and API doc
   - The Copilot SDK runtime interacts with Claude-family models and may return thinking blocks.
 - Choice:
   - Add the `thinking` field to the Anthropic request model (accepted-but-ignored if runtime doesn't support it).
-  - If the runtime returns thinking/redacted_thinking content blocks, pass them through to the northbound response rather than stripping them.
+  - Pass through `thinking` / `redacted_thinking` only when the runtime surfaces them in a structured form.
+  - Runtime checkpoint result (2026-04-03): the current Copilot SDK session path exposes `reasoning_effort` but not an Anthropic-native `thinking` request parameter, and a live `claude-sonnet-4.6` streaming probe with `reasoning_effort=high` returned no structured `thinking`, `redacted_thinking`, `reasoningText`, or `reasoningOpaque` content. Passthrough is therefore deferred on the current runtime path.
   - Keep tool_use/code_execution blocks out of scope (these are deep model-specific features beyond our boundary).
-  - Treat this as a behavior change: implementation must update normalization, response models, and contract/streaming tests rather than only adding a request field.
+  - If upstream runtime behavior changes later, revisit passthrough as a separate behavior change covering normalization, response models, and contract/streaming tests.
 - Rationale:
   - Extended thinking is a high-value Claude Code feature. Stripping thinking blocks silently degrades the user experience without clear indication. Passthrough is low-risk because it doesn't require the provider to generate thinking — only to not strip it.
 
@@ -288,13 +289,13 @@ Based on all findings, here is the consolidated field classification for both fa
 | Field | Classification | Notes |
 |---|---|---|
 | `model` | ✅ Supported | Forwarded to runtime |
-| `messages` | ✅ Supported | Text content extracted; `thinking`/`redacted_thinking` passed through per Decision 9 when feasible; other block types stripped |
+| `messages` | ✅ Supported | Text content extracted; structured thinking passthrough is deferred because current runtime evidence does not surface those blocks |
 | `system` | ✅ Supported | Extracted as system message |
 | `max_tokens` | ⚠️ Accept-ignore | Accepted, not enforced |
 | `stream` | ✅ Supported | Forwarded |
 | `metadata` | ⚠️ Accept-ignore | Accepted |
 | `tools` | ⚠️ Accept-ignore | Accepted, not executed |
-| `thinking` | ⚠️ Accept-passthrough | **NEW: pass through in response** |
+| `thinking` | ⚠️ Accept-ignore | **NEW: accepted for compatibility; passthrough deferred on current runtime path** |
 | `temperature` | ⚠️ Accept-ignore | Accepted |
 | `top_p` | ⚠️ Accept-ignore | Accepted |
 | `top_k` | ⚠️ Accept-ignore | Accepted |
@@ -318,8 +319,8 @@ Based on all findings, here is the consolidated field classification for both fa
   - Should compatibility completion include a published support matrix in `README.md`, or keep the matrix limited to design/tests and only document the highest-impact gaps?
 - Q3:
   - How much Claude Code gateway metadata should be surfaced internally (for logs/tests) versus simply tolerated and ignored?
-- Q4 (new):
-  - Does the Copilot SDK runtime actually return thinking blocks when a Claude-family model produces them? If so, do they arrive as structured content or as plain text? This determines whether passthrough is feasible or requires additional mapping.
+- Q4 (resolved):
+  - Runtime checkpoint on 2026-04-03 showed that the current Copilot SDK session path does not expose structured thinking blocks or Anthropic-native thinking controls, so passthrough is not currently feasible without upstream runtime changes.
 - Q5 (new):
   - When runtime exact token counts are unavailable, how should estimated usage be labeled or documented so clients can distinguish approximation from exact counts?
 - Q6 (new):

@@ -18,6 +18,9 @@ from copilot_model_provider.api.anthropic.protocol import (
     build_anthropic_message_response_from_completion,
     build_anthropic_message_start_event,
     build_anthropic_message_stop_event,
+    build_anthropic_usage,
+    estimate_anthropic_input_tokens,
+    estimate_anthropic_output_tokens,
     normalize_anthropic_messages_request,
 )
 from copilot_model_provider.api.shared import (
@@ -42,6 +45,7 @@ from copilot_model_provider.streaming.anthropic import (
 )
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
+    AssistantUsageEvent,
     StreamingErrorEvent,
 )
 
@@ -235,11 +239,18 @@ async def _create_streaming_message(
 
     async def _frame_stream() -> AsyncIterator[str]:
         """Yield Anthropic-compatible SSE frames for one streamed message."""
+        estimated_input_tokens = estimate_anthropic_input_tokens(request=request)
+        latest_usage = build_anthropic_usage(
+            prompt_tokens=estimated_input_tokens,
+            completion_tokens=0,
+        )
+        output_parts: list[str] = []
         yield encode_anthropic_event(
             event='message_start',
             payload=build_anthropic_message_start_event(
                 model=request.model,
                 message_id=message_id,
+                usage=latest_usage,
             ).model_dump_json(exclude_none=True),
         )
         yield encode_anthropic_event(
@@ -256,11 +267,29 @@ async def _create_streaming_message(
                 return
 
             if isinstance(stream_event, AssistantTextDeltaEvent):
+                output_parts.append(stream_event.text)
                 yield encode_anthropic_event(
                     event='content_block_delta',
                     payload=build_anthropic_content_block_delta_event(
                         text=stream_event.text
                     ).model_dump_json(exclude_none=True),
+                )
+                continue
+
+            if isinstance(stream_event, AssistantUsageEvent):
+                latest_usage = build_anthropic_usage(
+                    prompt_tokens=(
+                        stream_event.prompt_tokens
+                        if stream_event.prompt_tokens is not None
+                        else estimated_input_tokens
+                    ),
+                    completion_tokens=(
+                        stream_event.completion_tokens
+                        if stream_event.completion_tokens is not None
+                        else estimate_anthropic_output_tokens(
+                            output_text=''.join(output_parts) or ' '
+                        )
+                    ),
                 )
                 continue
 
@@ -273,7 +302,14 @@ async def _create_streaming_message(
             yield encode_anthropic_event(
                 event='message_delta',
                 payload=build_anthropic_message_delta_event(
-                    stop_reason=stream_event.finish_reason
+                    stop_reason=stream_event.finish_reason,
+                    usage=latest_usage
+                    or build_anthropic_usage(
+                        prompt_tokens=estimated_input_tokens,
+                        completion_tokens=estimate_anthropic_output_tokens(
+                            output_text=''.join(output_parts) or ' '
+                        ),
+                    ),
                 ).model_dump_json(exclude_none=True),
             )
             yield encode_anthropic_event(

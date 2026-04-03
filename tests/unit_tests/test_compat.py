@@ -60,4 +60,5 @@ def test_iter_surface_rules_returns_stable_current_anthropic_fields() -> None:
         'max_tokens',
         'metadata',
         'tools',
+        'thinking',
     ]

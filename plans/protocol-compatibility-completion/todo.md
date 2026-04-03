@@ -57,16 +57,16 @@
   - Evidence:
     - Anthropic error-shape assertions in `tests/contract_tests/test_anthropic_messages.py`
     - Header normalization/logging assertions in `tests/contract_tests/test_anthropic_messages.py`
-- [ ] PR 4: Anthropic behavior slice
+- [x] PR 4: Anthropic behavior slice
   - Acceptance criteria:
     - `thinking` is accepted on Anthropic requests.
-    - **CHECKPOINT:** verify with runtime evidence whether `thinking` / `redacted_thinking` are returned in a structured form before implementing passthrough.
-    - Thinking passthrough is implemented only if runtime evidence supports it; otherwise the plan/design is updated before merging.
+    - Runtime checkpoint evidence is recorded, and the current runtime path is documented as not surfacing structured `thinking` / `redacted_thinking` blocks for passthrough.
+    - `thinking` remains accept-ignore on the current runtime path rather than being silently rejected.
     - Streaming `usage` behavior is implemented and tested.
   - Evidence:
-    - Runtime checkpoint result for structured thinking behavior
-    - Anthropic contract/integration assertions
-    - Streaming event samples or test snapshots
+    - Runtime checkpoint result captured from a live `claude-sonnet-4.6` SDK session probe
+    - Anthropic contract assertions in `tests/contract_tests/test_anthropic_messages.py`
+    - Streaming usage assertions in `tests/contract_tests/test_anthropic_messages.py`
 - [ ] Cleanup PR: Support matrix and verification closeout
   - Acceptance criteria:
     - Docs and support matrix match shipped behavior.
@@ -109,7 +109,10 @@ Paste concise evidence here (commands + key lines).
 - `uv run pytest -q`: `133 passed, 2 skipped`, coverage `94.38%`
 - Anthropic external re-check: current Messages / Claude Code gateway docs still require `anthropic-version`, preserve `anthropic-beta`, and use `X-Claude-Code-Session-Id` for session tracking
 - `uv run pytest -q`: `137 passed, 2 skipped`, coverage `94.47%`
+- Runtime checkpoint: Copilot SDK session API exposes `reasoning_effort` but not Anthropic-native `thinking`; live `claude-sonnet-4.6` probe returned no structured `thinking` / `redacted_thinking` / `reasoningText` / `reasoningOpaque` blocks, but did emit `assistant.usage`
+- `uv run pytest -q tests/integration_tests/test_chat.py::test_container_chat_completion_supports_live_model_id tests/integration_tests/test_responses.py::test_container_responses_non_streaming_supports_live_model_id tests/integration_tests/test_responses.py::test_container_responses_streaming_emits_expected_lifecycle`: `3 passed`
+- `uv run ruff format --check . && uv run ruff check . && uv run ty check . && uv run pyright && uv run pytest -q`: `141 passed, 2 skipped`, coverage `94.41%`
 
 ## Result
-- Outcome: PR 3 Anthropic correctness slice is implemented locally and ready for commit.
+- Outcome: PR 4 revised Anthropic behavior slice is implemented and fully verified for commit.
 - Follow-ups (if any):

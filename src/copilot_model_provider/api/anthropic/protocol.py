@@ -66,20 +66,14 @@ def build_anthropic_message_response_from_completion(
     message_id: str,
 ) -> AnthropicMessageResponse:
     """Translate a runtime completion into a minimal Anthropic Messages payload."""
-    usage = None
-    if (
-        completion.prompt_tokens is not None
-        and completion.completion_tokens is not None
-    ):
-        usage = AnthropicUsage(
-            input_tokens=completion.prompt_tokens,
-            output_tokens=completion.completion_tokens,
-        )
     return build_anthropic_message_response_from_text(
         model=request.model,
         output_text=completion.output_text,
         message_id=message_id,
-        usage=usage,
+        usage=build_anthropic_usage(
+            prompt_tokens=completion.prompt_tokens,
+            completion_tokens=completion.completion_tokens,
+        ),
     )
 
 
@@ -141,6 +135,7 @@ def build_anthropic_message_start_event(
     *,
     model: str,
     message_id: str,
+    usage: AnthropicUsage | None = None,
 ) -> AnthropicMessageStartEvent:
     """Build the initial Anthropic streaming lifecycle event."""
     return AnthropicMessageStartEvent(
@@ -149,6 +144,7 @@ def build_anthropic_message_start_event(
             model=model,
             content=[],
             stop_reason=None,
+            usage=usage,
         )
     )
 
@@ -176,12 +172,14 @@ def build_anthropic_content_block_stop_event() -> AnthropicContentBlockStopEvent
 def build_anthropic_message_delta_event(
     *,
     stop_reason: str | None = 'end_turn',
+    usage: AnthropicUsage | None = None,
 ) -> AnthropicMessageDeltaEvent:
     """Build the top-level Anthropic message delta near stream completion."""
     return AnthropicMessageDeltaEvent(
         delta=AnthropicMessageDelta(
             stop_reason=_normalize_stop_reason(stop_reason=stop_reason)
-        )
+        ),
+        usage=usage,
     )
 
 
@@ -207,6 +205,45 @@ def estimate_anthropic_input_tokens(
         sort_keys=True,
     ).encode('utf-8')
     return max(1, math.ceil(len(serialized_request) / 4))
+
+
+def estimate_anthropic_output_tokens(*, output_text: str) -> int:
+    """Estimate Anthropic output tokens from assistant text using the same heuristic.
+
+    Args:
+        output_text: Assistant text emitted by the provider during one turn.
+
+    Returns:
+        A best-effort token estimate derived from UTF-8 byte length and the same
+        ``/4`` heuristic used by the count-tokens compatibility helper.
+
+    """
+    return max(1, math.ceil(len(output_text.encode('utf-8')) / 4))
+
+
+def build_anthropic_usage(
+    *,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+) -> AnthropicUsage | None:
+    """Build an Anthropic usage payload when token accounting is available.
+
+    Args:
+        prompt_tokens: Input token count, exact or estimated.
+        completion_tokens: Output token count, exact or estimated.
+
+    Returns:
+        An ``AnthropicUsage`` payload when both token counts are known; otherwise
+        ``None`` so callers can omit the usage object.
+
+    """
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+
+    return AnthropicUsage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+    )
 
 
 def _build_anthropic_token_count_payload(

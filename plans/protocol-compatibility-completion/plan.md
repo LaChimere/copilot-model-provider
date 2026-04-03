@@ -177,13 +177,12 @@ Mergeability notes:
 
 ## PR 4: Anthropic behavior slice (thinking + streaming usage)
 Goal:
-- Implement the approved Anthropic behavior upgrades: accept `thinking`, passthrough thinking blocks where runtime evidence supports it, and add streaming `usage` handling.
+- Implement the approved Anthropic behavior upgrades that remain feasible on the current runtime path: accept `thinking` for compatibility and add streaming `usage` handling.
 Acceptance criteria:
 - `thinking` is accepted in the Anthropic request model.
-- **CHECKPOINT:** before implementing passthrough, verify with runtime evidence whether `thinking` / `redacted_thinking` are returned in a structured form.
-- If runtime evidence supports structured thinking blocks, they are passed through end-to-end with contract coverage.
+- Runtime checkpoint evidence is recorded in `design.md`, and the current runtime path is documented as not surfacing structured `thinking` / `redacted_thinking` blocks for passthrough.
+- `thinking` remains accept-ignore on the current runtime path rather than being silently rejected.
 - Streaming `usage` behavior is implemented according to the approved rule (exact counts when available, otherwise explicit estimation).
-- If runtime evidence disproves passthrough feasibility, work stops and `design.md` / `plan.md` are updated rather than silently downgrading scope.
 Likely paths:
 - `src/copilot_model_provider/api/anthropic/`
 - `src/copilot_model_provider/core/models.py`

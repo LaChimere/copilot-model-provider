@@ -424,6 +424,7 @@ class AnthropicMessagesCreateRequest(BaseModel):
     stream: bool = False
     metadata: dict[str, Any] | None = None
     tools: list[dict[str, Any]] = Field(default_factory=_empty_json_object_list)
+    thinking: dict[str, Any] | None = None
 
 
 class AnthropicMessagesCountTokensRequest(BaseModel):

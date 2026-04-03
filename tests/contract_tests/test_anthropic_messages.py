@@ -10,8 +10,10 @@ from copilot.generated.session_events import SessionEvent
 
 from copilot_model_provider.api.anthropic.protocol import (
     estimate_anthropic_input_tokens,
+    estimate_anthropic_output_tokens,
 )
 from copilot_model_provider.config import ProviderSettings
+from copilot_model_provider.core.compat import FieldHandling, ProtocolSurface
 from copilot_model_provider.core.models import (
     AnthropicMessagesCountTokensRequest,
     CanonicalChatRequest,
@@ -23,6 +25,7 @@ from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
 )
+from tests.contract_tests.helpers import assert_payload_field_handling, parse_sse_frames
 from tests.harness import build_async_client
 
 if TYPE_CHECKING:
@@ -119,13 +122,60 @@ class _FakeAnthropicRuntime(RuntimeProtocol):
                     {
                         'id': '10000000-0000-0000-0000-000000000002',
                         'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.usage',
+                        'data': {'inputTokens': 11, 'outputTokens': 2},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '10000000-0000-0000-0000-000000000003',
+                        'timestamp': '2025-01-01T00:00:00Z',
                         'type': 'assistant.message_delta',
                         'data': {'deltaContent': 'LO'},
                     }
                 ),
                 SessionEvent.from_dict(
                     {
-                        'id': '10000000-0000-0000-0000-000000000003',
+                        'id': '10000000-0000-0000-0000-000000000004',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.turn_end',
+                        'data': {'reason': 'stop'},
+                    }
+                ),
+            ):
+                yield event
+
+        return RuntimeEventStream(session_id=None, events=_events())
+
+
+class _ZeroUsageAnthropicRuntime(_FakeAnthropicRuntime):
+    """Fake Anthropic runtime that reports exact zero completion tokens."""
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit usage metadata with an exact zero output-token count."""
+        del route
+        self.last_request = request
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield usage metadata before a zero-output terminal turn."""
+            for event in (
+                SessionEvent.from_dict(
+                    {
+                        'id': '10000000-0000-0000-0000-000000000101',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.usage',
+                        'data': {'inputTokens': 11, 'outputTokens': 0},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '10000000-0000-0000-0000-000000000102',
                         'timestamp': '2025-01-01T00:00:00Z',
                         'type': 'assistant.turn_end',
                         'data': {'reason': 'stop'},
@@ -180,6 +230,34 @@ async def test_post_messages_returns_anthropic_compatible_payload() -> None:
     assert [message.model_dump() for message in runtime.last_request.messages] == [
         {'role': 'system', 'content': 'You are terse.'},
         {'role': 'user', 'content': 'Reply with HELLO.'},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_messages_accepts_thinking_for_compatibility_without_passthrough() -> (
+    None
+):
+    """Verify that ``thinking`` is accepted even though the runtime path ignores it."""
+    runtime = _FakeAnthropicRuntime()
+    request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Hello'}],
+        'thinking': {'type': 'enabled', 'budget_tokens': 256},
+    }
+
+    assert_payload_field_handling(
+        surface=ProtocolSurface.ANTHROPIC_MESSAGES,
+        payload=request_body,
+        allowed=(FieldHandling.SUPPORTED, FieldHandling.ACCEPT_IGNORE),
+    )
+
+    async with build_async_client(runtime=runtime) as client:
+        response = await client.post('/anthropic/v1/messages', json=request_body)
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert [message.model_dump() for message in runtime.last_request.messages] == [
+        {'role': 'user', 'content': 'Hello'}
     ]
 
 
@@ -298,8 +376,61 @@ async def test_post_messages_rejects_invalid_authorization_headers_with_anthropi
 async def test_post_messages_streams_anthropic_compatible_sse_frames() -> None:
     """Verify that streaming Messages requests emit Anthropic lifecycle frames."""
     runtime = _FakeAnthropicRuntime()
+    request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'stream': True,
+        'messages': [{'role': 'user', 'content': 'Hello'}],
+    }
+    expected_input_tokens = estimate_anthropic_input_tokens(
+        request=AnthropicMessagesCountTokensRequest.model_validate(request_body)
+    )
     async with (
         build_async_client(runtime=runtime) as client,
+        client.stream(
+            'POST',
+            '/anthropic/v1/messages',
+            headers={'x-api-key': 'github-token-123'},
+            json=request_body,
+        ) as response,
+    ):
+        payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+    frames = parse_sse_frames(payload=payload)
+    message_start_frame = next(
+        frame for frame in frames if frame.get('event') == 'message_start'
+    )
+    message_delta_frame = next(
+        frame for frame in frames if frame.get('event') == 'message_delta'
+    )
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('text/event-stream')
+    assert 'event: message_start' in payload
+    assert 'event: content_block_start' in payload
+    assert 'event: content_block_delta' in payload
+    assert '"text":"HEL"' in payload
+    assert '"text":"LO"' in payload
+    assert 'event: content_block_stop' in payload
+    assert 'event: message_delta' in payload
+    assert 'event: message_stop' in payload
+    assert (
+        f'"usage":{{"input_tokens":{expected_input_tokens},"output_tokens":0}}'
+        in message_start_frame['data']
+    )
+    assert (
+        '"usage":{"input_tokens":11,"output_tokens":2}' in message_delta_frame['data']
+    )
+
+
+def test_estimate_anthropic_output_tokens_uses_count_tokens_heuristic() -> None:
+    """Verify that output-token estimation uses the same bytes-per-token heuristic."""
+    assert estimate_anthropic_output_tokens(output_text='HELLO') == 2
+
+
+@pytest.mark.asyncio
+async def test_post_messages_streaming_preserves_exact_zero_usage_tokens() -> None:
+    """Verify that exact zero usage is not replaced by an estimate."""
+    async with (
+        build_async_client(runtime=_ZeroUsageAnthropicRuntime()) as client,
         client.stream(
             'POST',
             '/anthropic/v1/messages',
@@ -313,16 +444,15 @@ async def test_post_messages_streams_anthropic_compatible_sse_frames() -> None:
     ):
         payload = ''.join([chunk async for chunk in response.aiter_text()])
 
+    frames = parse_sse_frames(payload=payload)
+    message_delta_frame = next(
+        frame for frame in frames if frame.get('event') == 'message_delta'
+    )
+
     assert response.status_code == 200
-    assert response.headers['content-type'].startswith('text/event-stream')
-    assert 'event: message_start' in payload
-    assert 'event: content_block_start' in payload
-    assert 'event: content_block_delta' in payload
-    assert '"text":"HEL"' in payload
-    assert '"text":"LO"' in payload
-    assert 'event: content_block_stop' in payload
-    assert 'event: message_delta' in payload
-    assert 'event: message_stop' in payload
+    assert (
+        '"usage":{"input_tokens":11,"output_tokens":0}' in message_delta_frame['data']
+    )
 
 
 @pytest.mark.asyncio

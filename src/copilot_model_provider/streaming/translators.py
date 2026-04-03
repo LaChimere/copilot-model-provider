@@ -10,6 +10,7 @@ from copilot.generated.session_events import SessionEvent, SessionEventType
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantTurnCompleteEvent,
+    AssistantUsageEvent,
     CanonicalStreamingEvent,
     OpenAIChatCompletionChunk,
     OpenAIChatCompletionChunkChoice,
@@ -125,6 +126,21 @@ def translate_session_event(*, event: SessionEvent) -> CanonicalStreamingEvent |
             completion_tokens=_normalize_optional_non_negative_int(
                 value=getattr(data, 'output_tokens', None)
             ),
+        )
+
+    if event.type == SessionEventType.ASSISTANT_USAGE:
+        prompt_tokens = _normalize_optional_non_negative_int(
+            value=getattr(data, 'input_tokens', None)
+        )
+        completion_tokens = _normalize_optional_non_negative_int(
+            value=getattr(data, 'output_tokens', None)
+        )
+        if prompt_tokens is None and completion_tokens is None:
+            return None
+
+        return AssistantUsageEvent(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     if event.type == SessionEventType.SESSION_ERROR:

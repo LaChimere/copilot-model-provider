@@ -106,6 +106,10 @@ _SURFACE_RULES: dict[ProtocolSurface, dict[str, FieldCompatibilityRule]] = {
             handling=FieldHandling.ACCEPT_IGNORE,
             note='Tool definitions are accepted without server-side tool execution.',
         ),
+        'thinking': FieldCompatibilityRule(
+            handling=FieldHandling.ACCEPT_IGNORE,
+            note='Accepted for compatibility, but current runtime path cannot surface structured thinking blocks.',
+        ),
     },
 }
 

@@ -60,6 +60,16 @@ class AssistantTurnCompleteEvent(BaseModel):
     completion_tokens: int | None = Field(default=None, ge=0)
 
 
+class AssistantUsageEvent(BaseModel):
+    """Canonical usage event emitted when the runtime reports token accounting."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal['assistant_usage'] = 'assistant_usage'
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
+
+
 class StreamingErrorEvent(BaseModel):
     """Canonical event emitted when the runtime reports a stream-level error."""
 
@@ -71,5 +81,8 @@ class StreamingErrorEvent(BaseModel):
 
 
 CanonicalStreamingEvent = (
-    AssistantTextDeltaEvent | AssistantTurnCompleteEvent | StreamingErrorEvent
+    AssistantTextDeltaEvent
+    | AssistantTurnCompleteEvent
+    | AssistantUsageEvent
+    | StreamingErrorEvent
 )
