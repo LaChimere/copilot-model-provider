@@ -74,10 +74,31 @@ Behavior:
 
 - accepts a thin OpenAI-compatible Responses subset intended for Codex-style clients
 - supports non-streaming and streaming SSE responses
-- reuses the same canonical chat/runtime path as `POST /v1/chat/completions`
+- reuses the same canonical chat/runtime path as `POST /openai/v1/chat/completions`
 - exposes Responses-specific lifecycle events for streaming
 
-### 3.5 `GET /_internal/health`
+### 3.5 `POST /anthropic/v1/messages`
+
+Implemented in `src/copilot_model_provider/api/anthropic/messages.py`.
+
+Behavior:
+
+- accepts a thin Anthropic-compatible Messages request
+- supports non-streaming responses and Anthropic-style SSE streaming
+- accepts Anthropic gateway headers such as `anthropic-version`, `anthropic-beta`, and `X-Claude-Code-Session-Id`
+- accepts `thinking` as a compatibility field, but the current runtime path does not surface structured thinking blocks for passthrough
+
+### 3.6 `POST /anthropic/v1/messages/count_tokens`
+
+Implemented in `src/copilot_model_provider/api/anthropic/messages.py`.
+
+Behavior:
+
+- accepts an Anthropic-compatible token-count request
+- validates the requested model against the current auth-context live catalog
+- returns a best-effort Anthropic-compatible input-token estimate over the normalized text-bearing request subset
+
+### 3.7 `GET /_internal/health`
 
 Installed from `src/copilot_model_provider/app.py` when `enable_internal_health` is enabled.
 
@@ -197,12 +218,24 @@ Behavior:
 - converts string or structured `input` into canonical messages
 - normalizes `developer` role to `system`
 - accepts the thin Responses subset needed by current clients
+- accepts `truncation` as a compatibility field while leaving truncation policy runtime-managed
 
 Important limitation:
 
-- request fields such as `tools`, `tool_choice`, and `parallel_tool_calls` may be accepted by the request model for compatibility, but the provider does **not** execute server-side tools or MCP flows
+- request fields such as `store`, `previous_response_id`, `tools`, `tool_choice`, `parallel_tool_calls`, `include`, `prompt_cache_key`, and `reasoning` may be accepted by the request model for compatibility, but the provider does **not** execute server-side tools or MCP flows, persist response state, or implement prompt caching semantics
 
-### 5.4 Prompt rendering
+### 5.4 Anthropic Messages normalization
+
+Implemented in `src/copilot_model_provider/api/anthropic/protocol.py`.
+
+Behavior:
+
+- converts Anthropic Messages requests into the shared canonical chat request path
+- preserves only the text-bearing subset for runtime prompt rendering
+- accepts `metadata`, `tools`, and `thinking` for compatibility even though the current provider does not expose server-side tool execution or structured thinking passthrough northbound
+- treats `max_tokens` as a compatibility hint rather than a provider-enforced token budget
+
+### 5.5 Prompt rendering
 
 Implemented in `src/copilot_model_provider/core/chat.py`.
 
@@ -374,6 +407,8 @@ Behavior:
 - accepts `Authorization: Bearer <token>`
 - returns the stripped token for runtime passthrough
 - rejects malformed authorization headers with `invalid_authorization_header`
+- accepts `X-Api-Key` on Anthropic routes as an alternate opaque auth carrier
+- normalizes Anthropic gateway headers (`anthropic-version`, `anthropic-beta`, `X-Claude-Code-Session-Id`) so blank values collapse to `None` before request handling or logging
 
 ### 8.2 Auth scope
 
@@ -412,6 +447,7 @@ Handled event families:
 - assistant text deltas
 - aggregated assistant messages
 - assistant turn completion
+- assistant usage
 - session errors
 
 Ignored event families:
@@ -443,8 +479,26 @@ Behavior:
   - `response.content_part.done`
   - `response.output_item.done`
   - `response.completed`
+- includes `usage` in the final `response.completed` event when runtime token data is available for the completed turn
 
-### 9.4 De-duplication rule
+### 9.4 Anthropic Messages SSE
+
+Implemented in `src/copilot_model_provider/api/anthropic/messages.py` plus `streaming/anthropic.py`.
+
+Behavior:
+
+- emits Anthropic-style SSE events such as:
+  - `message_start`
+  - `content_block_start`
+  - `content_block_delta`
+  - `content_block_stop`
+  - `message_delta`
+  - `message_stop`
+- emits streaming `usage` on `message_start` and final `message_delta`
+- prefers exact runtime `assistant.usage` token data when available
+- otherwise falls back to best-effort prompt/output token estimation
+
+### 9.5 De-duplication rule
 
 Implemented in `src/copilot_model_provider/api/shared.py`.
 
@@ -455,6 +509,12 @@ The runtime may emit both text deltas and a later aggregated assistant message f
 Structured provider errors are defined in `src/copilot_model_provider/core/errors.py`.
 
 The design goal is that provider-owned failures surface as stable HTTP JSON errors rather than raw SDK exceptions.
+
+Non-streaming error envelopes are protocol-specific:
+
+- routes under `/anthropic/` use Anthropic-shaped error bodies
+- OpenAI routes keep OpenAI-shaped JSON error bodies
+- streaming routes surface protocol-specific error frames for their respective SSE contracts
 
 Examples of stable error categories in the current implementation:
 
@@ -506,6 +566,7 @@ The current implementation does **not** provide these capabilities:
 - external CLI runtime mode
 - provider-native conversation/session APIs
 - broader Anthropic compatibility features beyond the current models/messages/count-tokens surface
+- structured Anthropic `thinking` / `redacted_thinking` passthrough on the current Copilot runtime path
 - multi-runtime fallback routing
 - rate limiting, quotas, or billing
 - advanced OpenAI compatibility features beyond the current thin chat/responses surface

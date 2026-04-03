@@ -103,6 +103,16 @@ Available today:
 - `POST /anthropic/v1/messages/count_tokens`
 - `GET /_internal/health`
 
+## Current compatibility notes
+
+- The provider exposes the live Copilot model IDs visible to the current auth context on both model-list endpoints; callers should configure one of those exact model IDs rather than a provider-owned alias.
+- Both `POST /openai/v1/chat/completions` and `POST /openai/v1/responses` are first-class surfaces. `responses` is the main Codex-oriented route, but `chat/completions` stays supported for other OpenAI-style clients.
+- The OpenAI Responses facade intentionally implements a thin subset. Fields such as `truncation`, `store`, `previous_response_id`, `tools`, `tool_choice`, `parallel_tool_calls`, `include`, `prompt_cache_key`, and `reasoning` are accepted for compatibility, but the provider does not add server-side tool execution, MCP, persistence, or prompt caching semantics.
+- Streaming Responses requests emit the standard lifecycle events and include `usage` in the final `response.completed` event when the runtime surfaces token counts.
+- The Anthropic facade accepts `anthropic-version`, `anthropic-beta`, and `X-Claude-Code-Session-Id` and normalizes them for request handling and observability.
+- Anthropic `thinking` is currently accepted as a compatibility field but remains accept-ignore on the shipped Copilot runtime path: the provider does not currently surface structured `thinking` or `redacted_thinking` blocks northbound.
+- Anthropic streaming emits `usage` information, preferring exact runtime `assistant.usage` token data when available and otherwise falling back to a best-effort estimate. Non-streaming Anthropic failures use Anthropic-shaped error envelopes on Anthropic routes.
+
 ## How image selection works
 
 The setup scripts support two modes:

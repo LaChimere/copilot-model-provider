@@ -67,18 +67,19 @@
     - Runtime checkpoint result captured from a live `claude-sonnet-4.6` SDK session probe
     - Anthropic contract assertions in `tests/contract_tests/test_anthropic_messages.py`
     - Streaming usage assertions in `tests/contract_tests/test_anthropic_messages.py`
-- [ ] Cleanup PR: Support matrix and verification closeout
+- [x] Cleanup PR: Support matrix and verification closeout
   - Acceptance criteria:
     - Docs and support matrix match shipped behavior.
     - Final verification meets L2 expectations.
   - Evidence:
-    - Updated docs
-    - Full verification output
+    - `README.md`
+    - `docs/design.md`
+    - Final validation + review evidence below
 
 ### Acceptance Gate (before proposing PR)
-- [ ] All acceptance criteria above are met with evidence
-- [ ] Diff is consistent with approved plan (no scope creep, no missing pieces)
-- [ ] Applicable verification level executed
+- [x] All acceptance criteria above are met with evidence
+- [x] Diff is consistent with approved plan (no scope creep, no missing pieces)
+- [x] Applicable verification level executed
 
 If any check fails, follow the recovery flow defined in `AGENTS.md` (Verification rules → Acceptance criteria):
 1. Can fix directly → fix and re-verify
@@ -87,17 +88,17 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 4. Stuck → stop and report to user with evidence of what was attempted
 
 ### Verification (Evidence)
-- [ ] Run lint/typecheck: `uv run ruff check . && uv run pyright && uv run ty check .` (attach output/excerpt)
-- [ ] Run unit/contract tests: `uv run pytest -q tests/contract_tests` (attach output/excerpt)
-- [ ] Run broader verification: `uv run pytest -q` (attach output/excerpt)
-- [ ] Run integration or before/after checks tied to changed protocol behavior
-- [ ] Capture logs/metrics if required
+- [x] Run lint/typecheck: `uv run ruff check . && uv run pyright && uv run ty check .` (attach output/excerpt)
+- [x] Run unit/contract tests via the full suite path: `uv run pytest -q` (covers `tests/contract_tests`)
+- [x] Run broader verification: `uv run pytest -q` (attach output/excerpt)
+- [x] Run integration or before/after checks tied to changed protocol behavior
+- [x] Capture logs/metrics if required (not required for this slice)
 
 ### Review / Packaging
-- [ ] Summarize changes (what/why)
-- [ ] Confirm no scope creep / unrelated cleanup
-- [ ] Check whether related docs need updating (use `refresh-related-docs` if behavior, config, or API changed)
-- [ ] Prepare PR description / changelog notes (if applicable)
+- [x] Summarize changes (what/why)
+- [x] Confirm no scope creep / unrelated cleanup
+- [x] Check whether related docs need updating (use `refresh-related-docs` if behavior, config, or API changed)
+- [x] Prepare PR description / changelog notes (if applicable)
 
 ## Evidence Log
 Paste concise evidence here (commands + key lines).
@@ -112,7 +113,10 @@ Paste concise evidence here (commands + key lines).
 - Runtime checkpoint: Copilot SDK session API exposes `reasoning_effort` but not Anthropic-native `thinking`; live `claude-sonnet-4.6` probe returned no structured `thinking` / `redacted_thinking` / `reasoningText` / `reasoningOpaque` blocks, but did emit `assistant.usage`
 - `uv run pytest -q tests/integration_tests/test_chat.py::test_container_chat_completion_supports_live_model_id tests/integration_tests/test_responses.py::test_container_responses_non_streaming_supports_live_model_id tests/integration_tests/test_responses.py::test_container_responses_streaming_emits_expected_lifecycle`: `3 passed`
 - `uv run ruff format --check . && uv run ruff check . && uv run ty check . && uv run pyright && uv run pytest -q`: `141 passed, 2 skipped`, coverage `94.41%`
+- Cleanup docs refresh: `README.md` and `docs/design.md` now describe the shipped OpenAI `responses` / `chat` surface, Anthropic `messages` / `count_tokens` surface, gateway headers, protocol-specific errors, streaming usage, and current `thinking` accept-ignore behavior
+- Claude Opus 4.6 cleanup review: no significant issues found; doc claims verified against implementation
+- Final cleanup validation: `uv run ruff format --check . && uv run ruff check . && uv run ty check . && uv run pyright && uv run pytest -q`: `141 passed, 2 skipped`, coverage `94.41%`
 
 ## Result
-- Outcome: PR 4 revised Anthropic behavior slice is implemented and fully verified for commit.
-- Follow-ups (if any):
+- Outcome: Protocol compatibility completion is fully implemented and documented across all planned staged commits.
+- Follow-ups (if any): None.
