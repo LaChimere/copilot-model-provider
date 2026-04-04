@@ -16,7 +16,7 @@ Today the main end-user targets are:
 - `uv`
 - a logged-in GitHub CLI session: `gh auth login`
 
-The setup scripts restart a local provider container, resolve your `gh auth token`, and rewrite your local client config so future CLI launches use the provider automatically.
+The setup scripts resolve your `gh auth token`, reuse a matching running local provider container when possible (otherwise restarting it), and rewrite your local client config so future CLI launches use the provider automatically.
 
 ### One-line Codex setup from the published image
 

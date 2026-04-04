@@ -25,11 +25,11 @@ try:
         ConfigCodexError,
         _parse_port,
         ensure_gh_authenticated,
+        ensure_provider_container,
         ensure_required_commands,
         fetch_visible_anthropic_model_ids,
         resolve_github_token,
         resolve_provider_image,
-        restart_container,
         wait_for_health,
     )
 except ModuleNotFoundError:
@@ -44,11 +44,11 @@ except ModuleNotFoundError:
         ConfigCodexError,
         _parse_port,
         ensure_gh_authenticated,
+        ensure_provider_container,
         ensure_required_commands,
         fetch_visible_anthropic_model_ids,
         resolve_github_token,
         resolve_provider_image,
-        restart_container,
         wait_for_health,
     )
 
@@ -188,10 +188,11 @@ def run_config_claude(
     """Run the full local Claude configuration flow.
 
     The flow validates prerequisites, resolves the user's GitHub token via
-        ``gh``, restarts the local provider container, validates the visible
-        Claude-family models from ``/anthropic/v1/models``, backs up Claude's user
-    ``settings.json``, and rewrites the persistent env block so future
-    ``claude`` invocations route through the local provider.
+    ``gh``, reuses a compatible running local provider container when possible
+    (otherwise restarting it), validates the visible Claude-family models from
+    ``/anthropic/v1/models``, backs up Claude's user ``settings.json``, and
+    rewrites the persistent env block so future ``claude`` invocations route
+    through the local provider.
 
     Args:
         options: Validated CLI options for the Claude configuration workflow.
@@ -218,7 +219,7 @@ def run_config_claude(
         settings_path = config_dir / DEFAULT_SETTINGS_FILE_NAME
         backup_dir = config_dir / DEFAULT_BACKUP_DIR_NAME
 
-        restart_container(
+        ensure_provider_container(
             container_name=container_name,
             image=options.image,
             host_port=options.port,

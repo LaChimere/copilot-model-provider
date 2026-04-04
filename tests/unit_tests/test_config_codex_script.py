@@ -12,6 +12,7 @@ import pytest
 from scripts.config_codex import (
     ConfigCodexError,
     ConfigCodexOptions,
+    InspectedContainer,
     _fetch_json_document,
     ensure_gh_authenticated,
     parse_args,
@@ -48,6 +49,9 @@ def test_run_config_codex_updates_config_and_creates_backup(
         """Return a deterministic token for unit tests."""
         return 'github-token'
 
+    def _inspect_container(**_: object) -> None:
+        """Report that no reusable container exists for the happy-path test."""
+
     def _restart(
         *,
         container_name: str,
@@ -80,6 +84,10 @@ def test_run_config_codex_updates_config_and_creates_backup(
     monkeypatch.setattr(
         'scripts.config_codex.resolve_github_token',
         _resolve_token,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.inspect_container',
+        _inspect_container,
     )
     monkeypatch.setattr(
         'scripts.config_codex.restart_container',
@@ -128,6 +136,164 @@ def test_run_config_codex_updates_config_and_creates_backup(
     assert backup_files[0].read_text(encoding='utf-8') == original_config
 
 
+def test_run_config_codex_reuses_matching_running_container(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify Codex setup reuses a compatible running provider container."""
+    codex_dir = tmp_path / '.codex'
+    codex_dir.mkdir()
+    config_path = codex_dir / 'config.toml'
+    config_path.write_text('', encoding='utf-8')
+
+    restart_calls: list[tuple[str, str, int, int, str]] = []
+    health_checks: list[str] = []
+
+    def _ignore_commands(_commands: tuple[str, ...]) -> None:
+        """Ignore command checks during unit tests."""
+
+    def _ignore_auth() -> None:
+        """Ignore GitHub auth checks during unit tests."""
+
+    def _resolve_token() -> str:
+        """Return a deterministic token for unit tests."""
+        return 'github-token'
+
+    def _inspect_container(**_: object) -> InspectedContainer:
+        """Return a running container that matches the requested config."""
+        return InspectedContainer(
+            image='copilot-model-provider:local',
+            running=True,
+            published_port=28080,
+        )
+
+    def _restart(
+        *,
+        container_name: str,
+        image: str,
+        host_port: int,
+        container_port: int,
+        github_token: str,
+    ) -> None:
+        """Record unexpected restart requests during the reuse-path test."""
+        restart_calls.append(
+            (container_name, image, host_port, container_port, github_token),
+        )
+
+    def _wait(url: str) -> None:
+        """Capture the health URL instead of polling a live service."""
+        health_checks.append(url)
+
+    def _visible_models(_base_url: str) -> list[str]:
+        """Return visible model ids used by the reuse-path test."""
+        return ['gpt-5.4']
+
+    monkeypatch.setattr(
+        'scripts.config_codex.ensure_required_commands', _ignore_commands
+    )
+    monkeypatch.setattr('scripts.config_codex.ensure_gh_authenticated', _ignore_auth)
+    monkeypatch.setattr('scripts.config_codex.resolve_github_token', _resolve_token)
+    monkeypatch.setattr('scripts.config_codex.inspect_container', _inspect_container)
+    monkeypatch.setattr('scripts.config_codex.restart_container', _restart)
+    monkeypatch.setattr('scripts.config_codex.wait_for_health', _wait)
+    monkeypatch.setattr('scripts.config_codex.fetch_visible_model_ids', _visible_models)
+
+    result = run_config_codex(
+        ConfigCodexOptions(
+            port=28080,
+            image='copilot-model-provider:local',
+            model='gpt-5.4',
+        ),
+        home_directory=tmp_path,
+    )
+
+    payload = tomllib.loads(config_path.read_text(encoding='utf-8'))
+    assert result.model == 'gpt-5.4'
+    assert payload['model'] == 'gpt-5.4'
+    assert restart_calls == []
+    assert health_checks == ['http://127.0.0.1:28080/_internal/health']
+
+
+def test_run_config_codex_restarts_mismatched_container(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify Codex setup restarts a container whose config no longer matches."""
+    codex_dir = tmp_path / '.codex'
+    codex_dir.mkdir()
+    config_path = codex_dir / 'config.toml'
+    config_path.write_text('', encoding='utf-8')
+
+    restart_calls: list[tuple[str, str, int, int, str]] = []
+
+    def _ignore_commands(_commands: tuple[str, ...]) -> None:
+        """Ignore command checks during unit tests."""
+
+    def _ignore_auth() -> None:
+        """Ignore GitHub auth checks during unit tests."""
+
+    def _resolve_token() -> str:
+        """Return a deterministic token for unit tests."""
+        return 'github-token'
+
+    def _inspect_container(**_: object) -> InspectedContainer:
+        """Return a running container whose image mismatches the request."""
+        return InspectedContainer(
+            image='ghcr.io/lachimere/copilot-model-provider:v0.1.0',
+            running=True,
+            published_port=8000,
+        )
+
+    def _restart(
+        *,
+        container_name: str,
+        image: str,
+        host_port: int,
+        container_port: int,
+        github_token: str,
+    ) -> None:
+        """Capture the restart request triggered by the mismatch."""
+        restart_calls.append(
+            (container_name, image, host_port, container_port, github_token),
+        )
+
+    def _wait(_url: str) -> None:
+        """Skip health polling during the mismatch-path test."""
+
+    def _visible_models(_base_url: str) -> list[str]:
+        """Return the visible model ids used by the mismatch-path test."""
+        return ['gpt-5.4']
+
+    monkeypatch.setattr(
+        'scripts.config_codex.ensure_required_commands', _ignore_commands
+    )
+    monkeypatch.setattr('scripts.config_codex.ensure_gh_authenticated', _ignore_auth)
+    monkeypatch.setattr('scripts.config_codex.resolve_github_token', _resolve_token)
+    monkeypatch.setattr('scripts.config_codex.inspect_container', _inspect_container)
+    monkeypatch.setattr('scripts.config_codex.restart_container', _restart)
+    monkeypatch.setattr('scripts.config_codex.wait_for_health', _wait)
+    monkeypatch.setattr('scripts.config_codex.fetch_visible_model_ids', _visible_models)
+
+    run_config_codex(
+        ConfigCodexOptions(
+            port=8000,
+            image='copilot-model-provider:local',
+            model='gpt-5.4',
+        ),
+        home_directory=tmp_path,
+    )
+
+    assert restart_calls == [
+        (
+            'copilot-model-provider',
+            'copilot-model-provider:local',
+            8000,
+            8000,
+            'github-token',
+        ),
+    ]
+
+
 def test_run_config_codex_auto_selects_visible_default_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -143,6 +309,9 @@ def test_run_config_codex_auto_selects_visible_default_model(
     def _resolve_token() -> str:
         """Return a deterministic token for unit tests."""
         return 'github-token'
+
+    def _inspect_container(**_: object) -> None:
+        """Report that no reusable container exists for the auto-selection test."""
 
     def _restart(**_: object) -> None:
         """Ignore Docker restarts during the auto-selection test."""
@@ -165,6 +334,10 @@ def test_run_config_codex_auto_selects_visible_default_model(
     monkeypatch.setattr(
         'scripts.config_codex.resolve_github_token',
         _resolve_token,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.inspect_container',
+        _inspect_container,
     )
     monkeypatch.setattr(
         'scripts.config_codex.restart_container',
@@ -211,6 +384,9 @@ def test_run_config_codex_rejects_model_ids_not_visible_from_service(
         """Return a deterministic token for unit tests."""
         return 'github-token'
 
+    def _inspect_container(**_: object) -> None:
+        """Report that no reusable container exists for the negative-path test."""
+
     def _restart(**_: object) -> None:
         """Ignore Docker restarts during the negative-path test."""
 
@@ -232,6 +408,10 @@ def test_run_config_codex_rejects_model_ids_not_visible_from_service(
     monkeypatch.setattr(
         'scripts.config_codex.resolve_github_token',
         _resolve_token,
+    )
+    monkeypatch.setattr(
+        'scripts.config_codex.inspect_container',
+        _inspect_container,
     )
     monkeypatch.setattr(
         'scripts.config_codex.restart_container',

@@ -58,6 +58,10 @@ def test_run_config_claude_updates_settings_and_creates_backup(
         """Return a deterministic token for unit tests."""
         return 'github-token'
 
+    def _inspect_container(**_: object) -> None:
+        """Report that no reusable container exists for the happy-path test."""
+        return
+
     def _restart(
         *,
         container_name: str,
@@ -84,7 +88,8 @@ def test_run_config_claude_updates_settings_and_creates_backup(
     )
     monkeypatch.setattr('scripts.config_claude.ensure_gh_authenticated', _ignore_auth)
     monkeypatch.setattr('scripts.config_claude.resolve_github_token', _resolve_token)
-    monkeypatch.setattr('scripts.config_claude.restart_container', _restart)
+    monkeypatch.setattr('scripts.config_codex.inspect_container', _inspect_container)
+    monkeypatch.setattr('scripts.config_codex.restart_container', _restart)
     monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
     monkeypatch.setattr(
         'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
@@ -128,6 +133,170 @@ def test_run_config_claude_updates_settings_and_creates_backup(
     assert backup_files[0].read_text(encoding='utf-8') == original_settings
 
 
+def test_run_config_claude_reuses_matching_running_container(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify Claude setup reuses a compatible running provider container."""
+    claude_dir = tmp_path / '.claude'
+    claude_dir.mkdir()
+    settings_path = claude_dir / 'settings.json'
+    settings_path.write_text('{\n}\n', encoding='utf-8')
+
+    restart_calls: list[tuple[str, str, int, int, str]] = []
+    health_checks: list[str] = []
+
+    def _ignore_commands(_commands: tuple[str, ...]) -> None:
+        """Ignore command checks during unit tests."""
+
+    def _ignore_auth() -> None:
+        """Ignore GitHub auth checks during unit tests."""
+
+    def _resolve_token() -> str:
+        """Return a deterministic token for unit tests."""
+        return 'github-token'
+
+    def _inspect_container(**_: object) -> object:
+        """Return a running container that matches the requested config."""
+        from scripts.config_codex import InspectedContainer
+
+        return InspectedContainer(
+            image='copilot-model-provider:local',
+            running=True,
+            published_port=28080,
+        )
+
+    def _restart(
+        *,
+        container_name: str,
+        image: str,
+        host_port: int,
+        container_port: int,
+        github_token: str,
+    ) -> None:
+        """Record unexpected restart requests during the reuse-path test."""
+        restart_calls.append(
+            (container_name, image, host_port, container_port, github_token),
+        )
+
+    def _wait(url: str) -> None:
+        """Capture the health URL instead of polling a live service."""
+        health_checks.append(url)
+
+    def _visible_models(_base_url: str) -> list[str]:
+        """Return visible model ids used by the reuse-path test."""
+        return ['claude-sonnet-4.6']
+
+    monkeypatch.setattr(
+        'scripts.config_claude.ensure_required_commands', _ignore_commands
+    )
+    monkeypatch.setattr('scripts.config_claude.ensure_gh_authenticated', _ignore_auth)
+    monkeypatch.setattr('scripts.config_claude.resolve_github_token', _resolve_token)
+    monkeypatch.setattr('scripts.config_codex.inspect_container', _inspect_container)
+    monkeypatch.setattr('scripts.config_codex.restart_container', _restart)
+    monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
+    monkeypatch.setattr(
+        'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
+    )
+
+    result = run_config_claude(
+        ConfigClaudeOptions(
+            port=28080,
+            image='copilot-model-provider:local',
+        ),
+        home_directory=tmp_path,
+    )
+
+    payload = json.loads(settings_path.read_text(encoding='utf-8'))
+    assert result.model == 'claude-sonnet-4.6'
+    assert payload['env']['ANTHROPIC_MODEL'] == 'claude-sonnet-4.6'
+    assert restart_calls == []
+    assert health_checks == ['http://127.0.0.1:28080/_internal/health']
+
+
+def test_run_config_claude_restarts_mismatched_container(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify Claude setup restarts a container whose config no longer matches."""
+    claude_dir = tmp_path / '.claude'
+    claude_dir.mkdir()
+    settings_path = claude_dir / 'settings.json'
+    settings_path.write_text('{\n}\n', encoding='utf-8')
+
+    restart_calls: list[tuple[str, str, int, int, str]] = []
+
+    def _ignore_commands(_commands: tuple[str, ...]) -> None:
+        """Ignore command checks during unit tests."""
+
+    def _ignore_auth() -> None:
+        """Ignore GitHub auth checks during unit tests."""
+
+    def _resolve_token() -> str:
+        """Return a deterministic token for unit tests."""
+        return 'github-token'
+
+    def _inspect_container(**_: object) -> object:
+        """Return a running container whose published port mismatches the request."""
+        from scripts.config_codex import InspectedContainer
+
+        return InspectedContainer(
+            image='copilot-model-provider:local',
+            running=True,
+            published_port=9000,
+        )
+
+    def _restart(
+        *,
+        container_name: str,
+        image: str,
+        host_port: int,
+        container_port: int,
+        github_token: str,
+    ) -> None:
+        """Capture the restart request triggered by the mismatch."""
+        restart_calls.append(
+            (container_name, image, host_port, container_port, github_token),
+        )
+
+    def _wait(_url: str) -> None:
+        """Skip health polling during the mismatch-path test."""
+
+    def _visible_models(_base_url: str) -> list[str]:
+        """Return visible model ids used by the mismatch-path test."""
+        return ['claude-sonnet-4.6']
+
+    monkeypatch.setattr(
+        'scripts.config_claude.ensure_required_commands', _ignore_commands
+    )
+    monkeypatch.setattr('scripts.config_claude.ensure_gh_authenticated', _ignore_auth)
+    monkeypatch.setattr('scripts.config_claude.resolve_github_token', _resolve_token)
+    monkeypatch.setattr('scripts.config_codex.inspect_container', _inspect_container)
+    monkeypatch.setattr('scripts.config_codex.restart_container', _restart)
+    monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
+    monkeypatch.setattr(
+        'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
+    )
+
+    run_config_claude(
+        ConfigClaudeOptions(
+            port=8000,
+            image='copilot-model-provider:local',
+        ),
+        home_directory=tmp_path,
+    )
+
+    assert restart_calls == [
+        (
+            'copilot-model-provider',
+            'copilot-model-provider:local',
+            8000,
+            8000,
+            'github-token',
+        ),
+    ]
+
+
 def test_run_config_claude_validates_explicit_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -144,6 +313,9 @@ def test_run_config_claude_validates_explicit_model(
         """Return a deterministic token for unit tests."""
         return 'github-token'
 
+    def _inspect_container(**_: object) -> None:
+        """Report that no reusable container exists for the test."""
+
     def _restart(**_: object) -> None:
         """Ignore Docker restarts during the test."""
 
@@ -159,7 +331,8 @@ def test_run_config_claude_validates_explicit_model(
     )
     monkeypatch.setattr('scripts.config_claude.ensure_gh_authenticated', _ignore_auth)
     monkeypatch.setattr('scripts.config_claude.resolve_github_token', _resolve_token)
-    monkeypatch.setattr('scripts.config_claude.restart_container', _restart)
+    monkeypatch.setattr('scripts.config_codex.inspect_container', _inspect_container)
+    monkeypatch.setattr('scripts.config_codex.restart_container', _restart)
     monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
     monkeypatch.setattr(
         'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
@@ -198,6 +371,9 @@ def test_run_config_claude_rejects_missing_visible_claude_models(
         """Return a deterministic token for unit tests."""
         return 'github-token'
 
+    def _inspect_container(**_: object) -> None:
+        """Report that no reusable container exists for the negative-path test."""
+
     def _restart(**_: object) -> None:
         """Ignore Docker restarts during the negative-path test."""
 
@@ -213,7 +389,8 @@ def test_run_config_claude_rejects_missing_visible_claude_models(
     )
     monkeypatch.setattr('scripts.config_claude.ensure_gh_authenticated', _ignore_auth)
     monkeypatch.setattr('scripts.config_claude.resolve_github_token', _resolve_token)
-    monkeypatch.setattr('scripts.config_claude.restart_container', _restart)
+    monkeypatch.setattr('scripts.config_codex.inspect_container', _inspect_container)
+    monkeypatch.setattr('scripts.config_codex.restart_container', _restart)
     monkeypatch.setattr('scripts.config_claude.wait_for_health', _wait)
     monkeypatch.setattr(
         'scripts.config_claude.fetch_visible_anthropic_model_ids', _visible_models
