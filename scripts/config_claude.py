@@ -441,15 +441,18 @@ def build_claude_env_overrides(
     }
 
     tier_defaults = {
-        'ANTHROPIC_DEFAULT_OPUS_MODEL': find_preferred_model_for_prefix(
+        'ANTHROPIC_DEFAULT_OPUS_MODEL': resolve_claude_tier_default_model(
+            selected_model=model,
             visible_models=visible_models,
             prefix='claude-opus',
         ),
-        'ANTHROPIC_DEFAULT_SONNET_MODEL': find_preferred_model_for_prefix(
+        'ANTHROPIC_DEFAULT_SONNET_MODEL': resolve_claude_tier_default_model(
+            selected_model=model,
             visible_models=visible_models,
             prefix='claude-sonnet',
         ),
-        'ANTHROPIC_DEFAULT_HAIKU_MODEL': find_preferred_model_for_prefix(
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL': resolve_claude_tier_default_model(
+            selected_model=model,
             visible_models=visible_models,
             prefix='claude-haiku',
         ),
@@ -459,6 +462,39 @@ def build_claude_env_overrides(
     )
 
     return env_overrides
+
+
+def resolve_claude_tier_default_model(
+    *,
+    selected_model: str,
+    visible_models: list[str],
+    prefix: str,
+) -> str | None:
+    """Resolve the family default Claude model that should be persisted.
+
+    When the active session model already belongs to the requested family, keep
+    that exact model as the family default instead of falling back to the first
+    visible model in the catalog. This preserves explicit selections such as
+    1M-context Opus/Sonnet variants in Claude's tier-based model resolution.
+
+    Args:
+        selected_model: The explicit Claude model chosen for the configured
+            session.
+        visible_models: Live model identifiers visible from the provider.
+        prefix: Claude-family prefix to resolve, such as ``claude-opus``.
+
+    Returns:
+        The selected model when it belongs to the requested family, otherwise
+        the first visible model matching that family, or ``None`` when no model
+        in that family is visible.
+
+    """
+    if selected_model.startswith(prefix):
+        return selected_model
+    return find_preferred_model_for_prefix(
+        visible_models=visible_models,
+        prefix=prefix,
+    )
 
 
 def resolve_claude_model(

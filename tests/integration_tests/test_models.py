@@ -81,3 +81,22 @@ def test_container_anthropic_models_exposes_matching_copilot_metadata(
         or 'default_reasoning_effort' in entry
         for entry in copilot_entries
     )
+    anthropic_by_id = {cast('str', item['id']): item for item in data}
+    for openai_item in openai_data:
+        raw_copilot = openai_item.get('copilot')
+        if not isinstance(raw_copilot, dict):
+            continue
+        typed_copilot = cast('dict[str, object]', raw_copilot)
+        capabilities = typed_copilot.get('capabilities')
+        if not isinstance(capabilities, dict):
+            continue
+        typed_capabilities = cast('dict[str, object]', capabilities)
+        limits = typed_capabilities.get('limits')
+        if not isinstance(limits, dict):
+            continue
+        typed_limits = cast('dict[str, object]', limits)
+        max_context_window_tokens = typed_limits.get('max_context_window_tokens')
+        if not isinstance(max_context_window_tokens, int):
+            continue
+        anthropic_item = anthropic_by_id[cast('str', openai_item['id'])]
+        assert anthropic_item['max_input_tokens'] == max_context_window_tokens

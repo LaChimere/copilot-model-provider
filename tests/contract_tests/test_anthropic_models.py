@@ -133,6 +133,7 @@ async def test_get_models_includes_copilot_metadata_and_runtime_display_name() -
                 'type': 'model',
                 'display_name': 'Claude Opus 4.6 (1M context)(Internal only)',
                 'created_at': '1970-01-01T00:00:00Z',
+                'max_input_tokens': 1000000,
                 'copilot': {
                     'name': 'Claude Opus 4.6 (1M context)(Internal only)',
                     'capabilities': {

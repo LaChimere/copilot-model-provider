@@ -481,6 +481,30 @@ def test_build_claude_env_overrides_includes_tier_defaults() -> None:
     }
 
 
+def test_build_claude_env_overrides_keeps_explicit_1m_opus_as_family_default() -> None:
+    """Verify explicit 1M Opus selections stay pinned in the Opus family default."""
+    overrides = build_claude_env_overrides(
+        base_url='http://127.0.0.1:8000/anthropic',
+        github_token='github-token',  # noqa: S106 - deterministic test token
+        model='claude-opus-4.6-1m',
+        visible_models=[
+            'claude-opus-4.6',
+            'claude-opus-4.6-1m',
+            'claude-sonnet-4.6',
+            'claude-haiku-4.5',
+        ],
+    )
+
+    assert overrides == {
+        'ANTHROPIC_BASE_URL': 'http://127.0.0.1:8000/anthropic',
+        'ANTHROPIC_AUTH_TOKEN': 'github-token',
+        'ANTHROPIC_MODEL': 'claude-opus-4.6-1m',
+        'ANTHROPIC_DEFAULT_OPUS_MODEL': 'claude-opus-4.6-1m',
+        'ANTHROPIC_DEFAULT_SONNET_MODEL': 'claude-sonnet-4.6',
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL': 'claude-haiku-4.5',
+    }
+
+
 def test_select_default_claude_model_prefers_sonnet() -> None:
     """Verify that Sonnet outranks other visible Claude-family models."""
     assert (

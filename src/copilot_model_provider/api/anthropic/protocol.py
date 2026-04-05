@@ -98,6 +98,7 @@ def build_anthropic_model_list_response(
             id=model.id,
             display_name=_build_anthropic_display_name(model=model),
             created_at=_format_anthropic_created_at(created=model.created),
+            max_input_tokens=_build_anthropic_max_input_tokens(model=model),
             copilot=model.copilot,
         )
         for model in openai_response.data
@@ -131,6 +132,28 @@ def build_anthropic_message_response_from_text(
         stop_reason=_normalize_stop_reason(stop_reason=stop_reason),
         usage=usage,
     )
+
+
+def _build_anthropic_max_input_tokens(*, model: OpenAIModelCard) -> int | None:
+    """Return Anthropic ``max_input_tokens`` derived from Copilot metadata.
+
+    Args:
+        model: Shared model-card entry produced by the live catalog router.
+
+    Returns:
+        The runtime-reported maximum context window for the model when available,
+        otherwise ``None`` so the field is omitted from Anthropic responses.
+
+    """
+    metadata = model.copilot
+    if metadata is None or metadata.capabilities is None:
+        return None
+
+    limits = metadata.capabilities.limits
+    if limits is None:
+        return None
+
+    return limits.max_context_window_tokens
 
 
 def build_anthropic_message_start_event(
