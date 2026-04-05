@@ -1,6 +1,10 @@
 """Core contracts for the provider scaffold."""
 
-from .catalog import ModelCatalog, build_live_model_catalog
+from .catalog import (
+    ModelCatalog,
+    build_live_model_catalog,
+    build_live_model_catalog_from_models,
+)
 from .chat import (
     build_openai_chat_completion_response,
     normalize_openai_chat_request,
@@ -22,6 +26,13 @@ from .models import (
     AnthropicUsage,
     CanonicalChatMessage,
     CanonicalChatRequest,
+    CopilotModelBilling,
+    CopilotModelCapabilities,
+    CopilotModelLimits,
+    CopilotModelMetadata,
+    CopilotModelPolicy,
+    CopilotModelSupports,
+    CopilotModelVisionLimits,
     InternalHealthResponse,
     ModelCatalogEntry,
     OpenAIChatCompletionChoice,
@@ -33,6 +44,7 @@ from .models import (
     OpenAIUsage,
     ResolvedRoute,
     RuntimeCompletion,
+    RuntimeDiscoveredModel,
     RuntimeHealth,
 )
 from .routing import ModelRouter, ModelRouterProtocol
@@ -47,6 +59,13 @@ __all__ = [
     'AnthropicUsage',
     'CanonicalChatMessage',
     'CanonicalChatRequest',
+    'CopilotModelBilling',
+    'CopilotModelCapabilities',
+    'CopilotModelLimits',
+    'CopilotModelMetadata',
+    'CopilotModelPolicy',
+    'CopilotModelSupports',
+    'CopilotModelVisionLimits',
     'ErrorDetail',
     'ErrorResponse',
     'InternalHealthResponse',
@@ -64,8 +83,10 @@ __all__ = [
     'ProviderError',
     'ResolvedRoute',
     'RuntimeCompletion',
+    'RuntimeDiscoveredModel',
     'RuntimeHealth',
     'build_live_model_catalog',
+    'build_live_model_catalog_from_models',
     'build_openai_chat_completion_response',
     'install_error_handlers',
     'normalize_openai_chat_request',

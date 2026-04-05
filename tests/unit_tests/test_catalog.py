@@ -7,12 +7,18 @@ from typing import override
 
 import pytest
 
-from copilot_model_provider.core.catalog import ModelCatalog, build_live_model_catalog
+from copilot_model_provider.core.catalog import (
+    ModelCatalog,
+    build_live_model_catalog,
+    build_live_model_catalog_from_models,
+)
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
+    CopilotModelMetadata,
     ModelCatalogEntry,
     ResolvedRoute,
     RuntimeCompletion,
+    RuntimeDiscoveredModel,
     RuntimeHealth,
 )
 from copilot_model_provider.core.routing import ModelRouter
@@ -111,6 +117,28 @@ def test_live_catalog_exposes_same_name_public_model_ids() -> None:
     ]
 
 
+def test_live_catalog_from_models_preserves_copilot_metadata() -> None:
+    """Verify metadata-aware catalog building preserves provider-owned metadata."""
+    catalog = build_live_model_catalog_from_models(
+        runtime='copilot',
+        owned_by='catalog-test',
+        models=[
+            RuntimeDiscoveredModel(
+                id='claude-opus-4.6-1m',
+                copilot=CopilotModelMetadata(
+                    name='Claude Opus 4.6 (1M context)(Internal only)'
+                ),
+            )
+        ],
+    )
+
+    entry = catalog.get_entry(alias='claude-opus-4.6-1m')
+
+    assert entry is not None
+    assert entry.copilot is not None
+    assert entry.copilot.name == 'Claude Opus 4.6 (1M context)(Internal only)'
+
+
 def test_catalog_rejects_duplicate_aliases() -> None:
     """Verify that the catalog refuses ambiguous duplicate public aliases."""
     entry = ModelCatalogEntry(
@@ -122,6 +150,17 @@ def test_catalog_rejects_duplicate_aliases() -> None:
 
     with pytest.raises(ValueError, match='aliases must be unique'):
         ModelCatalog(entries=(entry, entry))
+
+
+@pytest.mark.asyncio
+async def test_runtime_protocol_list_models_shim_wraps_live_ids() -> None:
+    """Verify the additive discovery shim preserves legacy fake-runtime behavior."""
+    runtime = _FakeRuntime()
+
+    models = await runtime.list_models()
+
+    assert [model.id for model in models] == ['gpt-5.4', 'gpt-5.4-mini']
+    assert runtime.tokens_seen == [None]
 
 
 @pytest.mark.asyncio

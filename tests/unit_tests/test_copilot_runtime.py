@@ -14,6 +14,7 @@ from copilot_model_provider.core.models import (
     CanonicalChatMessage,
     CanonicalChatRequest,
     ResolvedRoute,
+    RuntimeDiscoveredModel,
 )
 from copilot_model_provider.runtimes.copilot_runtime import (
     CopilotRuntime,
@@ -44,6 +45,61 @@ class _FakeListedModel:
     """Minimal fake model descriptor matching the runtime discovery path."""
 
     id: str
+    name: str | None = None
+    capabilities: object | None = None
+    policy: object | None = None
+    billing: object | None = None
+    supported_reasoning_efforts: list[str] | None = None
+    default_reasoning_effort: str | None = None
+
+
+@dataclass
+class _FakeListedModelSupports:
+    """Minimal fake capability-support flags for runtime discovery tests."""
+
+    vision: bool | None = None
+    reasoning_effort: bool | None = None
+
+
+@dataclass
+class _FakeListedModelVisionLimits:
+    """Minimal fake vision limits for runtime discovery tests."""
+
+    supported_media_types: list[str] | None = None
+    max_prompt_images: int | None = None
+    max_prompt_image_size: int | None = None
+
+
+@dataclass
+class _FakeListedModelLimits:
+    """Minimal fake limit metadata for runtime discovery tests."""
+
+    max_prompt_tokens: int | None = None
+    max_context_window_tokens: int | None = None
+    vision: _FakeListedModelVisionLimits | None = None
+
+
+@dataclass
+class _FakeListedModelCapabilities:
+    """Minimal fake capability metadata for runtime discovery tests."""
+
+    supports: _FakeListedModelSupports | None = None
+    limits: _FakeListedModelLimits | None = None
+
+
+@dataclass
+class _FakeListedModelPolicy:
+    """Minimal fake policy metadata for runtime discovery tests."""
+
+    state: str | None = None
+    terms: str | None = None
+
+
+@dataclass
+class _FakeListedModelBilling:
+    """Minimal fake billing metadata for runtime discovery tests."""
+
+    multiplier: float | None = None
 
 
 class _FakeSession:
@@ -357,6 +413,82 @@ async def test_copilot_runtime_lists_live_model_ids_from_default_client() -> Non
     model_ids = await runtime.list_model_ids()
 
     assert model_ids == ('gpt-5.4', 'gpt-5.4-mini')
+    assert client.started is True
+    assert client.stopped is False
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_list_models_preserves_runtime_metadata() -> None:
+    """Verify that rich runtime discovery metadata is preserved internally."""
+    client = _FakeClient(
+        session=_FakeSession(),
+        listed_models=[
+            _FakeListedModel(
+                id='claude-opus-4.6-1m',
+                name='Claude Opus 4.6 (1M context)(Internal only)',
+                capabilities=_FakeListedModelCapabilities(
+                    supports=_FakeListedModelSupports(
+                        vision=True,
+                        reasoning_effort=True,
+                    ),
+                    limits=_FakeListedModelLimits(
+                        max_prompt_tokens=936000,
+                        max_context_window_tokens=1000000,
+                        vision=_FakeListedModelVisionLimits(
+                            supported_media_types=['image/png', 'image/jpeg'],
+                            max_prompt_images=20,
+                            max_prompt_image_size=5_242_880,
+                        ),
+                    ),
+                ),
+                policy=_FakeListedModelPolicy(
+                    state='enabled', terms='internal-preview'
+                ),
+                billing=_FakeListedModelBilling(multiplier=1.5),
+                supported_reasoning_efforts=['low', 'medium', 'high'],
+                default_reasoning_effort='medium',
+            )
+        ],
+    )
+    runtime = CopilotRuntime(client_factory=lambda: cast('CopilotClient', client))
+
+    models = await runtime.list_models()
+
+    assert models == (
+        RuntimeDiscoveredModel.model_validate(
+            {
+                'id': 'claude-opus-4.6-1m',
+                'copilot': {
+                    'name': 'Claude Opus 4.6 (1M context)(Internal only)',
+                    'capabilities': {
+                        'supports': {
+                            'vision': True,
+                            'reasoning_effort': True,
+                        },
+                        'limits': {
+                            'max_prompt_tokens': 936000,
+                            'max_context_window_tokens': 1000000,
+                            'vision': {
+                                'supported_media_types': [
+                                    'image/png',
+                                    'image/jpeg',
+                                ],
+                                'max_prompt_images': 20,
+                                'max_prompt_image_size': 5_242_880,
+                            },
+                        },
+                    },
+                    'policy': {
+                        'state': 'enabled',
+                        'terms': 'internal-preview',
+                    },
+                    'billing': {'multiplier': 1.5},
+                    'supported_reasoning_efforts': ['low', 'medium', 'high'],
+                    'default_reasoning_effort': 'medium',
+                },
+            }
+        ),
+    )
     assert client.started is True
     assert client.stopped is False
 

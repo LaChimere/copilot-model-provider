@@ -26,7 +26,7 @@
   - each client completes model discovery and one minimal prompt send without parse/schema errors
 
 ### Implementation
-- [ ] Item 1: Base metadata plumbing PR
+- [x] Item 1: Base metadata plumbing PR
   - Acceptance criteria:
     - runtime protocol and Copilot runtime preserve metadata-rich model discovery via a new additive runtime method
     - `list_model_ids()` remains available as a compatibility shim in this PR
@@ -37,7 +37,11 @@
     - broad `list_model_ids()` fixture churn is avoided; only tests directly touching the new metadata method are updated in PR1
     - current public `/models` payloads remain unchanged in this PR
   - Evidence:
-    - pending
+    - Added `RuntimeDiscoveredModel` plus shared `CopilotModel*` metadata models in `src/copilot_model_provider/core/models.py`
+    - Added additive `RuntimeProtocol.list_models()` shim and metadata-aware `build_live_model_catalog_from_models(...)`
+    - Switched `ModelRouter` to metadata-rich runtime discovery without changing `OpenAIModelCard` construction
+    - `CopilotRuntime.list_models()` now preserves normalized runtime metadata and `list_model_ids()` delegates to it
+    - Added unit coverage for metadata preservation and protocol-shim compatibility in `tests/unit_tests/test_catalog.py` and `tests/unit_tests/test_copilot_runtime.py`
 - [ ] Item 2: OpenAI `/models` metadata exposure PR
   - Acceptance criteria:
     - `GET /openai/v1/models` model cards gain optional nested `copilot` metadata
@@ -76,9 +80,9 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 4. Stuck → stop and report to user with evidence of what was attempted
 
 ### Verification (Evidence)
-- [ ] Run lint/typecheck: `uv run ruff check . && uv run pyright && uv run ty check .` (attach output/excerpt)
+- [x] Run lint/typecheck: `uv run ruff check . && uv run pyright && uv run ty check .` (attach output/excerpt)
 - [ ] Run unit/integration/contract tests: `uv run pytest -q tests/unit_tests/test_catalog.py tests/unit_tests/test_app_boot.py tests/contract_tests/test_openai_models.py tests/contract_tests/test_anthropic_models.py tests/integration_tests/test_models.py --no-cov` (attach output/excerpt)
-- [ ] Run full regression suite: `uv run pytest -q` (attach output/excerpt)
+- [x] Run full regression suite: `uv run pytest -q` (attach output/excerpt)
 - [ ] Capture live metadata evidence for representative models
 - [ ] Capture Codex/Claude tolerance smoke-test evidence for the additive `copilot` object:
   - versions captured
@@ -94,8 +98,13 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 
 ## Evidence Log
 Paste concise evidence here (commands + key lines).
-- pending
+- `uv run ruff format --check .` -> all files formatted
+- `uv run ruff check .` -> all checks passed
+- `uv run ty check .` -> all checks passed
+- `uv run pyright` -> 0 errors, 0 warnings
+- `uv run pytest -q` -> `150 passed, 2 skipped`, coverage `93.73%`
+- Claude Opus 4.6 1M pre-commit review -> final review reported `Findings: 0`
 
 ## Result
-- Outcome: pending
-- Follow-ups (if any): pending
+- Outcome: Item 1 ready to commit
+- Follow-ups (if any): Item 2 OpenAI `/models` metadata exposure after this commit
