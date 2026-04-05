@@ -12,6 +12,7 @@ from scripts.config_claude import (
     ConfigClaudeOptions,
     build_claude_env_overrides,
     parse_args,
+    resolve_claude_model_selector,
     run_config_claude,
     select_default_claude_model,
     update_claude_settings_payload,
@@ -121,6 +122,7 @@ def test_run_config_claude_updates_settings_and_creates_backup(
         ),
     ]
     assert health_checks == ['http://127.0.0.1:28080/_internal/health']
+    assert payload['model'] == 'claude-sonnet-4.6'
     assert payload['permissions'] == {'mode': 'default'}
     assert payload['env']['KEEP_ME'] == '1'
     assert payload['env']['ANTHROPIC_BASE_URL'] == 'http://127.0.0.1:28080/anthropic'
@@ -209,6 +211,7 @@ def test_run_config_claude_reuses_matching_running_container(
 
     payload = json.loads(settings_path.read_text(encoding='utf-8'))
     assert result.model == 'claude-sonnet-4.6'
+    assert payload['model'] == 'claude-sonnet-4.6'
     assert payload['env']['ANTHROPIC_MODEL'] == 'claude-sonnet-4.6'
     assert restart_calls == []
     assert health_checks == ['http://127.0.0.1:28080/_internal/health']
@@ -351,6 +354,7 @@ def test_run_config_claude_validates_explicit_model(
         (tmp_path / '.claude' / 'settings.json').read_text(encoding='utf-8')
     )
     assert result.model == 'claude-opus-4.1'
+    assert payload['model'] == 'claude-opus-4.1'
     assert payload['env']['ANTHROPIC_MODEL'] == 'claude-opus-4.1'
     assert payload['env']['ANTHROPIC_DEFAULT_OPUS_MODEL'] == 'claude-opus-4.1'
 
@@ -452,6 +456,7 @@ def test_update_claude_settings_payload_preserves_unrelated_fields() -> None:
     )
 
     assert updated['permissions'] == {'mode': 'acceptEdits'}
+    assert updated['model'] == 'claude-sonnet-4.6'
     assert updated['env'] == {
         'KEEP_ME': '1',
         'ANTHROPIC_BASE_URL': 'http://127.0.0.1:8000/anthropic',
@@ -498,10 +503,49 @@ def test_build_claude_env_overrides_keeps_explicit_1m_opus_as_family_default() -
     assert overrides == {
         'ANTHROPIC_BASE_URL': 'http://127.0.0.1:8000/anthropic',
         'ANTHROPIC_AUTH_TOKEN': 'github-token',
-        'ANTHROPIC_MODEL': 'claude-opus-4.6-1m',
+        'ANTHROPIC_MODEL': 'opus[1m]',
         'ANTHROPIC_DEFAULT_OPUS_MODEL': 'claude-opus-4.6-1m',
         'ANTHROPIC_DEFAULT_SONNET_MODEL': 'claude-sonnet-4.6',
         'ANTHROPIC_DEFAULT_HAIKU_MODEL': 'claude-haiku-4.5',
+    }
+
+
+def test_resolve_claude_model_selector_maps_known_1m_variants() -> None:
+    """Verify known 1M variants map to Claude Code's built-in selectors."""
+    assert (
+        resolve_claude_model_selector(selected_model='claude-opus-4.6-1m') == 'opus[1m]'
+    )
+    assert (
+        resolve_claude_model_selector(selected_model='claude-sonnet-4.6-1m')
+        == 'sonnet[1m]'
+    )
+    assert (
+        resolve_claude_model_selector(selected_model='claude-opus-4.6')
+        == 'claude-opus-4.6'
+    )
+
+
+def test_update_claude_settings_payload_uses_1m_selector_for_known_variant() -> None:
+    """Verify persisted Claude settings use a 1M selector for known 1M variants."""
+    updated = update_claude_settings_payload(
+        settings_payload={},
+        base_url='http://127.0.0.1:8000/anthropic',
+        github_token='github-token',  # noqa: S106 - deterministic test token
+        model='claude-opus-4.6-1m',
+        visible_models=[
+            'claude-opus-4.6',
+            'claude-opus-4.6-1m',
+            'claude-sonnet-4.6',
+        ],
+    )
+
+    assert updated['model'] == 'opus[1m]'
+    assert updated['env'] == {
+        'ANTHROPIC_BASE_URL': 'http://127.0.0.1:8000/anthropic',
+        'ANTHROPIC_AUTH_TOKEN': 'github-token',
+        'ANTHROPIC_MODEL': 'opus[1m]',
+        'ANTHROPIC_DEFAULT_OPUS_MODEL': 'claude-opus-4.6-1m',
+        'ANTHROPIC_DEFAULT_SONNET_MODEL': 'claude-sonnet-4.6',
     }
 
 

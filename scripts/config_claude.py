@@ -402,6 +402,7 @@ def update_claude_settings_payload(
         msg = 'Invalid existing Claude settings: `env` must be a JSON object.'
         raise ConfigClaudeError(msg)
 
+    model_selector = resolve_claude_model_selector(selected_model=model)
     env_payload.update(
         build_claude_env_overrides(
             base_url=base_url,
@@ -411,6 +412,7 @@ def update_claude_settings_payload(
         )
     )
     env_payload.pop('ANTHROPIC_API_KEY', None)
+    updated_payload['model'] = model_selector
     updated_payload['env'] = env_payload
     return updated_payload
 
@@ -434,10 +436,11 @@ def build_claude_env_overrides(
         A JSON-like mapping of Claude env keys to persisted values.
 
     """
+    model_selector = resolve_claude_model_selector(selected_model=model)
     env_overrides: dict[str, object] = {
         'ANTHROPIC_BASE_URL': base_url,
         'ANTHROPIC_AUTH_TOKEN': github_token,
-        'ANTHROPIC_MODEL': model,
+        'ANTHROPIC_MODEL': model_selector,
     }
 
     tier_defaults = {
@@ -462,6 +465,30 @@ def build_claude_env_overrides(
     )
 
     return env_overrides
+
+
+def resolve_claude_model_selector(*, selected_model: str) -> str:
+    """Return the Claude Code selector that should activate the chosen model.
+
+    Claude Code recognizes 1M context through built-in selectors such as
+    ``opus[1m]`` and ``sonnet[1m]``. When the provider exposes Copilot-specific
+    runtime model IDs for those variants, persist the selector Claude Code
+    understands while separately pinning the family default environment
+    variables to the concrete provider model ID.
+
+    Args:
+        selected_model: The concrete Claude-family model visible from the local
+            provider.
+
+    Returns:
+        A Claude Code model selector string that activates the requested model.
+
+    """
+    one_million_selectors = {
+        'claude-opus-4.6-1m': 'opus[1m]',
+        'claude-sonnet-4.6-1m': 'sonnet[1m]',
+    }
+    return one_million_selectors.get(selected_model, selected_model)
 
 
 def resolve_claude_tier_default_model(
