@@ -56,7 +56,7 @@
     - `tests/contract_tests/test_openai_models.py` proves the nested serialized `copilot` JSON shape
     - `tests/integration_tests/test_models.py` asserts live container responses include additive `copilot` metadata
     - Codex and Claude tolerance smoke tests both completed minimal prompts successfully against an isolated current-image container
-- [ ] Item 3: Anthropic `/models` metadata exposure PR
+- [x] Item 3: Anthropic `/models` metadata exposure PR
   - Acceptance criteria:
     - `GET /anthropic/v1/models` model entries gain the same nested `copilot` metadata
     - Anthropic translation stays consistent with the shared catalog snapshot
@@ -64,7 +64,12 @@
     - Anthropic-facing tests prove runtime metadata is serialized correctly
     - PR2 is already merged, since Anthropic exposure depends on the shared enriched OpenAI-facing model-card shape
   - Evidence:
-    - pending
+    - `AnthropicModelInfo` now exposes optional nested `copilot` metadata
+    - Anthropic route now uses `response_model_exclude_none=True` so absent metadata is omitted instead of serialized as `null`
+    - Anthropic translation now prefers `copilot.name` for `display_name` and falls back to the prior identifier formatter when runtime name is absent
+    - `tests/contract_tests/test_anthropic_models.py` proves both runtime-name preference and fallback behavior together with nested metadata serialization
+    - `tests/integration_tests/test_models.py` asserts OpenAI and Anthropic model IDs stay aligned and that Anthropic responses include additive `copilot` metadata
+    - Focused Claude smoke test against an isolated current-image container fetched `/anthropic/v1/models` and completed `POST /anthropic/v1/messages 200`
 - [ ] Item 4: Cleanup/docs/validation PR
   - Acceptance criteria:
     - directly related docs are refreshed
@@ -111,7 +116,9 @@ Paste concise evidence here (commands + key lines).
 - Claude Opus 4.6 1M pre-commit review -> final review reported `Findings: 0`
 - Codex tolerance smoke -> `codex-cli 0.118.0`, config helper discovered live models from `/openai/v1/models`, `codex exec` returned `OK`, container log recorded `POST /openai/v1/responses 200`
 - Claude tolerance smoke -> `Claude Code 2.1.84`, config helper discovered live models from `/anthropic/v1/models`, `claude -p` returned `OK`, container log recorded `POST /anthropic/v1/messages 200`
+- PR3 full validation -> `155 passed, 2 skipped`, coverage `93.75%`
+- Claude Opus 4.6 1M PR3 review -> `Findings: 0`
 
 ## Result
-- Outcome: Items 1-2 ready to commit; PR2 validated and tolerance-checked
-- Follow-ups (if any): Item 3 Anthropic `/models` metadata exposure after this commit
+- Outcome: Items 1-3 ready to commit; Anthropic metadata exposure validated
+- Follow-ups (if any): Item 4 cleanup/docs/final validation after this commit

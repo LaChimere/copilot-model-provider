@@ -29,6 +29,7 @@ from copilot_model_provider.core.models import (
     AnthropicUsage,
     CanonicalChatMessage,
     CanonicalChatRequest,
+    OpenAIModelCard,
     OpenAIModelListResponse,
     RuntimeCompletion,
 )
@@ -95,8 +96,9 @@ def build_anthropic_model_list_response(
     anthropic_models = [
         AnthropicModelInfo(
             id=model.id,
-            display_name=_build_anthropic_display_name(model_id=model.id),
+            display_name=_build_anthropic_display_name(model=model),
             created_at=_format_anthropic_created_at(created=model.created),
+            copilot=model.copilot,
         )
         for model in openai_response.data
     ]
@@ -347,15 +349,19 @@ def _normalize_stop_reason(
     return 'end_turn'
 
 
-def _build_anthropic_display_name(*, model_id: str) -> str:
-    """Build a readable display name from one provider-exposed model identifier."""
+def _build_anthropic_display_name(*, model: OpenAIModelCard) -> str:
+    """Build a readable display name from one provider-exposed model card."""
+    runtime_name = model.copilot.name if model.copilot is not None else None
+    if runtime_name is not None:
+        return runtime_name
+
     return ' '.join(
         (
             part.upper()
             if part.isalpha() and len(part) <= _DISPLAY_NAME_ACRONYM_MAX_LENGTH
             else part.capitalize()
         )
-        for part in model_id.split('-')
+        for part in model.id.split('-')
     )
 
 

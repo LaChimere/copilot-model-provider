@@ -183,6 +183,7 @@ class AnthropicModelInfo(BaseModel):
     type: Literal['model'] = 'model'
     display_name: str = Field(min_length=1)
     created_at: str = Field(min_length=1)
+    copilot: CopilotModelMetadata | None = None
 
 
 class AnthropicModelListResponse(BaseModel):

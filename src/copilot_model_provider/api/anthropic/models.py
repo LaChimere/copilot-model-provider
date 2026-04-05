@@ -55,4 +55,5 @@ def install_anthropic_models_route(
         _list_models,
         methods=['GET'],
         response_model=AnthropicModelListResponse,
+        response_model_exclude_none=True,
     )
