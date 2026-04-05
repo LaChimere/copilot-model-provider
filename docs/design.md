@@ -38,6 +38,7 @@ Behavior:
 
 - lists the live model IDs visible to the current auth context
 - returns an OpenAI-compatible model list response
+- includes an additive nested `copilot` object when the runtime supplies model metadata
 - resolves auth the same way execution routes do:
   - `Authorization: Bearer ...`
   - otherwise the configured runtime fallback token
@@ -50,6 +51,8 @@ Behavior:
 
 - reuses the shared live model catalog already built for the active auth context
 - returns an Anthropic-compatible model list response
+- includes the same additive nested `copilot` object when metadata is available
+- prefers runtime `copilot.name` for `display_name` and falls back to the model-id formatter when absent
 - resolves auth from either:
   - `Authorization: Bearer ...`
   - `X-Api-Key`
@@ -163,7 +166,7 @@ Implemented in `src/copilot_model_provider/runtimes/`.
 Responsibilities:
 
 - own the `github-copilot-sdk` integration
-- list live model IDs for one auth context
+- list live model snapshots for one auth context, including runtime-supplied metadata when available
 - create ephemeral Copilot sessions per request
 - execute non-streaming and streaming turns
 - translate raw runtime failures into provider errors
@@ -252,7 +255,7 @@ The runtime path is therefore message-normalized at the provider boundary but pr
 
 Implemented in `src/copilot_model_provider/core/catalog.py`.
 
-A catalog snapshot is built dynamically from the live Copilot model IDs visible to the current auth context.
+A catalog snapshot is built dynamically from the live Copilot models visible to the current auth context.
 
 Each entry maps:
 
@@ -260,6 +263,7 @@ Each entry maps:
 - a runtime name
 - an owner label
 - a concrete runtime model identifier
+- optional provider-owned `copilot` metadata preserved from runtime discovery
 
 In the current implementation, the public model ID and runtime model identifier are the same string.
 
@@ -274,8 +278,8 @@ Behavior:
 - validates a public model ID against the live model set for the current auth context
 - resolves that model ID to `ResolvedRoute(runtime, runtime_model_id)`
 - raises a structured `model_not_found` error for unknown model IDs
-- produces the OpenAI-compatible `/openai/v1/models` payload from the catalog
-- also supports Anthropic-compatible `/anthropic/v1/models` translation from the same live catalog
+- produces the OpenAI-compatible `/openai/v1/models` payload from the catalog, including additive nested `copilot` metadata when present
+- also supports Anthropic-compatible `/anthropic/v1/models` translation from the same live catalog, preserving the same `copilot` metadata and preferring runtime names for `display_name`
 - caches auth-context-specific catalog snapshots for a short TTL so repeated requests do not rediscover the same upstream model set on every call
 - coalesces concurrent requests for the same auth context so only one in-flight live-model discovery runs at a time
 

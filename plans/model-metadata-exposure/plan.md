@@ -26,7 +26,7 @@
 Mark each as **Verified** or **Unverified**.
 - [x] (Verified) `github-copilot-sdk` `CopilotClient.list_models()` returns metadata-rich `ModelInfo` objects, including limits/capabilities/policy/billing for at least some live models.
 - [x] (Verified) the current provider truncates runtime discovery to IDs before building the cached model catalog.
-- [ ] (Unverified) current Codex/Claude clients tolerate additive nested objects on model-list items without rejecting the payload.
+- [x] (Verified) current Codex/Claude clients tolerate additive nested objects on model-list items without rejecting the payload.
 - [x] (Verified) `pyproject.toml` currently sets `requires-python = ">=3.14"`.
 
 ## Options Considered (if applicable)
@@ -56,7 +56,7 @@ Mark each as **Verified** or **Unverified**.
   - rejected for v1 because it weakens the "upper-layer discoverability" goal
 
 ## Proposed Approach (checklist)
-- [ ] Step 1: build metadata-preserving runtime and catalog plumbing in a base PR
+- [x] Step 1: build metadata-preserving runtime and catalog plumbing in a base PR
   - Acceptance criteria:
     - runtime discovery exposes normalized metadata-rich model snapshots through a new additive runtime method
     - `RuntimeProtocol.list_model_ids()` remains available as a compatibility shim in this PR
@@ -66,20 +66,20 @@ Mark each as **Verified** or **Unverified**.
     - auth-context caching still works and remains token-isolated
     - existing `list_model_ids()` fake runtimes in contract/unit tests remain valid unless they are directly exercising the new metadata method
     - current public `/models` responses stay behaviorally unchanged in this PR
-- [ ] Step 2: expose the additive nested `copilot` object on `GET /openai/v1/models`
+- [x] Step 2: expose the additive nested `copilot` object on `GET /openai/v1/models`
   - Acceptance criteria:
     - OpenAI model cards retain current required fields and add optional `copilot` metadata
     - the `copilot` object matches the approved schema exactly
     - only runtime-supplied metadata is serialized for each model
     - Codex and Claude tolerance checks pass before this PR is merged; if they fail, stop and return to design review instead of merging
     - unit and integration tests prove metadata appears on the OpenAI facade without changing model ordering
-- [ ] Step 3: expose the same nested `copilot` object on `GET /anthropic/v1/models`
+- [x] Step 3: expose the same nested `copilot` object on `GET /anthropic/v1/models`
   - Acceptance criteria:
     - Anthropic model entries retain current required fields and add optional `copilot` metadata
     - Anthropic translation reuses the same shared catalog metadata shape as the OpenAI facade
     - Anthropic `display_name` prefers runtime `copilot.name` and falls back to the existing formatter when the runtime omits `name`
     - tests prove OpenAI and Anthropic views stay consistent for the same auth-context model snapshot
-- [ ] Step 4: refresh docs and complete rollout validation in a cleanup PR
+- [x] Step 4: refresh docs and complete rollout validation in a cleanup PR
   - Acceptance criteria:
     - directly related docs are updated to describe the additive `copilot` metadata object
     - targeted and full validation cover runtime plumbing plus both model-list routes
@@ -121,30 +121,30 @@ Mark each as **Verified** or **Unverified**.
 - [ ] L3
 
 ### Evidence to produce
-- [ ] Tests to run (exact commands):
+- [x] Tests to run (exact commands):
   - `uv run ruff check .`
   - `uv run pyright`
   - `uv run ty check .`
   - `uv run pytest -q tests/unit_tests/test_catalog.py tests/unit_tests/test_app_boot.py tests/contract_tests/test_openai_models.py tests/contract_tests/test_anthropic_models.py tests/integration_tests/test_models.py --no-cov`
   - `uv run pytest -q`
-- [ ] Before/after behavior proof:
+- [x] Before/after behavior proof:
   - before: `/openai/v1/models` and `/anthropic/v1/models` return only minimal model-card fields
   - after: the same endpoints return additive nested `copilot` metadata for models whose runtime snapshot includes metadata
   - after: Anthropic `display_name` uses runtime `name` when available
-- [ ] Logs/traces/metrics to capture:
+- [x] Logs/traces/metrics to capture:
   - live `list_models()` evidence for at least one 1M model and one non-1M model
   - Codex and Claude tolerance smoke-test evidence against the additive nested `copilot` object
 
 ### Client tolerance check procedure
-- [ ] Capture the locally installed client versions with `codex --version` and `claude --version`
-- [ ] Point each client at a local provider instance serving the enriched OpenAI model-list response (using the existing local config scripts where applicable)
-- [ ] Trigger each client's normal model discovery path and one minimal prompt send using a model that remains visible in the enriched list
-- [ ] Pass criteria:
+- [x] Capture the locally installed client versions with `codex --version` and `claude --version`
+- [x] Point each client at a local provider instance serving the enriched OpenAI model-list response (using the existing local config scripts where applicable)
+- [x] Trigger each client's normal model discovery path and one minimal prompt send using a model that remains visible in the enriched list
+- [x] Pass criteria:
   - model discovery succeeds with no parse/schema errors in client output or logs
   - the client can select/use the configured model after reading the enriched `/models` response
-- [ ] Failure criteria:
+- [x] Failure criteria:
   - JSON parsing, schema validation, or startup/model-discovery failure attributable to the additive nested `copilot` object
-- [ ] Blocker rule:
+- [x] Blocker rule:
   - if either client cannot be exercised locally or fails this check, do not merge PR2/PR3; stop and return to design review with the captured evidence
 
 ## Rollback / Recovery (if applicable)

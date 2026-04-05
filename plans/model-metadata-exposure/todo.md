@@ -16,11 +16,11 @@
 
 ## Checklist
 ### Preparation
-- [ ] Sync/confirm baseline (main branch / clean state)
-- [ ] Confirm verification level target (L2)
-- [ ] Reconfirm live metadata evidence for at least one model with 1M context and one standard-context model
-- [ ] Capture `codex --version` and `claude --version` for the tolerance-check evidence
-- [ ] Confirm the local tolerance-check path:
+- [x] Sync/confirm baseline (main branch / clean state)
+- [x] Confirm verification level target (L2)
+- [x] Reconfirm live metadata evidence for at least one model with 1M context and one standard-context model
+- [x] Capture `codex --version` and `claude --version` for the tolerance-check evidence
+- [x] Confirm the local tolerance-check path:
   - provider serves enriched OpenAI `/models`
   - Codex and Claude are pointed at that provider via the existing local config/scripts flow
   - each client completes model discovery and one minimal prompt send without parse/schema errors
@@ -70,18 +70,22 @@
     - `tests/contract_tests/test_anthropic_models.py` proves both runtime-name preference and fallback behavior together with nested metadata serialization
     - `tests/integration_tests/test_models.py` asserts OpenAI and Anthropic model IDs stay aligned and that Anthropic responses include additive `copilot` metadata
     - Focused Claude smoke test against an isolated current-image container fetched `/anthropic/v1/models` and completed `POST /anthropic/v1/messages 200`
-- [ ] Item 4: Cleanup/docs/validation PR
+- [x] Item 4: Cleanup/docs/validation PR
   - Acceptance criteria:
     - directly related docs are refreshed
     - targeted and full validation pass
     - no scope creep or unrelated refactors are mixed in
   - Evidence:
-    - pending
+    - Updated `README.md` compatibility notes to document additive nested `copilot` metadata on both `/models` endpoints
+    - Updated `docs/design.md` to reflect metadata-rich model discovery, shared `copilot` model-list exposure, and Anthropic runtime-name-aware `display_name`
+    - Refreshed `plans/model-metadata-exposure/plan.md` and this checklist to record rollout completion
+    - Final PR4 full validation passed: `155 passed, 2 skipped`, coverage `93.75%`
+    - Final PR4 Claude Opus 4.6 1M review reported `Findings: 0`
 
 ### Acceptance Gate (before proposing PR)
-- [ ] All acceptance criteria above are met with evidence
-- [ ] Diff is consistent with approved plan (no scope creep, no missing pieces)
-- [ ] Applicable verification level executed
+- [x] All acceptance criteria above are met with evidence
+- [x] Diff is consistent with approved plan (no scope creep, no missing pieces)
+- [x] Applicable verification level executed
 
 If any check fails, follow the recovery flow defined in `AGENTS.md` (Verification rules → Acceptance criteria):
 1. Can fix directly → fix and re-verify
@@ -91,9 +95,9 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 
 ### Verification (Evidence)
 - [x] Run lint/typecheck: `uv run ruff check . && uv run pyright && uv run ty check .` (attach output/excerpt)
-- [ ] Run unit/integration/contract tests: `uv run pytest -q tests/unit_tests/test_catalog.py tests/unit_tests/test_app_boot.py tests/contract_tests/test_openai_models.py tests/contract_tests/test_anthropic_models.py tests/integration_tests/test_models.py --no-cov` (attach output/excerpt)
+- [x] Run unit/integration/contract tests: `uv run pytest -q tests/unit_tests/test_catalog.py tests/unit_tests/test_app_boot.py tests/contract_tests/test_openai_models.py tests/contract_tests/test_anthropic_models.py tests/integration_tests/test_models.py --no-cov` (attach output/excerpt)
 - [x] Run full regression suite: `uv run pytest -q` (attach output/excerpt)
-- [ ] Capture live metadata evidence for representative models
+- [x] Capture live metadata evidence for representative models
 - [x] Capture Codex/Claude tolerance smoke-test evidence for the additive `copilot` object:
   - versions captured
   - model discovery succeeds
@@ -101,10 +105,10 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
   - no parse/schema errors appear in client output/logs
 
 ### Review / Packaging
-- [ ] Summarize changes (what/why)
-- [ ] Confirm no scope creep / unrelated cleanup
-- [ ] Check whether related docs need updating (use `refresh-related-docs` if behavior, config, or API changed)
-- [ ] Prepare PR description / changelog notes (if applicable)
+- [x] Summarize changes (what/why)
+- [x] Confirm no scope creep / unrelated cleanup
+- [x] Check whether related docs need updating (use `refresh-related-docs` if behavior, config, or API changed)
+- [x] Prepare PR description / changelog notes (if applicable)
 
 ## Evidence Log
 Paste concise evidence here (commands + key lines).
@@ -112,13 +116,16 @@ Paste concise evidence here (commands + key lines).
 - `uv run ruff check .` -> all checks passed
 - `uv run ty check .` -> all checks passed
 - `uv run pyright` -> 0 errors, 0 warnings
-- `uv run pytest -q` -> `153 passed, 2 skipped`, coverage `93.74%`
+- `uv run pytest -q` -> `155 passed, 2 skipped`, coverage `93.75%`
 - Claude Opus 4.6 1M pre-commit review -> final review reported `Findings: 0`
 - Codex tolerance smoke -> `codex-cli 0.118.0`, config helper discovered live models from `/openai/v1/models`, `codex exec` returned `OK`, container log recorded `POST /openai/v1/responses 200`
 - Claude tolerance smoke -> `Claude Code 2.1.84`, config helper discovered live models from `/anthropic/v1/models`, `claude -p` returned `OK`, container log recorded `POST /anthropic/v1/messages 200`
 - PR3 full validation -> `155 passed, 2 skipped`, coverage `93.75%`
 - Claude Opus 4.6 1M PR3 review -> `Findings: 0`
+- PR4 docs refresh -> `README.md` and `docs/design.md` updated for nested `copilot` metadata and Anthropic runtime-name-aware `display_name`
+- PR4 full validation -> `155 passed, 2 skipped`, coverage `93.75%`
+- Claude Opus 4.6 1M PR4 review -> `Findings: 0`
 
 ## Result
-- Outcome: Items 1-3 ready to commit; Anthropic metadata exposure validated
-- Follow-ups (if any): Item 4 cleanup/docs/final validation after this commit
+- Outcome: All four rollout items complete
+- Follow-ups (if any): none
