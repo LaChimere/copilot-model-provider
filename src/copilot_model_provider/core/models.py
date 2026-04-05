@@ -162,6 +162,7 @@ class OpenAIModelCard(BaseModel):
     object: Literal['model'] = 'model'
     created: int = Field(ge=0, default=0)
     owned_by: str = Field(min_length=1)
+    copilot: CopilotModelMetadata | None = None
 
 
 class OpenAIModelListResponse(BaseModel):

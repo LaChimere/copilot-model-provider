@@ -104,7 +104,8 @@ class ModelRouter(ModelRouterProtocol):
 
         Returns:
             An ``OpenAIModelListResponse`` containing one card per live model ID
-            visible to the supplied auth context, preserving runtime ordering.
+            visible to the supplied auth context, preserving runtime ordering and
+            including optional runtime-sourced Copilot metadata when available.
 
         """
         model_catalog = await self._build_model_catalog(
@@ -116,6 +117,7 @@ class ModelRouter(ModelRouterProtocol):
                     id=entry.alias,
                     created=entry.created,
                     owned_by=entry.owned_by,
+                    copilot=entry.copilot,
                 )
                 for entry in model_catalog.list_entries()
             ]

@@ -42,7 +42,7 @@
     - Switched `ModelRouter` to metadata-rich runtime discovery without changing `OpenAIModelCard` construction
     - `CopilotRuntime.list_models()` now preserves normalized runtime metadata and `list_model_ids()` delegates to it
     - Added unit coverage for metadata preservation and protocol-shim compatibility in `tests/unit_tests/test_catalog.py` and `tests/unit_tests/test_copilot_runtime.py`
-- [ ] Item 2: OpenAI `/models` metadata exposure PR
+- [x] Item 2: OpenAI `/models` metadata exposure PR
   - Acceptance criteria:
     - `GET /openai/v1/models` model cards gain optional nested `copilot` metadata
     - the nested `copilot` object matches the approved schema exactly
@@ -50,7 +50,12 @@
     - Codex and Claude tolerance checks pass before merge using the documented local smoke-test procedure
     - OpenAI-facing tests prove runtime metadata is serialized correctly
   - Evidence:
-    - pending
+    - `OpenAIModelCard` now exposes optional `copilot` metadata while preserving existing required fields
+    - OpenAI route now uses `response_model_exclude_none=True` so absent metadata is omitted instead of serialized as `null`
+    - `tests/unit_tests/test_catalog.py` covers mixed metadata/no-metadata model-card responses
+    - `tests/contract_tests/test_openai_models.py` proves the nested serialized `copilot` JSON shape
+    - `tests/integration_tests/test_models.py` asserts live container responses include additive `copilot` metadata
+    - Codex and Claude tolerance smoke tests both completed minimal prompts successfully against an isolated current-image container
 - [ ] Item 3: Anthropic `/models` metadata exposure PR
   - Acceptance criteria:
     - `GET /anthropic/v1/models` model entries gain the same nested `copilot` metadata
@@ -84,7 +89,7 @@ If any check fails, follow the recovery flow defined in `AGENTS.md` (Verificatio
 - [ ] Run unit/integration/contract tests: `uv run pytest -q tests/unit_tests/test_catalog.py tests/unit_tests/test_app_boot.py tests/contract_tests/test_openai_models.py tests/contract_tests/test_anthropic_models.py tests/integration_tests/test_models.py --no-cov` (attach output/excerpt)
 - [x] Run full regression suite: `uv run pytest -q` (attach output/excerpt)
 - [ ] Capture live metadata evidence for representative models
-- [ ] Capture Codex/Claude tolerance smoke-test evidence for the additive `copilot` object:
+- [x] Capture Codex/Claude tolerance smoke-test evidence for the additive `copilot` object:
   - versions captured
   - model discovery succeeds
   - minimal prompt send succeeds
@@ -102,9 +107,11 @@ Paste concise evidence here (commands + key lines).
 - `uv run ruff check .` -> all checks passed
 - `uv run ty check .` -> all checks passed
 - `uv run pyright` -> 0 errors, 0 warnings
-- `uv run pytest -q` -> `150 passed, 2 skipped`, coverage `93.73%`
+- `uv run pytest -q` -> `153 passed, 2 skipped`, coverage `93.74%`
 - Claude Opus 4.6 1M pre-commit review -> final review reported `Findings: 0`
+- Codex tolerance smoke -> `codex-cli 0.118.0`, config helper discovered live models from `/openai/v1/models`, `codex exec` returned `OK`, container log recorded `POST /openai/v1/responses 200`
+- Claude tolerance smoke -> `Claude Code 2.1.84`, config helper discovered live models from `/anthropic/v1/models`, `claude -p` returned `OK`, container log recorded `POST /anthropic/v1/messages 200`
 
 ## Result
-- Outcome: Item 1 ready to commit
-- Follow-ups (if any): Item 2 OpenAI `/models` metadata exposure after this commit
+- Outcome: Items 1-2 ready to commit; PR2 validated and tolerance-checked
+- Follow-ups (if any): Item 3 Anthropic `/models` metadata exposure after this commit

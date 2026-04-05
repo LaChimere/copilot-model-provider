@@ -14,6 +14,8 @@ from copilot_model_provider.core.catalog import (
 )
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
+    CopilotModelCapabilities,
+    CopilotModelLimits,
     CopilotModelMetadata,
     ModelCatalogEntry,
     ResolvedRoute,
@@ -82,6 +84,31 @@ class _FakeRuntime(RuntimeProtocol):
         """Reject unexpected streaming calls in router-only tests."""
         del kwargs
         raise AssertionError('stream_chat should not be called in this test')
+
+
+class _FakeMetadataRuntime(_FakeRuntime):
+    """Fake runtime that exposes metadata-rich model discovery."""
+
+    @override
+    async def list_models(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[RuntimeDiscoveredModel, ...]:
+        """Return deterministic metadata-rich live-model descriptors."""
+        self.tokens_seen.append(runtime_auth_token)
+        return (
+            RuntimeDiscoveredModel(
+                id='claude-opus-4.6-1m',
+                copilot=CopilotModelMetadata(
+                    name='Claude Opus 4.6 (1M context)(Internal only)',
+                    capabilities=CopilotModelCapabilities(
+                        limits=CopilotModelLimits(max_context_window_tokens=1000000)
+                    ),
+                ),
+            ),
+            RuntimeDiscoveredModel(id='gpt-5.4'),
+        )
 
 
 @dataclass
@@ -173,6 +200,26 @@ async def test_router_lists_openai_compatible_model_cards() -> None:
     assert response.object == 'list'
     assert [item.id for item in response.data] == ['gpt-5.4', 'gpt-5.4-mini']
     assert all(item.object == 'model' for item in response.data)
+
+
+@pytest.mark.asyncio
+async def test_router_preserves_optional_copilot_metadata_in_model_cards() -> None:
+    """Verify the router includes provider-owned metadata on OpenAI model cards."""
+    router = ModelRouter(runtime=_FakeMetadataRuntime(), owned_by='catalog-test')
+
+    response = await router.list_models_response()
+
+    assert response.data[0].id == 'claude-opus-4.6-1m'
+    assert response.data[0].copilot is not None
+    assert (
+        response.data[0].copilot.name == 'Claude Opus 4.6 (1M context)(Internal only)'
+    )
+    assert response.data[0].copilot.capabilities is not None
+    limits = response.data[0].copilot.capabilities.limits
+    assert limits is not None
+    assert limits.max_context_window_tokens == 1000000
+    assert response.data[1].id == 'gpt-5.4'
+    assert response.data[1].copilot is None
 
 
 @pytest.mark.asyncio
