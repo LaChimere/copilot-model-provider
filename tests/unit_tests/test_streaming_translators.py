@@ -11,6 +11,7 @@ import copilot_model_provider.streaming.translators as streaming_translators
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantTurnCompleteEvent,
+    AssistantUsageEvent,
     StreamFinishReason,
     StreamingErrorEvent,
 )
@@ -87,6 +88,46 @@ def test_translate_session_event_normalizes_turn_end_finish_reasons(
     )
 
     assert stream_event == AssistantTurnCompleteEvent(finish_reason=expected)
+
+
+def test_translate_session_event_preserves_turn_end_token_counts() -> None:
+    """Verify that turn-end token accounting is retained for downstream usage."""
+    stream_event = translate_session_event(
+        event=_build_session_event(
+            event_type='assistant.turn_end',
+            data={
+                'reason': 'stop',
+                'inputTokens': 9,
+                'outputTokens': 6,
+            },
+        )
+    )
+
+    assert stream_event == AssistantTurnCompleteEvent(
+        finish_reason='stop',
+        prompt_tokens=9,
+        completion_tokens=6,
+    )
+
+
+def test_translate_session_event_maps_assistant_usage_to_canonical_usage_event() -> (
+    None
+):
+    """Verify that assistant usage events remain available to Anthropic streaming."""
+    stream_event = translate_session_event(
+        event=_build_session_event(
+            event_type='assistant.usage',
+            data={
+                'inputTokens': 11,
+                'outputTokens': 2,
+            },
+        )
+    )
+
+    assert stream_event == AssistantUsageEvent(
+        prompt_tokens=11,
+        completion_tokens=2,
+    )
 
 
 def test_translate_session_event_maps_session_errors_to_canonical_error_events() -> (

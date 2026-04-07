@@ -129,24 +129,16 @@ def build_openai_responses_response_from_completion(
         An ``OpenAIResponse`` compatible with the minimal Codex-needed subset.
 
     """
-    usage = None
-    if (
-        completion.prompt_tokens is not None
-        and completion.completion_tokens is not None
-    ):
-        usage = OpenAIResponsesUsage(
-            input_tokens=completion.prompt_tokens,
-            output_tokens=completion.completion_tokens,
-            total_tokens=completion.prompt_tokens + completion.completion_tokens,
-        )
-
     return build_openai_responses_response_from_text(
         request=request,
         output_text=completion.output_text,
         response_id=response_id,
         conversation_id=conversation_id,
         created_at=created_at,
-        usage=usage,
+        usage=build_openai_responses_usage(
+            prompt_tokens=completion.prompt_tokens,
+            completion_tokens=completion.completion_tokens,
+        ),
     )
 
 
@@ -248,6 +240,7 @@ def build_openai_responses_completed_event(
     conversation_id: str | None = None,
     created_at: int | None = None,
     completed_at: int | None = None,
+    usage: OpenAIResponsesUsage | None = None,
 ) -> OpenAIResponsesCompletedEvent:
     """Build the terminal lifecycle event for one streamed response."""
     return OpenAIResponsesCompletedEvent(
@@ -260,7 +253,34 @@ def build_openai_responses_completed_event(
             created_at=created_at,
             completed_at=completed_at,
             status='completed',
+            usage=usage,
         ),
+    )
+
+
+def build_openai_responses_usage(
+    *,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+) -> OpenAIResponsesUsage | None:
+    """Build a Responses usage payload when token accounting is available.
+
+    Args:
+        prompt_tokens: Optional prompt token count reported by the runtime.
+        completion_tokens: Optional completion token count reported by the runtime.
+
+    Returns:
+        An ``OpenAIResponsesUsage`` payload when both counts are present; otherwise
+        ``None`` so callers can omit usage cleanly.
+
+    """
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+
+    return OpenAIResponsesUsage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
     )
 
 

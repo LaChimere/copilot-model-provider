@@ -31,6 +31,7 @@ from copilot_model_provider.core.responses import (
     build_openai_responses_output_item_done_event,
     build_openai_responses_output_text_delta_event,
     build_openai_responses_response_from_completion,
+    build_openai_responses_usage,
     build_response_id,
     normalize_openai_responses_request,
 )
@@ -204,6 +205,10 @@ async def _create_streaming_response(
 
             completed_at = int(time())
             final_text = ''.join(output_parts)
+            usage = build_openai_responses_usage(
+                prompt_tokens=stream_event.prompt_tokens,
+                completion_tokens=stream_event.completion_tokens,
+            )
             yield encode_openai_responses_event(
                 payload=build_openai_responses_content_part_done_event(
                     response_id=response_id,
@@ -228,6 +233,7 @@ async def _create_streaming_response(
                     sequence_number=sequence_number,
                     created_at=created_at,
                     completed_at=completed_at,
+                    usage=usage,
                 ).model_dump_json(exclude_none=True)
             )
             completion_emitted = True

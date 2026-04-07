@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, override, runtime_checkable
 
-from copilot_model_provider.core.catalog import build_live_model_catalog
+from copilot_model_provider.core.catalog import build_live_model_catalog_from_models
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     OpenAIModelCard,
@@ -104,7 +104,8 @@ class ModelRouter(ModelRouterProtocol):
 
         Returns:
             An ``OpenAIModelListResponse`` containing one card per live model ID
-            visible to the supplied auth context, preserving runtime ordering.
+            visible to the supplied auth context, preserving runtime ordering and
+            including optional runtime-sourced Copilot metadata when available.
 
         """
         model_catalog = await self._build_model_catalog(
@@ -116,6 +117,7 @@ class ModelRouter(ModelRouterProtocol):
                     id=entry.alias,
                     created=entry.created,
                     owned_by=entry.owned_by,
+                    copilot=entry.copilot,
                 )
                 for entry in model_catalog.list_entries()
             ]
@@ -182,13 +184,13 @@ class ModelRouter(ModelRouterProtocol):
             if cached_entry is not None and cached_entry.expires_at > now:
                 return cached_entry.catalog
 
-            model_ids = await self._runtime.list_model_ids(
+            models = await self._runtime.list_models(
                 runtime_auth_token=runtime_auth_token
             )
-            catalog = build_live_model_catalog(
+            catalog = build_live_model_catalog_from_models(
                 runtime=self._runtime.runtime_name,
                 owned_by=self._owned_by,
-                model_ids=model_ids,
+                models=models,
             )
             self._catalog_cache[cache_key] = _CatalogCacheEntry(
                 catalog=catalog,

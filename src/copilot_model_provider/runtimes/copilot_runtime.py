@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 from copilot import CopilotClient, PermissionRequestResult, SubprocessConfig
 from copilot.generated.session_events import (
@@ -18,8 +18,16 @@ from copilot_model_provider.core.chat import render_prompt
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
+    CopilotModelBilling,
+    CopilotModelCapabilities,
+    CopilotModelLimits,
+    CopilotModelMetadata,
+    CopilotModelPolicy,
+    CopilotModelSupports,
+    CopilotModelVisionLimits,
     ResolvedRoute,
     RuntimeCompletion,
+    RuntimeDiscoveredModel,
     RuntimeHealth,
 )
 from copilot_model_provider.runtimes.protocols import (
@@ -97,12 +105,12 @@ class CopilotRuntime(RuntimeProtocol):
         )
 
     @override
-    async def list_model_ids(
+    async def list_models(
         self,
         *,
         runtime_auth_token: str | None = None,
-    ) -> tuple[str, ...]:
-        """List the live Copilot model identifiers for one auth context."""
+    ) -> tuple[RuntimeDiscoveredModel, ...]:
+        """List the live Copilot model descriptors for one auth context."""
         resolved_client = await self._get_client_for_runtime_auth_token(
             runtime_auth_token=runtime_auth_token
         )
@@ -119,12 +127,17 @@ class CopilotRuntime(RuntimeProtocol):
             if resolved_client.stop_on_close:
                 await self._stop_client(resolved_client.client)
 
-        model_ids = [
-            model_id
-            for model in models
-            if isinstance((model_id := getattr(model, 'id', None)), str) and model_id
-        ]
-        return tuple(dict.fromkeys(model_ids))
+        return _normalize_runtime_models(models=models)
+
+    @override
+    async def list_model_ids(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[str, ...]:
+        """List the live Copilot model identifiers for one auth context."""
+        models = await self.list_models(runtime_auth_token=runtime_auth_token)
+        return tuple(model.id for model in models)
 
     @override
     async def complete_chat(
@@ -387,6 +400,254 @@ def _to_optional_int(value: int | float | str | None) -> int | None:
         return None
 
     return int(value)
+
+
+def _normalize_runtime_models(
+    *, models: Sequence[object]
+) -> tuple[RuntimeDiscoveredModel, ...]:
+    """Normalize and de-duplicate runtime-listed models while preserving order."""
+    normalized_models: list[RuntimeDiscoveredModel] = []
+    seen_model_ids: set[str] = set()
+    for model in models:
+        normalized_model = _normalize_runtime_model(model=model)
+        if normalized_model is None or normalized_model.id in seen_model_ids:
+            continue
+
+        seen_model_ids.add(normalized_model.id)
+        normalized_models.append(normalized_model)
+
+    return tuple(normalized_models)
+
+
+def _normalize_runtime_model(*, model: object) -> RuntimeDiscoveredModel | None:
+    """Normalize one runtime-listed model into the provider discovery shape."""
+    model_id = _to_optional_non_empty_string(getattr(model, 'id', None))
+    if model_id is None:
+        return None
+
+    return RuntimeDiscoveredModel(
+        id=model_id,
+        copilot=_normalize_copilot_model_metadata(model=model),
+    )
+
+
+def _normalize_copilot_model_metadata(*, model: object) -> CopilotModelMetadata | None:
+    """Normalize provider-owned metadata from one runtime-listed model object."""
+    name = _to_optional_non_empty_string(getattr(model, 'name', None))
+    capabilities = _normalize_copilot_model_capabilities(
+        capabilities=getattr(model, 'capabilities', None)
+    )
+    policy = _normalize_copilot_model_policy(policy=getattr(model, 'policy', None))
+    billing = _normalize_copilot_model_billing(billing=getattr(model, 'billing', None))
+    supported_reasoning_efforts = _normalize_string_list(
+        values=getattr(model, 'supported_reasoning_efforts', None)
+    )
+    default_reasoning_effort = _to_optional_non_empty_string(
+        getattr(model, 'default_reasoning_effort', None)
+    )
+    if (
+        name is None
+        and capabilities is None
+        and policy is None
+        and billing is None
+        and supported_reasoning_efforts is None
+        and default_reasoning_effort is None
+    ):
+        return None
+
+    return CopilotModelMetadata(
+        name=name,
+        capabilities=capabilities,
+        policy=policy,
+        billing=billing,
+        supported_reasoning_efforts=supported_reasoning_efforts,
+        default_reasoning_effort=default_reasoning_effort,
+    )
+
+
+def _normalize_copilot_model_capabilities(
+    *, capabilities: object
+) -> CopilotModelCapabilities | None:
+    """Normalize runtime capability metadata into the provider metadata shape."""
+    if capabilities is None:
+        return None
+
+    supports = _normalize_copilot_model_supports(
+        supports=getattr(capabilities, 'supports', None)
+    )
+    limits = _normalize_copilot_model_limits(
+        limits=getattr(capabilities, 'limits', None)
+    )
+    if supports is None and limits is None:
+        return None
+
+    return CopilotModelCapabilities(supports=supports, limits=limits)
+
+
+def _normalize_copilot_model_supports(
+    *, supports: object
+) -> CopilotModelSupports | None:
+    """Normalize runtime support flags into the provider metadata shape."""
+    if supports is None:
+        return None
+
+    vision = _to_optional_bool(getattr(supports, 'vision', None))
+    reasoning_effort = _to_optional_bool(getattr(supports, 'reasoning_effort', None))
+    if vision is None and reasoning_effort is None:
+        return None
+
+    return CopilotModelSupports(
+        vision=vision,
+        reasoning_effort=reasoning_effort,
+    )
+
+
+def _normalize_copilot_model_limits(*, limits: object) -> CopilotModelLimits | None:
+    """Normalize runtime limit metadata into the provider metadata shape."""
+    if limits is None:
+        return None
+
+    max_prompt_tokens = _to_optional_non_negative_int(
+        getattr(limits, 'max_prompt_tokens', None)
+    )
+    max_context_window_tokens = _to_optional_non_negative_int(
+        getattr(limits, 'max_context_window_tokens', None)
+    )
+    vision = _normalize_copilot_model_vision_limits(
+        vision_limits=getattr(limits, 'vision', None)
+    )
+    if (
+        max_prompt_tokens is None
+        and max_context_window_tokens is None
+        and vision is None
+    ):
+        return None
+
+    return CopilotModelLimits(
+        max_prompt_tokens=max_prompt_tokens,
+        max_context_window_tokens=max_context_window_tokens,
+        vision=vision,
+    )
+
+
+def _normalize_copilot_model_vision_limits(
+    *, vision_limits: object
+) -> CopilotModelVisionLimits | None:
+    """Normalize runtime vision limits into the provider metadata shape."""
+    if vision_limits is None:
+        return None
+
+    supported_media_types = _normalize_string_list(
+        values=getattr(vision_limits, 'supported_media_types', None)
+    )
+    max_prompt_images = _to_optional_non_negative_int(
+        getattr(vision_limits, 'max_prompt_images', None)
+    )
+    max_prompt_image_size = _to_optional_non_negative_int(
+        getattr(vision_limits, 'max_prompt_image_size', None)
+    )
+    if (
+        supported_media_types is None
+        and max_prompt_images is None
+        and max_prompt_image_size is None
+    ):
+        return None
+
+    return CopilotModelVisionLimits(
+        supported_media_types=supported_media_types,
+        max_prompt_images=max_prompt_images,
+        max_prompt_image_size=max_prompt_image_size,
+    )
+
+
+def _normalize_copilot_model_policy(*, policy: object) -> CopilotModelPolicy | None:
+    """Normalize runtime policy metadata into the provider metadata shape."""
+    if policy is None:
+        return None
+
+    state = _to_optional_non_empty_string(getattr(policy, 'state', None))
+    terms = _to_optional_non_empty_string(getattr(policy, 'terms', None))
+    if state is None or terms is None:
+        return None
+
+    return CopilotModelPolicy(state=state, terms=terms)
+
+
+def _normalize_copilot_model_billing(*, billing: object) -> CopilotModelBilling | None:
+    """Normalize runtime billing metadata into the provider metadata shape."""
+    if billing is None:
+        return None
+
+    multiplier = _to_optional_float(getattr(billing, 'multiplier', None))
+    if multiplier is None:
+        return None
+
+    return CopilotModelBilling(multiplier=multiplier)
+
+
+def _normalize_string_list(*, values: object) -> list[str] | None:
+    """Return a cleaned string list when the runtime metadata supplies one."""
+    if not isinstance(values, (list, tuple)):
+        return None
+
+    raw_values = cast('list[object] | tuple[object, ...]', values)
+    normalized_values = [
+        value.strip()
+        for value in raw_values
+        if isinstance(value, str) and value.strip()
+    ]
+
+    if not normalized_values:
+        return None
+
+    return normalized_values
+
+
+def _to_optional_non_empty_string(value: object) -> str | None:
+    """Return one stripped string when the runtime metadata supplies one."""
+    if not isinstance(value, str):
+        return None
+
+    normalized_value = value.strip()
+    if not normalized_value:
+        return None
+
+    return normalized_value
+
+
+def _to_optional_bool(value: object) -> bool | None:
+    """Return one boolean value when the runtime metadata supplies one."""
+    return value if isinstance(value, bool) else None
+
+
+def _to_optional_non_negative_int(value: object) -> int | None:
+    """Return one non-negative integer when the runtime metadata supplies one."""
+    if value is None or isinstance(value, bool):
+        return None
+
+    if not isinstance(value, int | float | str):
+        return None
+
+    try:
+        normalized_value = int(value)
+    except TypeError, ValueError:
+        return None
+
+    return normalized_value if normalized_value >= 0 else None
+
+
+def _to_optional_float(value: object) -> float | None:
+    """Return one float when the runtime metadata supplies one."""
+    if value is None or isinstance(value, bool):
+        return None
+
+    if not isinstance(value, int | float | str):
+        return None
+
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return None
 
 
 def _build_runtime_completion(

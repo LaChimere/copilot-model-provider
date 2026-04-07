@@ -8,6 +8,7 @@ import pytest
 from copilot.generated.session_events import SessionEvent
 
 from copilot_model_provider.config import ProviderSettings
+from copilot_model_provider.core.compat import FieldHandling, ProtocolSurface
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     ResolvedRoute,
@@ -18,6 +19,7 @@ from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
 )
+from tests.contract_tests.helpers import assert_payload_field_handling, parse_sse_frames
 from tests.harness import build_async_client
 
 if TYPE_CHECKING:
@@ -102,7 +104,11 @@ class _FakeResponsesRuntime(RuntimeProtocol):
                         'id': '00000000-0000-0000-0000-000000000102',
                         'timestamp': '2025-01-01T00:00:00Z',
                         'type': 'assistant.turn_end',
-                        'data': {'reason': 'stop'},
+                        'data': {
+                            'reason': 'stop',
+                            'inputTokens': 9,
+                            'outputTokens': 6,
+                        },
                     }
                 ),
             ):
@@ -208,6 +214,32 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_responses_accepts_truncation_as_compatibility_field() -> None:
+    """Verify that Responses requests accept the ``truncation`` field unchanged."""
+    runtime = _FakeResponsesRuntime()
+    payload: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'input': 'Hello',
+        'truncation': 'auto',
+    }
+
+    assert_payload_field_handling(
+        surface=ProtocolSurface.OPENAI_RESPONSES,
+        payload=payload,
+        allowed=(FieldHandling.SUPPORTED, FieldHandling.ACCEPT_IGNORE),
+    )
+
+    async with build_async_client(runtime=runtime) as client:
+        response = await client.post('/openai/v1/responses', json=payload)
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert [message.model_dump() for message in runtime.last_request.messages] == [
+        {'role': 'user', 'content': 'Hello'}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_post_responses_extracts_bearer_token() -> None:
     """Verify that auth headers map into the canonical runtime request."""
     runtime = _FakeResponsesRuntime()
@@ -296,12 +328,22 @@ async def test_post_responses_streams_openai_compatible_sse_frames() -> None:
     ):
         payload = ''.join([chunk async for chunk in response.aiter_text()])
 
+    frames = parse_sse_frames(payload=payload)
+    completed_frame = next(
+        frame
+        for frame in frames
+        if '"type":"response.completed"' in frame.get('data', '')
+    )
     assert response.status_code == 200
     assert response.headers['content-type'].startswith('text/event-stream')
     assert '"type":"response.created"' in payload
     assert '"type":"response.output_text.delta"' in payload
     assert '"delta":"Hello"' in payload
     assert '"type":"response.completed"' in payload
+    assert (
+        '"usage":{"input_tokens":9,"output_tokens":6,"total_tokens":15}'
+        in (completed_frame['data'])
+    )
 
 
 @pytest.mark.asyncio

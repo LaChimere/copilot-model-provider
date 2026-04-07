@@ -25,11 +25,11 @@ try:
         ConfigCodexError,
         _parse_port,
         ensure_gh_authenticated,
+        ensure_provider_container,
         ensure_required_commands,
         fetch_visible_anthropic_model_ids,
         resolve_github_token,
         resolve_provider_image,
-        restart_container,
         wait_for_health,
     )
 except ModuleNotFoundError:
@@ -44,11 +44,11 @@ except ModuleNotFoundError:
         ConfigCodexError,
         _parse_port,
         ensure_gh_authenticated,
+        ensure_provider_container,
         ensure_required_commands,
         fetch_visible_anthropic_model_ids,
         resolve_github_token,
         resolve_provider_image,
-        restart_container,
         wait_for_health,
     )
 
@@ -188,10 +188,11 @@ def run_config_claude(
     """Run the full local Claude configuration flow.
 
     The flow validates prerequisites, resolves the user's GitHub token via
-        ``gh``, restarts the local provider container, validates the visible
-        Claude-family models from ``/anthropic/v1/models``, backs up Claude's user
-    ``settings.json``, and rewrites the persistent env block so future
-    ``claude`` invocations route through the local provider.
+    ``gh``, reuses a compatible running local provider container when possible
+    (otherwise restarting it), validates the visible Claude-family models from
+    ``/anthropic/v1/models``, backs up Claude's user ``settings.json``, and
+    rewrites the persistent env block so future ``claude`` invocations route
+    through the local provider.
 
     Args:
         options: Validated CLI options for the Claude configuration workflow.
@@ -218,7 +219,7 @@ def run_config_claude(
         settings_path = config_dir / DEFAULT_SETTINGS_FILE_NAME
         backup_dir = config_dir / DEFAULT_BACKUP_DIR_NAME
 
-        restart_container(
+        ensure_provider_container(
             container_name=container_name,
             image=options.image,
             host_port=options.port,
@@ -401,6 +402,7 @@ def update_claude_settings_payload(
         msg = 'Invalid existing Claude settings: `env` must be a JSON object.'
         raise ConfigClaudeError(msg)
 
+    model_selector = resolve_claude_model_selector(selected_model=model)
     env_payload.update(
         build_claude_env_overrides(
             base_url=base_url,
@@ -410,6 +412,7 @@ def update_claude_settings_payload(
         )
     )
     env_payload.pop('ANTHROPIC_API_KEY', None)
+    updated_payload['model'] = model_selector
     updated_payload['env'] = env_payload
     return updated_payload
 
@@ -433,22 +436,26 @@ def build_claude_env_overrides(
         A JSON-like mapping of Claude env keys to persisted values.
 
     """
+    model_selector = resolve_claude_model_selector(selected_model=model)
     env_overrides: dict[str, object] = {
         'ANTHROPIC_BASE_URL': base_url,
         'ANTHROPIC_AUTH_TOKEN': github_token,
-        'ANTHROPIC_MODEL': model,
+        'ANTHROPIC_MODEL': model_selector,
     }
 
     tier_defaults = {
-        'ANTHROPIC_DEFAULT_OPUS_MODEL': find_preferred_model_for_prefix(
+        'ANTHROPIC_DEFAULT_OPUS_MODEL': resolve_claude_tier_default_model(
+            selected_model=model,
             visible_models=visible_models,
             prefix='claude-opus',
         ),
-        'ANTHROPIC_DEFAULT_SONNET_MODEL': find_preferred_model_for_prefix(
+        'ANTHROPIC_DEFAULT_SONNET_MODEL': resolve_claude_tier_default_model(
+            selected_model=model,
             visible_models=visible_models,
             prefix='claude-sonnet',
         ),
-        'ANTHROPIC_DEFAULT_HAIKU_MODEL': find_preferred_model_for_prefix(
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL': resolve_claude_tier_default_model(
+            selected_model=model,
             visible_models=visible_models,
             prefix='claude-haiku',
         ),
@@ -458,6 +465,63 @@ def build_claude_env_overrides(
     )
 
     return env_overrides
+
+
+def resolve_claude_model_selector(*, selected_model: str) -> str:
+    """Return the Claude Code selector that should activate the chosen model.
+
+    Claude Code recognizes 1M context through built-in selectors such as
+    ``opus[1m]`` and ``sonnet[1m]``. When the provider exposes Copilot-specific
+    runtime model IDs for those variants, persist the selector Claude Code
+    understands while separately pinning the family default environment
+    variables to the concrete provider model ID.
+
+    Args:
+        selected_model: The concrete Claude-family model visible from the local
+            provider.
+
+    Returns:
+        A Claude Code model selector string that activates the requested model.
+
+    """
+    one_million_selectors = {
+        'claude-opus-4.6-1m': 'opus[1m]',
+        'claude-sonnet-4.6-1m': 'sonnet[1m]',
+    }
+    return one_million_selectors.get(selected_model, selected_model)
+
+
+def resolve_claude_tier_default_model(
+    *,
+    selected_model: str,
+    visible_models: list[str],
+    prefix: str,
+) -> str | None:
+    """Resolve the family default Claude model that should be persisted.
+
+    When the active session model already belongs to the requested family, keep
+    that exact model as the family default instead of falling back to the first
+    visible model in the catalog. This preserves explicit selections such as
+    1M-context Opus/Sonnet variants in Claude's tier-based model resolution.
+
+    Args:
+        selected_model: The explicit Claude model chosen for the configured
+            session.
+        visible_models: Live model identifiers visible from the provider.
+        prefix: Claude-family prefix to resolve, such as ``claude-opus``.
+
+    Returns:
+        The selected model when it belongs to the requested family, otherwise
+        the first visible model matching that family, or ``None`` when no model
+        in that family is visible.
+
+    """
+    if selected_model.startswith(prefix):
+        return selected_model
+    return find_preferred_model_for_prefix(
+        visible_models=visible_models,
+        prefix=prefix,
+    )
 
 
 def resolve_claude_model(

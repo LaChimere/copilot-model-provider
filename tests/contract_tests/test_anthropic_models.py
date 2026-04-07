@@ -7,8 +7,12 @@ from typing import override
 import pytest
 
 from copilot_model_provider.core.models import (
+    CopilotModelCapabilities,
+    CopilotModelLimits,
+    CopilotModelMetadata,
     ResolvedRoute,
     RuntimeCompletion,
+    RuntimeDiscoveredModel,
     RuntimeHealth,
 )
 from copilot_model_provider.runtimes.protocols import (
@@ -60,6 +64,31 @@ class _FakeAnthropicModelsRuntime(RuntimeProtocol):
         raise AssertionError('stream_chat should not be called in this test')
 
 
+class _FakeAnthropicMetadataModelsRuntime(_FakeAnthropicModelsRuntime):
+    """Deterministic runtime that exposes metadata-rich Anthropic model cards."""
+
+    @override
+    async def list_models(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[RuntimeDiscoveredModel, ...]:
+        """Return one metadata-rich live-model snapshot for the route."""
+        del runtime_auth_token
+        return (
+            RuntimeDiscoveredModel(
+                id='claude-opus-4.6-1m',
+                copilot=CopilotModelMetadata(
+                    name='Claude Opus 4.6 (1M context)(Internal only)',
+                    capabilities=CopilotModelCapabilities(
+                        limits=CopilotModelLimits(max_context_window_tokens=1000000)
+                    ),
+                ),
+            ),
+            RuntimeDiscoveredModel(id='claude-haiku-3.5'),
+        )
+
+
 @pytest.mark.asyncio
 async def test_get_models_returns_anthropic_compatible_response() -> None:
     """Verify that ``GET /anthropic/v1/models`` returns the expected Anthropic payload."""
@@ -83,6 +112,45 @@ async def test_get_models_returns_anthropic_compatible_response() -> None:
             },
         ],
         'first_id': 'claude-sonnet-4.6',
+        'has_more': False,
+        'last_id': 'claude-haiku-3.5',
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_models_includes_copilot_metadata_and_runtime_display_name() -> None:
+    """Verify Anthropic models expose copilot metadata and prefer runtime names."""
+    async with build_async_client(
+        runtime=_FakeAnthropicMetadataModelsRuntime()
+    ) as client:
+        response = await client.get('/anthropic/v1/models')
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'data': [
+            {
+                'id': 'claude-opus-4.6-1m',
+                'type': 'model',
+                'display_name': 'Claude Opus 4.6 (1M context)(Internal only)',
+                'created_at': '1970-01-01T00:00:00Z',
+                'max_input_tokens': 1000000,
+                'copilot': {
+                    'name': 'Claude Opus 4.6 (1M context)(Internal only)',
+                    'capabilities': {
+                        'limits': {
+                            'max_context_window_tokens': 1000000,
+                        }
+                    },
+                },
+            },
+            {
+                'id': 'claude-haiku-3.5',
+                'type': 'model',
+                'display_name': 'Claude Haiku 3.5',
+                'created_at': '1970-01-01T00:00:00Z',
+            },
+        ],
+        'first_id': 'claude-opus-4.6-1m',
         'has_more': False,
         'last_id': 'claude-haiku-3.5',
     }

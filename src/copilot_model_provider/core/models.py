@@ -52,6 +52,94 @@ class CanonicalChatRequest(BaseModel):
     stream: bool = False
 
 
+class CopilotModelVisionLimits(BaseModel):
+    """Vision-specific limits exposed through provider-owned model metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    supported_media_types: list[str] | None = None
+    max_prompt_images: int | None = Field(default=None, ge=0)
+    max_prompt_image_size: int | None = Field(default=None, ge=0)
+
+
+class CopilotModelLimits(BaseModel):
+    """Token and media limits exposed through provider-owned model metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    max_prompt_tokens: int | None = Field(default=None, ge=0)
+    max_context_window_tokens: int | None = Field(default=None, ge=0)
+    vision: CopilotModelVisionLimits | None = None
+
+
+class CopilotModelSupports(BaseModel):
+    """Capability flags exposed through provider-owned model metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    vision: bool | None = None
+    reasoning_effort: bool | None = None
+
+
+class CopilotModelCapabilities(BaseModel):
+    """Normalized capability metadata preserved from runtime model discovery."""
+
+    model_config = ConfigDict(frozen=True)
+
+    supports: CopilotModelSupports | None = None
+    limits: CopilotModelLimits | None = None
+
+
+class CopilotModelPolicy(BaseModel):
+    """Runtime policy metadata exposed through provider-owned model metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: str = Field(min_length=1)
+    terms: str = Field(min_length=1)
+
+
+class CopilotModelBilling(BaseModel):
+    """Runtime billing metadata exposed through provider-owned model metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    multiplier: float
+
+
+class CopilotModelMetadata(BaseModel):
+    """Provider-owned nested model metadata shape shared across protocol facades."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str | None = Field(default=None, min_length=1)
+    capabilities: CopilotModelCapabilities | None = None
+    policy: CopilotModelPolicy | None = None
+    billing: CopilotModelBilling | None = None
+    supported_reasoning_efforts: list[str] | None = None
+    default_reasoning_effort: str | None = Field(default=None, min_length=1)
+
+
+class RuntimeDiscoveredModel(BaseModel):
+    """Normalized live runtime model discovered for one auth-context snapshot.
+
+    Attributes:
+        id: Stable runtime model identifier visible to the current auth context.
+        created: Optional created timestamp exposed through compatibility facades.
+            The Copilot runtime currently does not supply this, so the default
+            remains ``0`` until a runtime provides a richer value.
+        copilot: Optional provider-owned metadata preserved from runtime model
+            discovery and later exposed through compatibility model-list routes.
+
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1)
+    created: int = Field(ge=0, default=0)
+    copilot: CopilotModelMetadata | None = None
+
+
 class ModelCatalogEntry(BaseModel):
     """Service-owned catalog entry used for public model listing and routing."""
 
@@ -62,6 +150,7 @@ class ModelCatalogEntry(BaseModel):
     owned_by: str = Field(min_length=1)
     runtime_model_id: str = Field(min_length=1)
     created: int = Field(ge=0, default=0)
+    copilot: CopilotModelMetadata | None = None
 
 
 class OpenAIModelCard(BaseModel):
@@ -73,6 +162,7 @@ class OpenAIModelCard(BaseModel):
     object: Literal['model'] = 'model'
     created: int = Field(ge=0, default=0)
     owned_by: str = Field(min_length=1)
+    copilot: CopilotModelMetadata | None = None
 
 
 class OpenAIModelListResponse(BaseModel):
@@ -93,6 +183,8 @@ class AnthropicModelInfo(BaseModel):
     type: Literal['model'] = 'model'
     display_name: str = Field(min_length=1)
     created_at: str = Field(min_length=1)
+    max_input_tokens: int | None = Field(default=None, ge=0)
+    copilot: CopilotModelMetadata | None = None
 
 
 class AnthropicModelListResponse(BaseModel):
@@ -213,6 +305,7 @@ class OpenAIResponsesCreateRequest(BaseModel):
     instructions: str | list[OpenAIResponsesInputMessage] | None = None
     stream: bool = False
     store: bool = False
+    truncation: Literal['auto', 'disabled'] | None = None
     previous_response_id: str | None = None
     parallel_tool_calls: bool = False
     tool_choice: str | dict[str, Any] | None = None
@@ -423,6 +516,7 @@ class AnthropicMessagesCreateRequest(BaseModel):
     stream: bool = False
     metadata: dict[str, Any] | None = None
     tools: list[dict[str, Any]] = Field(default_factory=_empty_json_object_list)
+    thinking: dict[str, Any] | None = None
 
 
 class AnthropicMessagesCountTokensRequest(BaseModel):

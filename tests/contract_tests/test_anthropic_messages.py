@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
@@ -9,8 +10,10 @@ from copilot.generated.session_events import SessionEvent
 
 from copilot_model_provider.api.anthropic.protocol import (
     estimate_anthropic_input_tokens,
+    estimate_anthropic_output_tokens,
 )
 from copilot_model_provider.config import ProviderSettings
+from copilot_model_provider.core.compat import FieldHandling, ProtocolSurface
 from copilot_model_provider.core.models import (
     AnthropicMessagesCountTokensRequest,
     CanonicalChatRequest,
@@ -22,10 +25,23 @@ from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
 )
+from tests.contract_tests.helpers import assert_payload_field_handling, parse_sse_frames
 from tests.harness import build_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+class _CapturedLogger:
+    """Record Anthropic route header logs for contract verification."""
+
+    def __init__(self) -> None:
+        """Initialize the in-memory event sink."""
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        """Record one informational log event."""
+        self.events.append((event, kwargs))
 
 
 class _FakeAnthropicRuntime(RuntimeProtocol):
@@ -106,13 +122,60 @@ class _FakeAnthropicRuntime(RuntimeProtocol):
                     {
                         'id': '10000000-0000-0000-0000-000000000002',
                         'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.usage',
+                        'data': {'inputTokens': 11, 'outputTokens': 2},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '10000000-0000-0000-0000-000000000003',
+                        'timestamp': '2025-01-01T00:00:00Z',
                         'type': 'assistant.message_delta',
                         'data': {'deltaContent': 'LO'},
                     }
                 ),
                 SessionEvent.from_dict(
                     {
-                        'id': '10000000-0000-0000-0000-000000000003',
+                        'id': '10000000-0000-0000-0000-000000000004',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.turn_end',
+                        'data': {'reason': 'stop'},
+                    }
+                ),
+            ):
+                yield event
+
+        return RuntimeEventStream(session_id=None, events=_events())
+
+
+class _ZeroUsageAnthropicRuntime(_FakeAnthropicRuntime):
+    """Fake Anthropic runtime that reports exact zero completion tokens."""
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit usage metadata with an exact zero output-token count."""
+        del route
+        self.last_request = request
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield usage metadata before a zero-output terminal turn."""
+            for event in (
+                SessionEvent.from_dict(
+                    {
+                        'id': '10000000-0000-0000-0000-000000000101',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.usage',
+                        'data': {'inputTokens': 11, 'outputTokens': 0},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '10000000-0000-0000-0000-000000000102',
                         'timestamp': '2025-01-01T00:00:00Z',
                         'type': 'assistant.turn_end',
                         'data': {'reason': 'stop'},
@@ -171,6 +234,34 @@ async def test_post_messages_returns_anthropic_compatible_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_messages_accepts_thinking_for_compatibility_without_passthrough() -> (
+    None
+):
+    """Verify that ``thinking`` is accepted even though the runtime path ignores it."""
+    runtime = _FakeAnthropicRuntime()
+    request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Hello'}],
+        'thinking': {'type': 'enabled', 'budget_tokens': 256},
+    }
+
+    assert_payload_field_handling(
+        surface=ProtocolSurface.ANTHROPIC_MESSAGES,
+        payload=request_body,
+        allowed=(FieldHandling.SUPPORTED, FieldHandling.ACCEPT_IGNORE),
+    )
+
+    async with build_async_client(runtime=runtime) as client:
+        response = await client.post('/anthropic/v1/messages', json=request_body)
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert [message.model_dump() for message in runtime.last_request.messages] == [
+        {'role': 'user', 'content': 'Hello'}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_post_messages_prefers_bearer_auth_over_api_key() -> None:
     """Verify that bearer auth wins when both Anthropic auth headers are present."""
     runtime = _FakeAnthropicRuntime()
@@ -217,11 +308,129 @@ async def test_post_messages_fall_back_to_configured_runtime_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_messages_logs_gateway_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that Anthropic gateway headers are surfaced through structured logs."""
+    messages_module = importlib.import_module(
+        'copilot_model_provider.api.anthropic.messages'
+    )
+    captured_logger = _CapturedLogger()
+    monkeypatch.setattr(messages_module, '_logger', captured_logger)
+
+    async with build_async_client(runtime=_FakeAnthropicRuntime()) as client:
+        response = await client.post(
+            '/anthropic/v1/messages',
+            headers={
+                'x-api-key': 'github-token-123',
+                'anthropic-version': '2023-06-01',
+                'anthropic-beta': 'tools-2025-01-01',
+                'X-Claude-Code-Session-Id': 'session-123',
+            },
+            json={
+                'model': 'claude-sonnet-4-20250514',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured_logger.events == [
+        (
+            'anthropic_gateway_headers',
+            {
+                'surface': 'messages',
+                'anthropic_version': '2023-06-01',
+                'anthropic_beta': 'tools-2025-01-01',
+                'claude_code_session_id': 'session-123',
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_messages_rejects_invalid_authorization_headers_with_anthropic_error_shape() -> (
+    None
+):
+    """Verify that malformed auth uses the Anthropic non-streaming error envelope."""
+    async with build_async_client(runtime=_FakeAnthropicRuntime()) as client:
+        response = await client.post(
+            '/anthropic/v1/messages',
+            headers={'Authorization': 'Token github-token-123'},
+            json={
+                'model': 'claude-sonnet-4-20250514',
+                'messages': [{'role': 'user', 'content': 'Hello'}],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        'type': 'error',
+        'error': {
+            'type': 'authentication_error',
+            'message': 'Authorization header must use the Bearer token format.',
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_post_messages_streams_anthropic_compatible_sse_frames() -> None:
     """Verify that streaming Messages requests emit Anthropic lifecycle frames."""
     runtime = _FakeAnthropicRuntime()
+    request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'stream': True,
+        'messages': [{'role': 'user', 'content': 'Hello'}],
+    }
+    expected_input_tokens = estimate_anthropic_input_tokens(
+        request=AnthropicMessagesCountTokensRequest.model_validate(request_body)
+    )
     async with (
         build_async_client(runtime=runtime) as client,
+        client.stream(
+            'POST',
+            '/anthropic/v1/messages',
+            headers={'x-api-key': 'github-token-123'},
+            json=request_body,
+        ) as response,
+    ):
+        payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+    frames = parse_sse_frames(payload=payload)
+    message_start_frame = next(
+        frame for frame in frames if frame.get('event') == 'message_start'
+    )
+    message_delta_frame = next(
+        frame for frame in frames if frame.get('event') == 'message_delta'
+    )
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('text/event-stream')
+    assert 'event: message_start' in payload
+    assert 'event: content_block_start' in payload
+    assert 'event: content_block_delta' in payload
+    assert '"text":"HEL"' in payload
+    assert '"text":"LO"' in payload
+    assert 'event: content_block_stop' in payload
+    assert 'event: message_delta' in payload
+    assert 'event: message_stop' in payload
+    assert (
+        f'"usage":{{"input_tokens":{expected_input_tokens},"output_tokens":0}}'
+        in message_start_frame['data']
+    )
+    assert (
+        '"usage":{"input_tokens":11,"output_tokens":2}' in message_delta_frame['data']
+    )
+
+
+def test_estimate_anthropic_output_tokens_uses_count_tokens_heuristic() -> None:
+    """Verify that output-token estimation uses the same bytes-per-token heuristic."""
+    assert estimate_anthropic_output_tokens(output_text='HELLO') == 2
+
+
+@pytest.mark.asyncio
+async def test_post_messages_streaming_preserves_exact_zero_usage_tokens() -> None:
+    """Verify that exact zero usage is not replaced by an estimate."""
+    async with (
+        build_async_client(runtime=_ZeroUsageAnthropicRuntime()) as client,
         client.stream(
             'POST',
             '/anthropic/v1/messages',
@@ -235,16 +444,15 @@ async def test_post_messages_streams_anthropic_compatible_sse_frames() -> None:
     ):
         payload = ''.join([chunk async for chunk in response.aiter_text()])
 
+    frames = parse_sse_frames(payload=payload)
+    message_delta_frame = next(
+        frame for frame in frames if frame.get('event') == 'message_delta'
+    )
+
     assert response.status_code == 200
-    assert response.headers['content-type'].startswith('text/event-stream')
-    assert 'event: message_start' in payload
-    assert 'event: content_block_start' in payload
-    assert 'event: content_block_delta' in payload
-    assert '"text":"HEL"' in payload
-    assert '"text":"LO"' in payload
-    assert 'event: content_block_stop' in payload
-    assert 'event: message_delta' in payload
-    assert 'event: message_stop' in payload
+    assert (
+        '"usage":{"input_tokens":11,"output_tokens":0}' in message_delta_frame['data']
+    )
 
 
 @pytest.mark.asyncio

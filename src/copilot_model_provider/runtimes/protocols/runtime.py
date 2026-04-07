@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from copilot_model_provider.core.models import RuntimeDiscoveredModel
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -58,6 +60,26 @@ class RuntimeProtocol(Protocol):
     async def check_health(self) -> RuntimeHealth:
         """Return runtime health metadata for internal diagnostics."""
         ...
+
+    async def list_models(
+        self,
+        *,
+        runtime_auth_token: str | None = None,
+    ) -> tuple[RuntimeDiscoveredModel, ...]:
+        """Return normalized live runtime model descriptors for one auth context.
+
+        Args:
+            runtime_auth_token: Optional request-scoped bearer token that should
+                override the runtime's configured default auth context for this
+                discovery call.
+
+        Returns:
+            A stable, de-duplicated tuple of normalized runtime model descriptors
+            visible to the supplied auth context.
+
+        """
+        model_ids = await self.list_model_ids(runtime_auth_token=runtime_auth_token)
+        return tuple(RuntimeDiscoveredModel(id=model_id) for model_id in model_ids)
 
     async def list_model_ids(
         self,

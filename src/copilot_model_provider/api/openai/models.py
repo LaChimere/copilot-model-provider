@@ -54,4 +54,5 @@ def install_openai_models_route(
         _list_models,
         methods=['GET'],
         response_model=OpenAIModelListResponse,
+        response_model_exclude_none=True,
     )

@@ -21,6 +21,7 @@ def test_container_responses_non_streaming_supports_live_model_id(
             'model': integration_model_id,
             'input': 'Reply with exactly RESPONSES_PING and nothing else.',
             'stream': False,
+            'truncation': 'auto',
         },
     )
 

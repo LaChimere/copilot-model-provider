@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING
 import pytest
 from copilot.generated.session_events import SessionEvent
 
-from copilot_model_provider.api.shared import iter_canonical_runtime_stream_events
+from copilot_model_provider.api.shared import (
+    iter_canonical_runtime_stream_events,
+    normalize_anthropic_gateway_headers,
+)
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantTurnCompleteEvent,
@@ -85,3 +88,16 @@ async def test_iter_canonical_runtime_stream_events_deduplicates_aggregate_messa
         AssistantTextDeltaEvent(text='Hello'),
         AssistantTurnCompleteEvent(finish_reason='stop'),
     ]
+
+
+def test_normalize_anthropic_gateway_headers_collapses_blank_values() -> None:
+    """Verify that optional Claude gateway headers normalize blank values to None."""
+    headers = normalize_anthropic_gateway_headers(
+        anthropic_version_header=' 2023-06-01 ',
+        anthropic_beta_header=' ',
+        claude_code_session_id_header=' session-123 ',
+    )
+
+    assert headers.anthropic_version == '2023-06-01'
+    assert headers.anthropic_beta is None
+    assert headers.claude_code_session_id == 'session-123'

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from copilot_model_provider.core.models import ModelCatalogEntry
+from copilot_model_provider.core.models import ModelCatalogEntry, RuntimeDiscoveredModel
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -69,14 +69,42 @@ def build_live_model_catalog(
         public model identifier.
 
     """
+    return build_live_model_catalog_from_models(
+        runtime=runtime,
+        owned_by=owned_by,
+        models=(RuntimeDiscoveredModel(id=model_id) for model_id in model_ids),
+    )
+
+
+def build_live_model_catalog_from_models(
+    *,
+    runtime: str,
+    owned_by: str,
+    models: Iterable[RuntimeDiscoveredModel],
+) -> ModelCatalog:
+    """Build one catalog snapshot from normalized runtime model descriptors.
+
+    Args:
+        runtime: Stable runtime name that should back every exposed model.
+        owned_by: Owner label exposed through the compatibility surface.
+        models: Normalized runtime model descriptors visible to the current auth
+            context.
+
+    Returns:
+        A ``ModelCatalog`` that preserves each runtime model identifier plus any
+        provider-owned metadata captured during runtime model discovery.
+
+    """
     return ModelCatalog(
         entries=tuple(
             ModelCatalogEntry(
-                alias=model_id,
+                alias=model.id,
                 runtime=runtime,
                 owned_by=owned_by,
-                runtime_model_id=model_id,
+                runtime_model_id=model.id,
+                created=model.created,
+                copilot=model.copilot,
             )
-            for model_id in model_ids
+            for model in models
         )
     )

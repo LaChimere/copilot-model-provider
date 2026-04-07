@@ -18,14 +18,13 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 DEFAULT_PORT = 8000
 DEFAULT_IMAGE = 'copilot-model-provider:local'
 DEFAULT_IMAGE_CHANNEL = 'local'
 DEFAULT_RELEASE_VERSION = 'latest'
 RELEASE_IMAGE_REPOSITORY = 'ghcr.io/lachimere/copilot-model-provider'
-DEFAULT_MODEL = 'gpt-5.4'
 DEFAULT_PROVIDER_ID = 'copilot-model-provider-local'
 DEFAULT_CONTAINER_NAME = 'copilot-model-provider'
 DEFAULT_CONTAINER_PORT = 8000
@@ -54,7 +53,8 @@ class ConfigCodexOptions:
             supplied.
         release_version: Published image version used when ``image_channel`` is
             ``release`` and ``image`` is not explicitly supplied.
-        model: Codex model id that should be written into ``config.toml``.
+        model: Optional Codex model id that should be written into ``config.toml``.
+            When omitted, the script auto-selects a preferred visible live model.
         provider_id: Provider identifier stored in the Codex config.
         container_port: Internal container port exposed by the provider image.
 
@@ -62,7 +62,7 @@ class ConfigCodexOptions:
 
     port: int
     image: str
-    model: str
+    model: str | None
     image_channel: Literal['local', 'release'] = DEFAULT_IMAGE_CHANNEL
     release_version: str = DEFAULT_RELEASE_VERSION
     provider_id: str = DEFAULT_PROVIDER_ID
@@ -88,6 +88,23 @@ class ConfigCodexResult:
     image: str
     model: str
     backup_path: str
+
+
+@dataclass(frozen=True)
+class InspectedContainer:
+    """Normalized Docker inspect data for one local provider container.
+
+    Attributes:
+        image: Docker image reference used by the inspected container.
+        running: Whether Docker currently reports the container as running.
+        published_port: Host port currently published for the expected service
+            container port, or ``None`` when that port is not published.
+
+    """
+
+    image: str
+    running: bool
+    published_port: int | None
 
 
 def parse_args(argv: list[str] | None = None) -> ConfigCodexOptions:
@@ -133,8 +150,11 @@ def parse_args(argv: list[str] | None = None) -> ConfigCodexOptions:
     )
     parser.add_argument(
         '--model',
-        default=os.environ.get('CODEX_PROVIDER_MODEL', DEFAULT_MODEL),
-        help=f'Codex model ID to select (default: {DEFAULT_MODEL})',
+        default=os.environ.get('CODEX_PROVIDER_MODEL'),
+        help=(
+            'Codex model ID to select. When omitted, the script auto-selects '
+            'a preferred visible live model.'
+        ),
     )
     args = parser.parse_args(argv)
     return ConfigCodexOptions(
@@ -196,9 +216,10 @@ def run_config_codex(
     """Run the full local Codex configuration flow.
 
     The flow validates prerequisites, resolves the user's GitHub token via
-    ``gh``, restarts the local provider container, validates that the requested
-    model is visible from ``/openai/v1/models``, backs up ``~/.codex/config.toml``,
-    and rewrites the Codex config to point at the local provider.
+    ``gh``, reuses a compatible running local provider container when possible
+    (otherwise restarting it), validates that the requested model is visible
+    from ``/openai/v1/models``, backs up ``~/.codex/config.toml``, and rewrites
+    the Codex config to point at the local provider.
     """
     ensure_required_commands(('docker', 'gh'))
     ensure_gh_authenticated()
@@ -211,7 +232,7 @@ def run_config_codex(
     backup_dir = codex_dir / 'backups'
     backup_path = backup_codex_config(config_path, backup_dir)
 
-    restart_container(
+    ensure_provider_container(
         container_name=container_name,
         image=options.image,
         host_port=options.port,
@@ -221,11 +242,14 @@ def run_config_codex(
     wait_for_health(f'http://127.0.0.1:{options.port}/_internal/health')
 
     visible_models = fetch_visible_model_ids(base_url)
-    ensure_model_is_visible(options.model, visible_models)
+    selected_model = resolve_codex_model(
+        preferred_model=options.model,
+        visible_models=visible_models,
+    )
 
     write_updated_codex_config(
         config_path,
-        model=options.model,
+        model=selected_model,
         provider_id=options.provider_id,
         base_url=base_url,
     )
@@ -233,7 +257,7 @@ def run_config_codex(
         base_url=base_url,
         container_name=container_name,
         image=options.image,
-        model=options.model,
+        model=selected_model,
         backup_path=backup_path,
     )
 
@@ -404,6 +428,54 @@ def write_updated_codex_config(
     config_path.write_text(updated, encoding='utf-8')
 
 
+def ensure_provider_container(
+    *,
+    container_name: str,
+    image: str,
+    host_port: int,
+    container_port: int,
+    github_token: str,
+) -> bool:
+    """Ensure a compatible local provider container is available.
+
+    The setup scripts should avoid unnecessary restarts during repeated local
+    configuration runs. A running container is therefore reused only when its
+    image, published host port, and running state all match the requested
+    configuration. All other cases fall back to a clean restart.
+
+    Args:
+        container_name: Docker container name managed by the setup scripts.
+        image: Requested Docker image reference for the provider container.
+        host_port: Requested host port that should map to the provider service.
+        container_port: Internal provider service port exposed by the image.
+        github_token: GitHub token injected into a newly started container.
+
+    Returns:
+        ``True`` when an existing container was reused, otherwise ``False`` after
+        starting a fresh container.
+
+    """
+    inspection = inspect_container(
+        container_name=container_name,
+        container_port=container_port,
+    )
+    if inspection is not None and should_reuse_container(
+        inspection=inspection,
+        image=image,
+        host_port=host_port,
+    ):
+        return True
+
+    restart_container(
+        container_name=container_name,
+        image=image,
+        host_port=host_port,
+        container_port=container_port,
+        github_token=github_token,
+    )
+    return False
+
+
 def restart_container(
     *,
     container_name: str,
@@ -433,6 +505,102 @@ def restart_container(
         ],
         env=env,
         capture_output=True,
+    )
+
+
+def inspect_container(
+    *,
+    container_name: str,
+    container_port: int,
+) -> InspectedContainer | None:
+    """Return normalized Docker inspect data for one named container.
+
+    Args:
+        container_name: Docker container name to inspect.
+        container_port: Internal service port whose published host port should be
+            extracted from the container metadata.
+
+    Returns:
+        The normalized inspected container data, or ``None`` when the container
+        does not exist.
+
+    Raises:
+        ConfigCodexError: If Docker returns malformed inspect output.
+
+    """
+    docker_path = _command_path('docker')
+    result = subprocess.run(  # noqa: S603 - argv is explicit and shell=False
+        [docker_path, 'container', 'inspect', container_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        msg = f'Invalid Docker inspect output for {container_name!r}: {error}'
+        raise ConfigCodexError(msg) from error
+
+    if not isinstance(payload, list) or len(payload) != 1:
+        msg = f'Unexpected Docker inspect payload for {container_name!r}.'
+        raise ConfigCodexError(msg)
+
+    container_data = payload[0]
+    if not isinstance(container_data, dict):
+        msg = f'Unexpected Docker inspect document for {container_name!r}.'
+        raise ConfigCodexError(msg)
+
+    image = _extract_nested_string(
+        item=container_data,
+        path=('Config', 'Image'),
+    )
+    if image is None:
+        msg = f'Docker inspect did not report an image for {container_name!r}.'
+        raise ConfigCodexError(msg)
+
+    running = _extract_nested_bool(
+        item=container_data,
+        path=('State', 'Running'),
+    )
+    if running is None:
+        msg = f'Docker inspect did not report a running state for {container_name!r}.'
+        raise ConfigCodexError(msg)
+
+    return InspectedContainer(
+        image=image,
+        running=running,
+        published_port=_extract_published_port(
+            item=container_data,
+            container_port=container_port,
+        ),
+    )
+
+
+def should_reuse_container(
+    *,
+    inspection: InspectedContainer,
+    image: str,
+    host_port: int,
+) -> bool:
+    """Report whether an inspected container is safe to reuse.
+
+    Args:
+        inspection: Normalized metadata for the existing named container.
+        image: Requested Docker image reference for the current script run.
+        host_port: Requested host port for the provider service.
+
+    Returns:
+        ``True`` when the inspected container is running and matches both the
+        requested image and host port; otherwise ``False``.
+
+    """
+    return (
+        inspection.running
+        and inspection.image == image
+        and inspection.published_port == host_port
     )
 
 
@@ -535,6 +703,69 @@ def ensure_model_is_visible(model: str, visible_models: list[str]) -> None:
     raise ConfigCodexError(msg)
 
 
+def resolve_codex_model(
+    *,
+    preferred_model: str | None,
+    visible_models: list[str],
+) -> str:
+    """Resolve the Codex model that should be persisted in config.
+
+    Args:
+        preferred_model: Optional user-specified model identifier.
+        visible_models: Live model identifiers visible from the running provider.
+
+    Returns:
+        The explicit model when it is visible, otherwise the preferred visible
+        default selected from the live catalog.
+
+    Raises:
+        ConfigCodexError: If the explicit model is not visible or no visible model
+            can be selected automatically.
+
+    """
+    if preferred_model is not None:
+        ensure_model_is_visible(preferred_model, visible_models)
+        return preferred_model
+
+    selected_model = select_default_codex_model(visible_models=visible_models)
+    if selected_model is not None:
+        return selected_model
+
+    msg = 'Unable to choose a default model from the running service.'
+    raise ConfigCodexError(msg)
+
+
+def select_default_codex_model(*, visible_models: list[str]) -> str | None:
+    """Select a preferred visible model for Codex when no explicit model is set.
+
+    Preference order is:
+
+    1. `gpt-5.4`
+    2. `gpt-5.4-mini`
+    3. `gpt-4.1`
+    4. any remaining model identifier in provider order
+
+    This keeps one-click setup aligned with the current auth-context live catalog
+    while still preferring the models most likely to be a good default Codex fit.
+
+    Args:
+        visible_models: Live model identifiers visible from the provider.
+
+    Returns:
+        The preferred visible model identifier, or ``None`` when the provider
+        exposes no models.
+
+    """
+    for preferred_model in ('gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1'):
+        if preferred_model in visible_models:
+            return preferred_model
+
+    if visible_models:
+        return visible_models[0]
+
+    return None
+
+
 def _fetch_json_document(url: str) -> dict[str, object]:
     """Fetch and decode a JSON document from the local provider service."""
     parsed_url = urllib.parse.urlparse(url)
@@ -553,6 +784,102 @@ def _fetch_json_document(url: str) -> dict[str, object]:
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
         msg = f'Unable to fetch {url}: {error}'
         raise ConfigCodexError(msg) from error
+
+
+def _extract_nested_string(
+    *,
+    item: dict[str, Any],
+    path: tuple[str, ...],
+) -> str | None:
+    """Extract one nested string field from a JSON-like object tree.
+
+    Args:
+        item: JSON-like object tree to traverse.
+        path: Object path segments that should lead to a string value.
+
+    Returns:
+        The nested string value, or ``None`` when the path is missing or typed
+        differently.
+
+    """
+    current: Any = item
+    for segment in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+
+    if isinstance(current, str):
+        return current
+    return None
+
+
+def _extract_nested_bool(
+    *,
+    item: dict[str, Any],
+    path: tuple[str, ...],
+) -> bool | None:
+    """Extract one nested boolean field from a JSON-like object tree.
+
+    Args:
+        item: JSON-like object tree to traverse.
+        path: Object path segments that should lead to a boolean value.
+
+    Returns:
+        The nested boolean value, or ``None`` when the path is missing or typed
+        differently.
+
+    """
+    current: Any = item
+    for segment in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+
+    if isinstance(current, bool):
+        return current
+    return None
+
+
+def _extract_published_port(
+    *,
+    item: dict[str, Any],
+    container_port: int,
+) -> int | None:
+    """Extract the published host port for one internal container port.
+
+    Args:
+        item: JSON-like Docker inspect document for one container.
+        container_port: Internal container port to resolve.
+
+    Returns:
+        The first published host port for ``container_port``, or ``None`` when
+        Docker does not report a usable binding for that port.
+
+    """
+    ports = item.get('NetworkSettings')
+    if not isinstance(ports, dict):
+        return None
+
+    port_bindings = ports.get('Ports')
+    if not isinstance(port_bindings, dict):
+        return None
+
+    binding = port_bindings.get(f'{container_port}/tcp')
+    if not isinstance(binding, list):
+        return None
+
+    for entry in binding:
+        if not isinstance(entry, dict):
+            continue
+        host_port = entry.get('HostPort')
+        if not isinstance(host_port, str):
+            continue
+        try:
+            return int(host_port)
+        except ValueError:
+            return None
+
+    return None
 
 
 def _load_toml_document(source: str, *, context: str) -> dict[str, object]:
