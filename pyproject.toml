@@ -7,7 +7,7 @@ license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.135.2",
-    "github-copilot-sdk>=0.2.0",
+    "github-copilot-sdk>=0.2.2",
     "pydantic-settings>=2.13.1",
     "structlog>=25.5.0",
     "uvicorn>=0.38.0",

@@ -7,12 +7,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast, override
 
-from copilot import CopilotClient, PermissionRequestResult, SubprocessConfig
+from copilot import CopilotClient, SubprocessConfig
 from copilot.generated.session_events import (
     PermissionRequest,
     SessionEvent,
     SessionEventType,
 )
+from copilot.session import PermissionRequestResult
 
 from copilot_model_provider.core.chat import render_prompt
 from copilot_model_provider.core.errors import ProviderError

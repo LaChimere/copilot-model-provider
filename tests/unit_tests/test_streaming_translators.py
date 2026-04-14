@@ -64,6 +64,21 @@ def test_translate_session_event_uses_full_message_content_when_needed() -> None
     assert stream_event == AssistantTextDeltaEvent(text='Whole message')
 
 
+def test_translate_session_event_ignores_structured_content_in_favor_of_text() -> None:
+    """Verify that structured SDK payload content does not leak as public text."""
+    stream_event = translate_session_event(
+        event=_build_session_event(
+            event_type='assistant.message',
+            data={
+                'content': {'kind': 'metadata', 'value': 'ignored'},
+                'transformedContent': 'Whole message',
+            },
+        )
+    )
+
+    assert stream_event == AssistantTextDeltaEvent(text='Whole message')
+
+
 @pytest.mark.parametrize(
     ('reason', 'expected'),
     [
