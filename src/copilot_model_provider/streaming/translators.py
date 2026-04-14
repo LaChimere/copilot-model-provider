@@ -285,10 +285,10 @@ def _normalize_finish_reason(*, reason: str | None) -> StreamFinishReason:
     return 'stop'
 
 
-def _first_non_empty_text(*values: str | None) -> str | None:
-    """Return the first non-empty text value from a list of SDK fields."""
+def _first_non_empty_text(*values: object | None) -> str | None:
+    """Return the first non-empty string value from a list of SDK fields."""
     for value in values:
-        if value:
+        if isinstance(value, str) and value:
             return value
 
     return None
