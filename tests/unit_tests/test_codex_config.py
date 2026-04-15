@@ -67,7 +67,7 @@ enabled = true
     provider = payload['model_providers']['copilot-model-provider-local']
 
     assert provider == {
-        'name': 'Local Copilot Model Provider',
+        'name': 'GitHub Copilot',
         'base_url': 'http://127.0.0.1:8000/openai/v1',
         'wire_api': 'responses',
     }

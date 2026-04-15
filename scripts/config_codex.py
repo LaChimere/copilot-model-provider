@@ -26,6 +26,7 @@ DEFAULT_IMAGE_CHANNEL = 'local'
 DEFAULT_RELEASE_VERSION = 'latest'
 RELEASE_IMAGE_REPOSITORY = 'ghcr.io/lachimere/copilot-model-provider'
 DEFAULT_PROVIDER_ID = 'copilot-model-provider-local'
+DEFAULT_PROVIDER_DISPLAY_NAME = 'GitHub Copilot'
 DEFAULT_CONTAINER_NAME = 'copilot-model-provider'
 DEFAULT_CONTAINER_PORT = 8000
 MAX_PORT = 65535
@@ -1052,7 +1053,7 @@ def _append_provider_block(
     provider_header = _render_table_path(('model_providers', provider_id))
     provider_block = [
         provider_header,
-        f'name = {_render_basic_string("Local Copilot Model Provider")}',
+        f'name = {_render_basic_string(DEFAULT_PROVIDER_DISPLAY_NAME)}',
         f'base_url = {_render_basic_string(base_url)}',
         'wire_api = "responses"',
     ]
