@@ -328,6 +328,37 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_responses_accepts_non_text_content_parts_without_422() -> None:
+    """Verify that non-text content parts are ignored instead of rejected."""
+    runtime = _FakeResponsesRuntime()
+    payload: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'input': [
+            {
+                'type': 'message',
+                'role': 'user',
+                'content': [
+                    {'type': 'input_text', 'text': 'Summarize this attachment.'},
+                    {
+                        'type': 'input_image',
+                        'image_url': 'https://example.com/image.png',
+                    },
+                    {'type': 'input_file', 'file_id': 'file-123'},
+                ],
+            }
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        response = await client.post('/openai/v1/responses', json=payload)
+
+    assert response.status_code == 200
+    assert runtime.last_request is not None
+    assert [message.model_dump() for message in runtime.last_request.messages] == [
+        {'role': 'user', 'content': 'Summarize this attachment.'}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_post_responses_accepts_truncation_as_compatibility_field() -> None:
     """Verify that Responses requests accept the ``truncation`` field unchanged."""
     runtime = _FakeResponsesRuntime()

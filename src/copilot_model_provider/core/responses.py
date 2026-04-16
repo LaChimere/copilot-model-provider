@@ -22,8 +22,8 @@ from copilot_model_provider.core.models import (
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCall,
     OpenAIResponsesFunctionCallOutputItem,
+    OpenAIResponsesInputContentPart,
     OpenAIResponsesInputMessage,
-    OpenAIResponsesInputTextPart,
     OpenAIResponsesOutputItem,
     OpenAIResponsesOutputItemAddedEvent,
     OpenAIResponsesOutputItemDoneEvent,
@@ -394,13 +394,17 @@ def _normalize_responses_message_item(
 def _normalize_responses_message_content(
     *,
     role: Literal['system', 'user', 'assistant'],
-    content: str | list[OpenAIResponsesInputTextPart],
+    content: str | list[OpenAIResponsesInputContentPart],
 ) -> list[CanonicalChatMessage]:
     """Normalize one Responses message content payload."""
     if isinstance(content, str):
         return [CanonicalChatMessage(role=role, content=content)]
 
-    return [CanonicalChatMessage(role=role, content=part.text) for part in content]
+    return [
+        CanonicalChatMessage(role=role, content=part.text)
+        for part in content
+        if isinstance(part.text, str) and part.text
+    ]
 
 
 def _normalize_openai_responses_input(

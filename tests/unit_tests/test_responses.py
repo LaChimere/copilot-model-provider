@@ -7,8 +7,8 @@ from typing import cast
 from copilot_model_provider.core.models import (
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCallOutputItem,
+    OpenAIResponsesInputContentPart,
     OpenAIResponsesInputMessage,
-    OpenAIResponsesInputTextPart,
     OpenAIResponsesOutputMessage,
     RuntimeCompletion,
 )
@@ -31,7 +31,7 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
             OpenAIResponsesInputMessage(
                 role='developer',
                 content=[
-                    OpenAIResponsesInputTextPart(
+                    OpenAIResponsesInputContentPart(
                         type='input_text',
                         text='Developer context',
                     )
@@ -40,7 +40,7 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
             OpenAIResponsesInputMessage(
                 role='user',
                 content=[
-                    OpenAIResponsesInputTextPart(
+                    OpenAIResponsesInputContentPart(
                         type='input_text',
                         text='User prompt',
                     )
@@ -64,6 +64,31 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
         {'role': 'system', 'content': 'Top-level instructions'},
         {'role': 'system', 'content': 'Developer context'},
         {'role': 'user', 'content': 'User prompt'},
+    ]
+
+
+def test_normalize_openai_responses_request_ignores_non_text_content_parts() -> None:
+    """Verify that non-text Responses content parts do not fail normalization."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesInputMessage(
+                role='user',
+                content=[
+                    OpenAIResponsesInputContentPart(
+                        type='input_text', text='Describe this'
+                    ),
+                    OpenAIResponsesInputContentPart(type='input_image'),
+                    OpenAIResponsesInputContentPart(type='input_file'),
+                ],
+            )
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(request=request)
+
+    assert [message.model_dump() for message in normalized.messages] == [
+        {'role': 'user', 'content': 'Describe this'}
     ]
 
 

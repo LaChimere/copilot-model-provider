@@ -468,13 +468,22 @@ def _empty_anthropic_content_block_list() -> list[
     return []
 
 
-class OpenAIResponsesInputTextPart(BaseModel):
-    """Text-bearing content part accepted by the minimal Responses route."""
+class OpenAIResponsesInputContentPart(BaseModel):
+    """One Responses input content part accepted by the minimal route.
+
+    The provider only normalizes text-bearing content onto the internal
+    canonical chat path, but desktop and CLI clients may still include other
+    structured content parts such as image/file references. Accepting those
+    parts here prevents FastAPI request validation from rejecting otherwise
+    usable prompts before the normalization layer can safely ignore the
+    non-text-bearing items.
+
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    type: Literal['input_text', 'output_text', 'text']
-    text: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    text: str | None = None
 
 
 class OpenAIResponsesInputMessage(BaseModel):
@@ -484,7 +493,7 @@ class OpenAIResponsesInputMessage(BaseModel):
 
     type: Literal['message'] = 'message'
     role: Literal['system', 'developer', 'user', 'assistant']
-    content: str | list[OpenAIResponsesInputTextPart] = Field(min_length=1)
+    content: str | list[OpenAIResponsesInputContentPart] = Field(min_length=1)
 
 
 class OpenAIResponsesFunctionCallOutputItem(BaseModel):
