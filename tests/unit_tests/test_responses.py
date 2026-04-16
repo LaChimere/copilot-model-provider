@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 from copilot_model_provider.core.models import (
+    CanonicalToolCall,
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCallOutputItem,
     OpenAIResponsesFunctionCallReplayItem,
@@ -119,6 +120,43 @@ def test_build_openai_responses_response_from_completion_maps_usage() -> None:
         'total_tokens': 18,
     }
     assert response.conversation is None
+
+
+def test_build_openai_responses_response_from_completion_renders_multiple_function_calls() -> (
+    None
+):
+    """Verify that runtime completions can expose multiple function-call items."""
+    request = OpenAIResponsesCreateRequest(model='default', input='Hello')
+    response = build_openai_responses_response_from_completion(
+        request=request,
+        completion=RuntimeCompletion(
+            output_text='Plan:',
+            finish_reason='tool_calls',
+            pending_tool_calls=(
+                CanonicalToolCall(
+                    call_id='call_readme',
+                    name='read_file',
+                    arguments={'path': 'README.md'},
+                ),
+                CanonicalToolCall(
+                    call_id='call_docs',
+                    name='list_dir',
+                    arguments={'path': 'docs'},
+                ),
+            ),
+        ),
+        response_id=build_response_id(request_id='req-multi-tool'),
+    )
+
+    assert [item['type'] for item in response.model_dump()['output']] == [
+        'message',
+        'function_call',
+        'function_call',
+    ]
+    assert [item['call_id'] for item in response.model_dump()['output'][1:]] == [
+        'call_readme',
+        'call_docs',
+    ]
 
 
 def test_normalize_openai_responses_request_preserves_web_search_and_custom_tools() -> (

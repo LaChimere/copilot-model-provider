@@ -735,7 +735,7 @@ async def test_copilot_runtime_streams_events_and_keeps_session_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_copilot_runtime_completes_interactive_turn_with_pending_tool_call() -> (
+async def test_copilot_runtime_completes_interactive_turn_with_pending_tool_calls() -> (
     None
 ):
     """Verify that tool-aware turns preserve session state and surface tool calls."""
@@ -786,10 +786,10 @@ async def test_copilot_runtime_completes_interactive_turn_with_pending_tool_call
     assert completion.session_id == 'copilot-session-tool'
     assert completion.prompt_tokens == 11
     assert completion.completion_tokens == 3
-    assert completion.pending_tool_call is not None
-    assert completion.pending_tool_call.call_id == 'call_readme'
-    assert completion.pending_tool_call.name == 'read_file'
-    assert completion.pending_tool_call.arguments == {'path': 'README.md'}
+    assert len(completion.pending_tool_calls) == 1
+    assert completion.pending_tool_calls[0].call_id == 'call_readme'
+    assert completion.pending_tool_calls[0].name == 'read_file'
+    assert completion.pending_tool_calls[0].arguments == {'path': 'README.md'}
     assert len(client.create_session_calls) == 1
     create_session_call = client.create_session_calls[0]
     assert create_session_call['excluded_tools'] == ['web_search', 'web_fetch']
@@ -808,6 +808,186 @@ async def test_copilot_runtime_completes_interactive_turn_with_pending_tool_call
 
     assert session.disconnected is True
     assert 'copilot-session-tool' not in runtime._interactive_sessions
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_batches_multiple_tool_requests_in_one_turn() -> None:
+    """Verify that one interactive turn can surface multiple pending tool calls."""
+    session = _FakeSession(
+        session_id='copilot-session-tool-batch',
+        stream_events=[
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000101',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.message_delta',
+                    'data': {'deltaContent': 'Plan'},
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000102',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'external_tool.requested',
+                    'data': {
+                        'requestId': 'tool-request-1',
+                        'toolName': 'read_file',
+                        'toolCallId': 'call_readme',
+                        'arguments': {'path': 'README.md'},
+                    },
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000103',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'external_tool.requested',
+                    'data': {
+                        'requestId': 'tool-request-2',
+                        'toolName': 'list_dir',
+                        'toolCallId': 'call_docs',
+                        'arguments': {'path': 'docs'},
+                    },
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000104',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.turn_end',
+                    'data': {
+                        'reason': 'tool_calls',
+                        'inputTokens': 14,
+                        'outputTokens': 4,
+                    },
+                }
+            ),
+        ],
+    )
+    runtime = CopilotRuntime(
+        client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
+    )
+
+    completion = await runtime.complete_chat(
+        request=_build_tool_aware_request(),
+        route=ResolvedRoute(runtime='copilot', runtime_model_id='copilot-default'),
+    )
+
+    assert completion.output_text == 'Plan'
+    assert completion.finish_reason == 'tool_calls'
+    assert completion.session_id == 'copilot-session-tool-batch'
+    assert completion.prompt_tokens == 14
+    assert completion.completion_tokens == 4
+    assert [tool_call.call_id for tool_call in completion.pending_tool_calls] == [
+        'call_readme',
+        'call_docs',
+    ]
+    assert [tool_call.name for tool_call in completion.pending_tool_calls] == [
+        'read_file',
+        'list_dir',
+    ]
+    assert 'copilot-session-tool-batch' in runtime._interactive_sessions
+
+    await runtime._discard_interactive_session(
+        session_id='copilot-session-tool-batch',
+        disconnect=True,
+    )
+
+    assert session.disconnected is True
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_deduplicates_replayed_tool_requests_in_one_turn() -> (
+    None
+):
+    """Verify that aggregate assistant tool metadata does not duplicate live tool calls."""
+    session = _FakeSession(
+        session_id='copilot-session-tool-dedupe',
+        stream_events=[
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000201',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'external_tool.requested',
+                    'data': {
+                        'requestId': 'tool-request-1',
+                        'toolName': 'report_intent',
+                        'toolCallId': 'call_intent',
+                        'arguments': {'intent': 'Reading README.md'},
+                    },
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000202',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'external_tool.requested',
+                    'data': {
+                        'requestId': 'tool-request-2',
+                        'toolName': 'read_file',
+                        'toolCallId': 'call_readme',
+                        'arguments': {'path': 'README.md'},
+                    },
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000203',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.message',
+                    'data': {
+                        'content': 'Whole message',
+                        'toolRequests': [
+                            {
+                                'toolCallId': 'call_intent',
+                                'name': 'report_intent',
+                                'arguments': {'intent': 'Reading README.md'},
+                            },
+                            {
+                                'toolCallId': 'call_readme',
+                                'name': 'read_file',
+                                'arguments': {'path': 'README.md'},
+                            },
+                        ],
+                    },
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000204',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.turn_end',
+                    'data': {
+                        'reason': 'tool_calls',
+                        'inputTokens': 14,
+                        'outputTokens': 4,
+                    },
+                }
+            ),
+        ],
+    )
+    runtime = CopilotRuntime(
+        client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
+    )
+
+    completion = await runtime.complete_chat(
+        request=_build_tool_aware_request(),
+        route=ResolvedRoute(runtime='copilot', runtime_model_id='copilot-default'),
+    )
+
+    assert [tool_call.call_id for tool_call in completion.pending_tool_calls] == [
+        'call_intent',
+        'call_readme',
+    ]
+    assert [tool_call.name for tool_call in completion.pending_tool_calls] == [
+        'report_intent',
+        'read_file',
+    ]
+
+    await runtime._discard_interactive_session(
+        session_id='copilot-session-tool-dedupe',
+        disconnect=True,
+    )
 
 
 @pytest.mark.asyncio

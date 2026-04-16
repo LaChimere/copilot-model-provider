@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 from time import time
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 from copilot_model_provider.core.models import (
     CanonicalChatMessage,
@@ -102,7 +105,7 @@ def build_openai_responses_response_from_completion(
     return build_openai_responses_response_from_text(
         request=request,
         output_text=completion.output_text,
-        pending_tool_call=completion.pending_tool_call,
+        pending_tool_calls=completion.pending_tool_calls,
         response_id=response_id,
         conversation_id=conversation_id,
         created_at=created_at,
@@ -117,7 +120,7 @@ def build_openai_responses_response_from_text(
     *,
     request: OpenAIResponsesCreateRequest,
     output_text: str | None,
-    pending_tool_call: CanonicalToolCall | None = None,
+    pending_tool_calls: Sequence[CanonicalToolCall] = (),
     response_id: str,
     conversation_id: str | None = None,
     created_at: int | None = None,
@@ -125,7 +128,7 @@ def build_openai_responses_response_from_text(
     status: Literal['completed', 'in_progress'] = 'completed',
     usage: OpenAIResponsesUsage | None = None,
 ) -> OpenAIResponse:
-    """Build a Responses payload from assistant text and optional tool call."""
+    """Build a Responses payload from assistant text and optional tool calls."""
     normalized_created_at = created_at or int(time())
     normalized_completed_at = completed_at or (
         normalized_created_at if status == 'completed' else None
@@ -139,13 +142,13 @@ def build_openai_responses_response_from_text(
                 status=status,
             )
         )
-    if pending_tool_call is not None:
-        output.append(
-            build_openai_responses_function_call_item(
-                response_id=response_id,
-                tool_call=pending_tool_call,
-            )
+    output.extend(
+        build_openai_responses_function_call_item(
+            response_id=response_id,
+            tool_call=pending_tool_call,
         )
+        for pending_tool_call in pending_tool_calls
+    )
 
     return OpenAIResponse(
         id=response_id,
@@ -183,7 +186,7 @@ def build_openai_responses_created_event(
         response=build_openai_responses_response_from_text(
             request=request,
             output_text=None,
-            pending_tool_call=None,
+            pending_tool_calls=(),
             response_id=response_id,
             conversation_id=conversation_id,
             created_at=created_at,
@@ -197,7 +200,7 @@ def build_openai_responses_completed_event(
     request: OpenAIResponsesCreateRequest,
     response_id: str,
     output_text: str | None,
-    pending_tool_call: CanonicalToolCall | None,
+    pending_tool_calls: Sequence[CanonicalToolCall],
     sequence_number: int,
     conversation_id: str | None = None,
     created_at: int | None = None,
@@ -210,7 +213,7 @@ def build_openai_responses_completed_event(
         response=build_openai_responses_response_from_text(
             request=request,
             output_text=output_text,
-            pending_tool_call=pending_tool_call,
+            pending_tool_calls=pending_tool_calls,
             response_id=response_id,
             conversation_id=conversation_id,
             created_at=created_at,

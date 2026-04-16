@@ -8,12 +8,14 @@ import pytest
 from copilot.generated.session_events import ErrorClass, SessionEvent
 
 import copilot_model_provider.streaming.translators as streaming_translators
+from copilot_model_provider.core.models import CanonicalToolCall
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantTurnCompleteEvent,
     AssistantUsageEvent,
     StreamFinishReason,
     StreamingErrorEvent,
+    ToolCallsRequestedEvent,
 )
 from copilot_model_provider.streaming.translators import (
     build_finish_chunk,
@@ -77,6 +79,47 @@ def test_translate_session_event_ignores_structured_content_in_favor_of_text() -
     )
 
     assert stream_event == AssistantTextDeltaEvent(text='Whole message')
+
+
+def test_translate_session_event_maps_aggregate_tool_requests_to_multi_tool_event() -> (
+    None
+):
+    """Verify that aggregated assistant messages can still surface batched tool calls."""
+    stream_event = translate_session_event(
+        event=_build_session_event(
+            event_type='assistant.message',
+            data={
+                'content': 'Whole message',
+                'toolRequests': [
+                    {
+                        'toolCallId': 'call_readme',
+                        'name': 'read_file',
+                        'arguments': {'path': 'README.md'},
+                    },
+                    {
+                        'toolCallId': 'call_docs',
+                        'name': 'list_dir',
+                        'arguments': {'path': 'docs'},
+                    },
+                ],
+            },
+        )
+    )
+
+    assert stream_event == ToolCallsRequestedEvent(
+        tool_calls=(
+            CanonicalToolCall(
+                call_id='call_readme',
+                name='read_file',
+                arguments={'path': 'README.md'},
+            ),
+            CanonicalToolCall(
+                call_id='call_docs',
+                name='list_dir',
+                arguments={'path': 'docs'},
+            ),
+        )
+    )
 
 
 @pytest.mark.parametrize(

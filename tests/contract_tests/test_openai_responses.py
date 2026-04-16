@@ -191,10 +191,12 @@ class _FakeResponsesToolRuntime(_FakeResponsesRuntime):
             output_text='Plan:',
             finish_reason='tool_calls',
             session_id='responses-tool-session',
-            pending_tool_call=CanonicalToolCall(
-                call_id='call_readme',
-                name='read_file',
-                arguments={'path': 'README.md'},
+            pending_tool_calls=(
+                CanonicalToolCall(
+                    call_id='call_readme',
+                    name='read_file',
+                    arguments={'path': 'README.md'},
+                ),
             ),
             prompt_tokens=9,
             completion_tokens=1,
@@ -267,6 +269,142 @@ class _FakeResponsesToolRuntime(_FakeResponsesRuntime):
         return RuntimeEventStream(session_id='responses-tool-session', events=_events())
 
 
+class _FakeResponsesMultiToolRuntime(_FakeResponsesRuntime):
+    """Fake runtime that pauses on two function calls before resuming."""
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Return two tool calls on the first turn and final text on continuation."""
+        del route
+        self.last_request = request
+        if request.tool_results:
+            return RuntimeCompletion(
+                output_text='Both tools completed.',
+                session_id=request.session_id,
+                prompt_tokens=14,
+                completion_tokens=4,
+            )
+
+        return RuntimeCompletion(
+            output_text='Plan:',
+            finish_reason='tool_calls',
+            session_id='responses-multi-tool-session',
+            pending_tool_calls=(
+                CanonicalToolCall(
+                    call_id='call_readme',
+                    name='read_file',
+                    arguments={'path': 'README.md'},
+                ),
+                CanonicalToolCall(
+                    call_id='call_docs',
+                    name='list_dir',
+                    arguments={'path': 'docs'},
+                ),
+            ),
+            prompt_tokens=11,
+            completion_tokens=2,
+        )
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit two tool requests on the first turn and final text after both results."""
+        del route
+        self.last_request = request
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield multi-tool or final-turn events depending on the turn state."""
+            if request.tool_results:
+                events = (
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000221',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.message_delta',
+                            'data': {'deltaContent': 'Done'},
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000222',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.turn_end',
+                            'data': {
+                                'reason': 'stop',
+                                'inputTokens': 14,
+                                'outputTokens': 4,
+                            },
+                        }
+                    ),
+                )
+            else:
+                events = (
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000223',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.message_delta',
+                            'data': {'deltaContent': 'Plan'},
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000224',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'external_tool.requested',
+                            'data': {
+                                'requestId': 'tool-request-1',
+                                'toolName': 'read_file',
+                                'toolCallId': 'call_readme',
+                                'arguments': {'path': 'README.md'},
+                            },
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000225',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'external_tool.requested',
+                            'data': {
+                                'requestId': 'tool-request-2',
+                                'toolName': 'list_dir',
+                                'toolCallId': 'call_docs',
+                                'arguments': {'path': 'docs'},
+                            },
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000226',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.turn_end',
+                            'data': {
+                                'reason': 'tool_calls',
+                                'inputTokens': 11,
+                                'outputTokens': 2,
+                            },
+                        }
+                    ),
+                )
+
+            for event in events:
+                yield event
+
+        return RuntimeEventStream(
+            session_id='responses-multi-tool-session',
+            events=_events(),
+        )
+
+
 def _extract_completed_frame_data(*, payload: str) -> str:
     """Return the serialized ``response.completed`` SSE payload."""
     frames = parse_sse_frames(payload=payload)
@@ -281,6 +419,13 @@ def _extract_completed_frame_data(*, payload: str) -> str:
 def _extract_function_call_item(*, output: list[dict[str, Any]]) -> dict[str, Any]:
     """Return the function-call item from one Responses output payload."""
     return next(item for item in output if item.get('type') == 'function_call')
+
+
+def _extract_function_call_items(
+    *, output: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return all function-call items from one Responses output payload."""
+    return [item for item in output if item.get('type') == 'function_call']
 
 
 @pytest.mark.asyncio
@@ -579,6 +724,107 @@ async def test_post_responses_streaming_supports_function_call_continuation() ->
             'is_error': False,
             'error_text': None,
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_responses_streaming_requires_full_function_result_batch() -> None:
+    """Verify that multi-tool Responses continuations must return the full batch."""
+    runtime = _FakeResponsesMultiToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'stream': True,
+        'input': 'Inspect the repo',
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'read_file',
+                    'description': 'Read one file.',
+                    'parameters': {'type': 'object'},
+                },
+            },
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'list_dir',
+                    'description': 'List one directory.',
+                    'parameters': {'type': 'object'},
+                },
+            },
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=first_request_body,
+        ) as response:
+            first_payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+        first_completed_payload = cast(
+            'dict[str, Any]',
+            json.loads(_extract_completed_frame_data(payload=first_payload)),
+        )
+        response_payload = cast('dict[str, Any]', first_completed_payload['response'])
+        response_id = cast('str', response_payload['id'])
+        function_calls = _extract_function_call_items(
+            output=cast('list[dict[str, Any]]', response_payload['output'])
+        )
+
+        partial_follow_up = await client.post(
+            '/openai/v1/responses',
+            json={
+                'model': 'gpt-5.4',
+                'previous_response_id': response_id,
+                'input': [
+                    {
+                        'type': 'function_call_output',
+                        'call_id': 'call_readme',
+                        'output': 'README contents',
+                    }
+                ],
+            },
+        )
+
+        full_follow_up = await client.post(
+            '/openai/v1/responses',
+            json={
+                'model': 'gpt-5.4',
+                'previous_response_id': response_id,
+                'input': [
+                    {
+                        'type': 'function_call_output',
+                        'call_id': 'call_readme',
+                        'output': 'README contents',
+                    },
+                    {
+                        'type': 'function_call_output',
+                        'call_id': 'call_docs',
+                        'output': 'docs/',
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert [item['call_id'] for item in function_calls] == [
+        'call_readme',
+        'call_docs',
+    ]
+    assert partial_follow_up.status_code == 400
+    partial_error = cast('dict[str, Any]', partial_follow_up.json())['error']
+    assert partial_error['code'] == 'invalid_tool_result'
+    assert (
+        partial_error['message']
+        == 'Function call output items must provide the full pending tool-result batch.'
+    )
+    assert full_follow_up.status_code == 200
+    assert runtime.last_request is not None
+    assert runtime.last_request.session_id == 'responses-multi-tool-session'
+    assert [result.call_id for result in runtime.last_request.tool_results] == [
+        'call_readme',
+        'call_docs',
     ]
 
 

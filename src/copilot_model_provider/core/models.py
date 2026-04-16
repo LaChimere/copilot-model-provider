@@ -931,6 +931,6 @@ class RuntimeCompletion(BaseModel):
     finish_reason: Literal['stop', 'length', 'content_filter', 'tool_calls'] = 'stop'
     provider_response_id: str | None = None
     session_id: str | None = None
-    pending_tool_call: CanonicalToolCall | None = None
+    pending_tool_calls: tuple[CanonicalToolCall, ...] = Field(default_factory=tuple)
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)

@@ -41,6 +41,7 @@ def test_pop_pending_session_id_from_tool_results_returns_matching_session() -> 
     session_id = _pop_pending_session_id_from_tool_results(
         request=_build_tool_result_request('toolu_1'),
         pending_sessions_by_tool_use_id=pending_sessions,
+        pending_tool_use_batches_by_session_id={'session_123': frozenset({'toolu_1'})},
     )
 
     assert session_id == 'session_123'
@@ -53,6 +54,7 @@ def test_pop_pending_session_id_from_tool_results_rejects_missing_session() -> N
         _pop_pending_session_id_from_tool_results(
             request=_build_tool_result_request('toolu_missing'),
             pending_sessions_by_tool_use_id={},
+            pending_tool_use_batches_by_session_id={},
         )
 
     assert error_info.value.code == 'invalid_tool_result'
@@ -73,6 +75,10 @@ def test_pop_pending_session_id_from_tool_results_rejects_mismatched_sessions() 
         _pop_pending_session_id_from_tool_results(
             request=_build_tool_result_request('toolu_1', 'toolu_2'),
             pending_sessions_by_tool_use_id=pending_sessions,
+            pending_tool_use_batches_by_session_id={
+                'session_123': frozenset({'toolu_1'}),
+                'session_456': frozenset({'toolu_2'}),
+            },
         )
 
     assert error_info.value.code == 'invalid_tool_result'
@@ -83,4 +89,31 @@ def test_pop_pending_session_id_from_tool_results_rejects_mismatched_sessions() 
     assert pending_sessions == {
         'toolu_1': 'session_123',
         'toolu_2': 'session_456',
+    }
+
+
+def test_pop_pending_session_id_from_tool_results_rejects_partial_batch() -> None:
+    """Verify that Anthropic continuations must submit the full pending tool batch."""
+    pending_sessions = {
+        'toolu_1': 'session_123',
+        'toolu_2': 'session_123',
+    }
+
+    with pytest.raises(ProviderError) as error_info:
+        _pop_pending_session_id_from_tool_results(
+            request=_build_tool_result_request('toolu_1'),
+            pending_sessions_by_tool_use_id=pending_sessions,
+            pending_tool_use_batches_by_session_id={
+                'session_123': frozenset({'toolu_1', 'toolu_2'})
+            },
+        )
+
+    assert error_info.value.code == 'invalid_tool_result'
+    assert (
+        error_info.value.message
+        == 'Tool result blocks must provide the full pending tool-result batch.'
+    )
+    assert pending_sessions == {
+        'toolu_1': 'session_123',
+        'toolu_2': 'session_123',
     }

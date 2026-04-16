@@ -43,6 +43,16 @@
 - [x] Keep Anthropic continuation behavior on the shared runtime base.
 - [x] Add Anthropic contract/integration coverage for the shared policy path.
 
+### Multi-tool batching follow-up
+
+- [x] Land the shared multi-tool batching implementation across runtime,
+      translators, OpenAI Responses, and Anthropic Messages.
+- [x] Add unit and contract coverage for batched continuation result handling
+      across OpenAI Responses and Anthropic Messages.
+- [ ] Add container-backed integration coverage for the multi-tool batching
+      slice.
+- [ ] Re-run final repo validation for the multi-tool batching slice.
+
 ### Verification
 
 - [x] Run targeted unit tests for the base slice.

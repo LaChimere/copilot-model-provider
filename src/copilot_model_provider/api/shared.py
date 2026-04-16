@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import structlog
 from copilot.generated.session_events import SessionEventType
@@ -298,4 +298,16 @@ def should_skip_aggregated_assistant_message(
         duplicate previously emitted delta text, otherwise ``False``.
 
     """
-    return saw_text_delta and event.type == SessionEventType.ASSISTANT_MESSAGE
+    return (
+        saw_text_delta
+        and event.type == SessionEventType.ASSISTANT_MESSAGE
+        and not _assistant_message_has_tool_requests(event=event)
+    )
+
+
+def _assistant_message_has_tool_requests(*, event: SessionEvent) -> bool:
+    """Report whether one aggregated assistant message also carries tool requests."""
+    raw_tool_requests = getattr(event.data, 'tool_requests', None)
+    if not isinstance(raw_tool_requests, list):
+        return False
+    return len(cast('list[object]', raw_tool_requests)) > 0

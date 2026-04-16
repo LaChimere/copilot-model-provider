@@ -20,6 +20,7 @@ from copilot_model_provider.api.shared import (
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
+    CanonicalToolCall,
     OpenAIResponse,
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCallOutputItem,
@@ -47,6 +48,7 @@ from copilot_model_provider.streaming.events import (
     AssistantUsageEvent,
     StreamingErrorEvent,
     ToolCallRequestedEvent,
+    ToolCallsRequestedEvent,
 )
 from copilot_model_provider.streaming.responses import (
     encode_openai_responses_error_event,
@@ -54,7 +56,7 @@ from copilot_model_provider.streaming.responses import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from copilot_model_provider.core.routing import ModelRouterProtocol
     from copilot_model_provider.runtimes.protocols import RuntimeProtocol
@@ -75,6 +77,7 @@ def install_openai_responses_route(
     """Install the OpenAI-compatible ``POST /openai/v1/responses`` route."""
     pending_sessions_by_response_id: dict[str, str] = {}
     pending_sessions_by_tool_call_id: dict[str, str] = {}
+    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]] = {}
 
     async def _create_response(
         request: OpenAIResponsesCreateRequest,
@@ -110,6 +113,9 @@ def install_openai_responses_route(
             request=request,
             pending_sessions_by_response_id=pending_sessions_by_response_id,
             pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            pending_tool_call_batches_by_session_id=(
+                pending_tool_call_batches_by_session_id
+            ),
             previous_response_id=request.previous_response_id,
         )
         canonical_request = normalize_openai_responses_request(
@@ -134,6 +140,9 @@ def install_openai_responses_route(
                 canonical_request=canonical_request,
                 pending_sessions_by_response_id=pending_sessions_by_response_id,
                 pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+                pending_tool_call_batches_by_session_id=(
+                    pending_tool_call_batches_by_session_id
+                ),
             )
 
         completion = await runtime.complete_chat(
@@ -141,13 +150,16 @@ def install_openai_responses_route(
             route=route,
         )
         response_id = build_response_id(request_id=canonical_request.request_id)
-        if (
-            completion.pending_tool_call is not None
-            and completion.session_id is not None
-        ):
-            pending_sessions_by_response_id[response_id] = completion.session_id
-            pending_sessions_by_tool_call_id[completion.pending_tool_call.call_id] = (
-                completion.session_id
+        if completion.pending_tool_calls and completion.session_id is not None:
+            _remember_pending_response_tool_batch(
+                response_id=response_id,
+                session_id=completion.session_id,
+                pending_tool_calls=completion.pending_tool_calls,
+                pending_sessions_by_response_id=pending_sessions_by_response_id,
+                pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+                pending_tool_call_batches_by_session_id=(
+                    pending_tool_call_batches_by_session_id
+                ),
             )
         _logger.info(
             'openai_responses_completion_ready',
@@ -156,11 +168,10 @@ def install_openai_responses_route(
             session_id=completion.session_id,
             finish_reason=completion.finish_reason,
             output_text_chars=len(completion.output_text or ''),
-            pending_tool_call_name=(
-                completion.pending_tool_call.name
-                if completion.pending_tool_call is not None
-                else None
-            ),
+            pending_tool_call_count=len(completion.pending_tool_calls),
+            pending_tool_call_names=[
+                tool_call.name for tool_call in completion.pending_tool_calls
+            ],
             pending_response_session_count=len(pending_sessions_by_response_id),
         )
         return build_openai_responses_response_from_completion(
@@ -185,6 +196,7 @@ async def _create_streaming_response(  # noqa: C901
     canonical_request: CanonicalChatRequest,
     pending_sessions_by_response_id: dict[str, str],
     pending_sessions_by_tool_call_id: dict[str, str],
+    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
 ) -> StreamingResponse:
     """Create a streaming OpenAI Responses-compatible SSE response."""
     runtime_stream = None
@@ -219,6 +231,8 @@ async def _create_streaming_response(  # noqa: C901
         message_item_started = False
         completion_emitted = False
         saw_tool_call = False
+        pending_tool_calls: list[CanonicalToolCall] = []
+        pending_tool_call_ids: set[str] = set()
 
         yield encode_openai_responses_event(
             payload=build_openai_responses_created_event(
@@ -292,92 +306,21 @@ async def _create_streaming_response(  # noqa: C901
 
             if isinstance(stream_event, ToolCallRequestedEvent):
                 saw_tool_call = True
-                completed_at = int(time())
-                if message_item_started:
-                    final_text = ''.join(output_parts)
-                    yield encode_openai_responses_event(
-                        payload=build_openai_responses_output_text_done_event(
-                            response_id=response_id,
-                            text=final_text,
-                            sequence_number=sequence_number,
-                            output_index=0,
-                        ).model_dump_json(exclude_none=True)
-                    )
-                    sequence_number += 1
-                    yield encode_openai_responses_event(
-                        payload=build_openai_responses_content_part_done_event(
-                            response_id=response_id,
-                            text=final_text,
-                            sequence_number=sequence_number,
-                            output_index=0,
-                        ).model_dump_json(exclude_none=True)
-                    )
-                    sequence_number += 1
-                    yield encode_openai_responses_event(
-                        payload=build_openai_responses_output_item_done_event(
-                            item=build_openai_responses_output_message(
-                                response_id=response_id,
-                                output_text=final_text,
-                                status='completed',
-                            ),
-                            sequence_number=sequence_number,
-                            output_index=0,
-                        ).model_dump_json(exclude_none=True)
-                    )
-                    sequence_number += 1
+                _append_unique_tool_calls(
+                    pending_tool_calls=pending_tool_calls,
+                    pending_tool_call_ids=pending_tool_call_ids,
+                    tool_calls=(stream_event.tool_call,),
+                )
+                continue
 
-                function_output_index = 1 if message_item_started else 0
-                function_call_item = build_openai_responses_function_call_item(
-                    response_id=response_id,
-                    tool_call=stream_event.tool_call,
+            if isinstance(stream_event, ToolCallsRequestedEvent):
+                saw_tool_call = True
+                _append_unique_tool_calls(
+                    pending_tool_calls=pending_tool_calls,
+                    pending_tool_call_ids=pending_tool_call_ids,
+                    tool_calls=stream_event.tool_calls,
                 )
-                yield encode_openai_responses_event(
-                    payload=build_openai_responses_output_item_added_event(
-                        item=function_call_item,
-                        sequence_number=sequence_number,
-                        output_index=function_output_index,
-                    ).model_dump_json(exclude_none=True)
-                )
-                sequence_number += 1
-                yield encode_openai_responses_event(
-                    payload=build_openai_responses_output_item_done_event(
-                        item=function_call_item,
-                        sequence_number=sequence_number,
-                        output_index=function_output_index,
-                    ).model_dump_json(exclude_none=True)
-                )
-                sequence_number += 1
-                if runtime_stream.session_id is not None:
-                    pending_sessions_by_response_id[response_id] = (
-                        runtime_stream.session_id
-                    )
-                    pending_sessions_by_tool_call_id[stream_event.tool_call.call_id] = (
-                        runtime_stream.session_id
-                    )
-                _logger.info(
-                    'openai_responses_stream_tool_call_requested',
-                    request_id=canonical_request.request_id,
-                    response_id=response_id,
-                    session_id=runtime_stream.session_id,
-                    tool_call_id=stream_event.tool_call.call_id,
-                    tool_name=stream_event.tool_call.name,
-                    output_text_chars=len(''.join(output_parts)),
-                    pending_response_session_count=len(pending_sessions_by_response_id),
-                )
-                yield encode_openai_responses_event(
-                    payload=build_openai_responses_completed_event(
-                        request=request,
-                        response_id=response_id,
-                        output_text=''.join(output_parts) or None,
-                        pending_tool_call=stream_event.tool_call,
-                        sequence_number=sequence_number,
-                        created_at=created_at,
-                        completed_at=completed_at,
-                        usage=usage,
-                    ).model_dump_json(exclude_none=True)
-                )
-                completion_emitted = True
-                return
+                continue
 
             completed_at = int(time())
             if usage is None:
@@ -418,12 +361,82 @@ async def _create_streaming_response(  # noqa: C901
                 )
                 sequence_number += 1
 
+            if pending_tool_calls:
+                first_function_output_index = 1 if message_item_started else 0
+                for output_index, pending_tool_call in enumerate(
+                    pending_tool_calls,
+                    start=first_function_output_index,
+                ):
+                    function_call_item = build_openai_responses_function_call_item(
+                        response_id=response_id,
+                        tool_call=pending_tool_call,
+                    )
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_item_added_event(
+                            item=function_call_item,
+                            sequence_number=sequence_number,
+                            output_index=output_index,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_item_done_event(
+                            item=function_call_item,
+                            sequence_number=sequence_number,
+                            output_index=output_index,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                if runtime_stream.session_id is not None:
+                    _remember_pending_response_tool_batch(
+                        response_id=response_id,
+                        session_id=runtime_stream.session_id,
+                        pending_tool_calls=pending_tool_calls,
+                        pending_sessions_by_response_id=pending_sessions_by_response_id,
+                        pending_sessions_by_tool_call_id=(
+                            pending_sessions_by_tool_call_id
+                        ),
+                        pending_tool_call_batches_by_session_id=(
+                            pending_tool_call_batches_by_session_id
+                        ),
+                    )
+                _logger.info(
+                    'openai_responses_stream_tool_calls_requested',
+                    request_id=canonical_request.request_id,
+                    response_id=response_id,
+                    session_id=runtime_stream.session_id,
+                    tool_call_ids=[
+                        pending_tool_call.call_id
+                        for pending_tool_call in pending_tool_calls
+                    ],
+                    tool_call_names=[
+                        pending_tool_call.name
+                        for pending_tool_call in pending_tool_calls
+                    ],
+                    output_text_chars=len(''.join(output_parts)),
+                    pending_response_session_count=len(pending_sessions_by_response_id),
+                )
+                yield encode_openai_responses_event(
+                    payload=build_openai_responses_completed_event(
+                        request=request,
+                        response_id=response_id,
+                        output_text=''.join(output_parts) or None,
+                        pending_tool_calls=pending_tool_calls,
+                        sequence_number=sequence_number,
+                        created_at=created_at,
+                        completed_at=completed_at,
+                        usage=usage,
+                    ).model_dump_json(exclude_none=True)
+                )
+                completion_emitted = True
+                return
+
             yield encode_openai_responses_event(
                 payload=build_openai_responses_completed_event(
                     request=request,
                     response_id=response_id,
                     output_text=''.join(output_parts) or None,
-                    pending_tool_call=None,
+                    pending_tool_calls=(),
                     sequence_number=sequence_number,
                     created_at=created_at,
                     completed_at=completed_at,
@@ -443,12 +456,83 @@ async def _create_streaming_response(  # noqa: C901
             return
 
         if not completion_emitted:
+            if pending_tool_calls:
+                if message_item_started:
+                    final_text = ''.join(output_parts)
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_text_done_event(
+                            response_id=response_id,
+                            text=final_text,
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_content_part_done_event(
+                            response_id=response_id,
+                            text=final_text,
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_item_done_event(
+                            item=build_openai_responses_output_message(
+                                response_id=response_id,
+                                output_text=final_text,
+                                status='completed',
+                            ),
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                first_function_output_index = 1 if message_item_started else 0
+                for output_index, pending_tool_call in enumerate(
+                    pending_tool_calls,
+                    start=first_function_output_index,
+                ):
+                    function_call_item = build_openai_responses_function_call_item(
+                        response_id=response_id,
+                        tool_call=pending_tool_call,
+                    )
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_item_added_event(
+                            item=function_call_item,
+                            sequence_number=sequence_number,
+                            output_index=output_index,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_item_done_event(
+                            item=function_call_item,
+                            sequence_number=sequence_number,
+                            output_index=output_index,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                if runtime_stream.session_id is not None:
+                    _remember_pending_response_tool_batch(
+                        response_id=response_id,
+                        session_id=runtime_stream.session_id,
+                        pending_tool_calls=pending_tool_calls,
+                        pending_sessions_by_response_id=pending_sessions_by_response_id,
+                        pending_sessions_by_tool_call_id=(
+                            pending_sessions_by_tool_call_id
+                        ),
+                        pending_tool_call_batches_by_session_id=(
+                            pending_tool_call_batches_by_session_id
+                        ),
+                    )
             yield encode_openai_responses_event(
                 payload=build_openai_responses_completed_event(
                     request=request,
                     response_id=response_id,
                     output_text=''.join(output_parts) or None,
-                    pending_tool_call=None,
+                    pending_tool_calls=tuple(pending_tool_calls),
                     sequence_number=sequence_number,
                     created_at=created_at,
                     completed_at=completed_at,
@@ -473,6 +557,7 @@ def _pop_pending_session_id(
     request: OpenAIResponsesCreateRequest,
     pending_sessions_by_response_id: dict[str, str],
     pending_sessions_by_tool_call_id: dict[str, str],
+    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
     previous_response_id: str | None,
 ) -> str | None:
     """Resolve and consume one pending session continuation id."""
@@ -504,6 +589,13 @@ def _pop_pending_session_id(
             )
 
         session_id = next(iter(session_ids))
+        _validate_full_tool_result_batch(
+            tool_result_call_ids=tool_result_call_ids,
+            session_id=session_id,
+            pending_tool_call_batches_by_session_id=(
+                pending_tool_call_batches_by_session_id
+            ),
+        )
         for call_id in matched_call_ids:
             pending_sessions_by_tool_call_id.pop(call_id, None)
         cleared_response_ids = _pop_pending_response_ids_for_session(
@@ -521,7 +613,7 @@ def _pop_pending_session_id(
         )
         return session_id
 
-    session_id = pending_sessions_by_response_id.pop(previous_response_id, None)
+    session_id = pending_sessions_by_response_id.get(previous_response_id)
     if session_id is None:
         raise ProviderError(
             code='invalid_previous_response_id',
@@ -545,6 +637,12 @@ def _pop_pending_session_id(
             message='Function call output items did not match the supplied previous_response_id.',
             status_code=400,
         )
+    _validate_full_tool_result_batch(
+        tool_result_call_ids=tool_result_call_ids,
+        session_id=session_id,
+        pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
+    )
+    pending_sessions_by_response_id.pop(previous_response_id, None)
     for call_id in matched_call_ids:
         pending_sessions_by_tool_call_id.pop(call_id, None)
     _logger.info(
@@ -570,6 +668,61 @@ def _extract_tool_result_call_ids(
         for item in request.input
         if isinstance(item, OpenAIResponsesFunctionCallOutputItem)
     ]
+
+
+def _remember_pending_response_tool_batch(
+    *,
+    response_id: str,
+    session_id: str,
+    pending_tool_calls: Sequence[CanonicalToolCall],
+    pending_sessions_by_response_id: dict[str, str],
+    pending_sessions_by_tool_call_id: dict[str, str],
+    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
+) -> None:
+    """Record one paused Responses turn so continuation requests can resume it."""
+    pending_sessions_by_response_id[response_id] = session_id
+    pending_tool_call_batches_by_session_id[session_id] = frozenset(
+        pending_tool_call.call_id for pending_tool_call in pending_tool_calls
+    )
+    for pending_tool_call in pending_tool_calls:
+        pending_sessions_by_tool_call_id[pending_tool_call.call_id] = session_id
+
+
+def _append_unique_tool_calls(
+    *,
+    pending_tool_calls: list[CanonicalToolCall],
+    pending_tool_call_ids: set[str],
+    tool_calls: Sequence[CanonicalToolCall],
+) -> None:
+    """Append tool calls once per call id while preserving first-seen order."""
+    for tool_call in tool_calls:
+        if tool_call.call_id in pending_tool_call_ids:
+            continue
+        pending_tool_call_ids.add(tool_call.call_id)
+        pending_tool_calls.append(tool_call)
+
+
+def _validate_full_tool_result_batch(
+    *,
+    tool_result_call_ids: list[str],
+    session_id: str,
+    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
+) -> None:
+    """Verify that one continuation submits the complete pending tool-result batch."""
+    outstanding_call_ids = pending_tool_call_batches_by_session_id.get(session_id)
+    if outstanding_call_ids is None:
+        return
+    submitted_call_ids = frozenset(tool_result_call_ids)
+    if (
+        len(tool_result_call_ids) != len(outstanding_call_ids)
+        or submitted_call_ids != outstanding_call_ids
+    ):
+        raise ProviderError(
+            code='invalid_tool_result',
+            message='Function call output items must provide the full pending tool-result batch.',
+            status_code=400,
+        )
+    pending_tool_call_batches_by_session_id.pop(session_id, None)
 
 
 def _pop_pending_response_ids_for_session(

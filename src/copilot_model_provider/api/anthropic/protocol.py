@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import math
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 from copilot_model_provider.core.models import (
     AnthropicContentBlockDeltaEvent,
@@ -98,15 +101,13 @@ def build_anthropic_message_response_from_completion(
     return build_anthropic_message_response_from_text(
         model=request.model,
         output_text=completion.output_text,
-        pending_tool_call=completion.pending_tool_call,
+        pending_tool_calls=completion.pending_tool_calls,
         message_id=message_id,
         usage=build_anthropic_usage(
             prompt_tokens=completion.prompt_tokens,
             completion_tokens=completion.completion_tokens,
         ),
-        stop_reason='tool_use'
-        if completion.pending_tool_call is not None
-        else 'end_turn',
+        stop_reason='tool_use' if completion.pending_tool_calls else 'end_turn',
     )
 
 
@@ -149,19 +150,19 @@ def build_anthropic_message_response_from_text(
     *,
     model: str,
     output_text: str | None,
-    pending_tool_call: CanonicalToolCall | None,
+    pending_tool_calls: Sequence[CanonicalToolCall] = (),
     message_id: str,
     usage: AnthropicUsage | None = None,
     stop_reason: str | None = 'end_turn',
 ) -> AnthropicMessageResponse:
-    """Build an Anthropic response body from assistant text and tool use."""
+    """Build an Anthropic response body from assistant text and tool-use blocks."""
     content: list[AnthropicTextContentBlock | AnthropicToolUseContentBlock] = []
     if output_text is not None:
         content.append(AnthropicTextContentBlock(text=output_text))
-    if pending_tool_call is not None:
-        content.append(
-            build_anthropic_tool_use_content_block(tool_call=pending_tool_call)
-        )
+    content.extend(
+        build_anthropic_tool_use_content_block(tool_call=pending_tool_call)
+        for pending_tool_call in pending_tool_calls
+    )
     return AnthropicMessageResponse(
         id=message_id,
         model=model,

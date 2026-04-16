@@ -81,6 +81,15 @@ class ToolCallRequestedEvent(BaseModel):
     tool_call: CanonicalToolCall
 
 
+class ToolCallsRequestedEvent(BaseModel):
+    """Canonical event emitted when one SDK event carries multiple tool calls."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal['tool_calls_requested'] = 'tool_calls_requested'
+    tool_calls: tuple[CanonicalToolCall, ...] = Field(min_length=1)
+
+
 class StreamingErrorEvent(BaseModel):
     """Canonical event emitted when the runtime reports a stream-level error."""
 
@@ -96,5 +105,6 @@ CanonicalStreamingEvent = (
     | AssistantTurnCompleteEvent
     | AssistantUsageEvent
     | ToolCallRequestedEvent
+    | ToolCallsRequestedEvent
     | StreamingErrorEvent
 )
