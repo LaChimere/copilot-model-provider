@@ -291,3 +291,32 @@ def integration_openai_tool_model_id(integration_model_ids: list[str]) -> str:
         )
 
     return model_id
+
+
+@pytest.fixture(scope='session')
+def integration_anthropic_model_id(integration_model_ids: list[str]) -> str:
+    """Return one Claude-family live model ID for Anthropic tool-loop coverage.
+
+    Args:
+        integration_model_ids: Live model IDs visible to the integration auth
+            context.
+
+    Returns:
+        The preferred Claude-family model ID used for Anthropic Messages
+        integration tests.
+
+    Raises:
+        pytest.SkipTest: If no Claude-family live model is visible.
+
+    """
+    model_id = _select_preferred_live_model_id(
+        model_ids=integration_model_ids,
+        prefixes=('claude-',),
+    )
+    if model_id is None:
+        pytest.skip(
+            'Anthropic Messages tool-loop integration tests require one visible '
+            'Claude-family Copilot model.'
+        )
+
+    return model_id

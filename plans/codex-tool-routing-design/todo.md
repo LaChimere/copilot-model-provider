@@ -39,9 +39,9 @@
 
 ### Anthropic Messages alignment slice
 
-- [ ] Derive Anthropic tool-aware routing through the shared policy.
-- [ ] Keep Anthropic continuation behavior on the shared runtime base.
-- [ ] Add Anthropic contract/integration coverage for the shared policy path.
+- [x] Derive Anthropic tool-aware routing through the shared policy.
+- [x] Keep Anthropic continuation behavior on the shared runtime base.
+- [x] Add Anthropic contract/integration coverage for the shared policy path.
 
 ### Verification
 
