@@ -45,11 +45,11 @@
 
 ### Verification
 
-- [ ] Run targeted unit tests for the base slice.
-- [ ] Run targeted Responses contract/integration tests.
-- [ ] Run targeted Anthropic contract/integration tests.
-- [ ] Run `uv run ruff format --check .`.
-- [ ] Run `uv run ruff check .`.
-- [ ] Run `uv run ty check .`.
-- [ ] Run `uv run pyright`.
-- [ ] Run `uv run pytest -q`.
+- [x] Run targeted unit tests for the base slice.
+- [x] Run targeted Responses contract/integration tests.
+- [x] Run targeted Anthropic contract/integration tests.
+- [x] Run `uv run ruff format --check .`.
+- [x] Run `uv run ruff check .`.
+- [x] Run `uv run ty check .`.
+- [x] Run `uv run pyright`.
+- [x] Run `uv run pytest -q`.
