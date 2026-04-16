@@ -51,7 +51,7 @@
       across OpenAI Responses and Anthropic Messages.
 - [x] Add container-backed integration coverage for the multi-tool batching
       slice.
-- [ ] Re-run final repo validation for the multi-tool batching slice.
+- [x] Re-run final repo validation for the multi-tool batching slice.
 
 ### Verification
 
