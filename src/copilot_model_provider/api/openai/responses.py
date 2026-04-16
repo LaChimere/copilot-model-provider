@@ -22,6 +22,7 @@ from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     OpenAIResponse,
     OpenAIResponsesCreateRequest,
+    OpenAIResponsesFunctionCallOutputItem,
     OpenAIResponsesInputMessage,
     ResolvedRoute,
 )
@@ -73,6 +74,7 @@ def install_openai_responses_route(
 ) -> None:
     """Install the OpenAI-compatible ``POST /openai/v1/responses`` route."""
     pending_sessions_by_response_id: dict[str, str] = {}
+    pending_sessions_by_tool_call_id: dict[str, str] = {}
 
     async def _create_response(
         request: OpenAIResponsesCreateRequest,
@@ -105,7 +107,9 @@ def install_openai_responses_route(
             runtime_auth_token=runtime_auth_token,
         )
         session_id = _pop_pending_session_id(
+            request=request,
             pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
             previous_response_id=request.previous_response_id,
         )
         canonical_request = normalize_openai_responses_request(
@@ -129,6 +133,7 @@ def install_openai_responses_route(
                 route=route,
                 canonical_request=canonical_request,
                 pending_sessions_by_response_id=pending_sessions_by_response_id,
+                pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
             )
 
         completion = await runtime.complete_chat(
@@ -141,6 +146,9 @@ def install_openai_responses_route(
             and completion.session_id is not None
         ):
             pending_sessions_by_response_id[response_id] = completion.session_id
+            pending_sessions_by_tool_call_id[completion.pending_tool_call.call_id] = (
+                completion.session_id
+            )
         _logger.info(
             'openai_responses_completion_ready',
             request_id=request_id,
@@ -176,6 +184,7 @@ async def _create_streaming_response(  # noqa: C901
     route: ResolvedRoute,
     canonical_request: CanonicalChatRequest,
     pending_sessions_by_response_id: dict[str, str],
+    pending_sessions_by_tool_call_id: dict[str, str],
 ) -> StreamingResponse:
     """Create a streaming OpenAI Responses-compatible SSE response."""
     runtime_stream = None
@@ -342,6 +351,9 @@ async def _create_streaming_response(  # noqa: C901
                     pending_sessions_by_response_id[response_id] = (
                         runtime_stream.session_id
                     )
+                    pending_sessions_by_tool_call_id[stream_event.tool_call.call_id] = (
+                        runtime_stream.session_id
+                    )
                 _logger.info(
                     'openai_responses_stream_tool_call_requested',
                     request_id=canonical_request.request_id,
@@ -458,12 +470,56 @@ async def _create_streaming_response(  # noqa: C901
 
 def _pop_pending_session_id(
     *,
+    request: OpenAIResponsesCreateRequest,
     pending_sessions_by_response_id: dict[str, str],
+    pending_sessions_by_tool_call_id: dict[str, str],
     previous_response_id: str | None,
 ) -> str | None:
     """Resolve and consume one pending session continuation id."""
+    tool_result_call_ids = _extract_tool_result_call_ids(request=request)
     if previous_response_id is None:
-        return None
+        if not tool_result_call_ids:
+            return None
+
+        matched_call_ids = [
+            call_id
+            for call_id in tool_result_call_ids
+            if call_id in pending_sessions_by_tool_call_id
+        ]
+        if not matched_call_ids:
+            raise ProviderError(
+                code='invalid_tool_result',
+                message='No pending provider session matched the supplied function_call_output items.',
+                status_code=400,
+            )
+
+        session_ids = {
+            pending_sessions_by_tool_call_id[call_id] for call_id in matched_call_ids
+        }
+        if len(session_ids) != 1:
+            raise ProviderError(
+                code='invalid_tool_result',
+                message='Function call output items referenced multiple pending provider sessions.',
+                status_code=400,
+            )
+
+        session_id = next(iter(session_ids))
+        for call_id in matched_call_ids:
+            pending_sessions_by_tool_call_id.pop(call_id, None)
+        cleared_response_ids = _pop_pending_response_ids_for_session(
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            session_id=session_id,
+        )
+        _logger.info(
+            'openai_responses_continuation_resolved',
+            previous_response_id=None,
+            tool_result_call_ids=matched_call_ids,
+            cleared_response_ids=cleared_response_ids,
+            session_id=session_id,
+            pending_response_session_count=len(pending_sessions_by_response_id),
+            pending_tool_call_session_count=len(pending_sessions_by_tool_call_id),
+        )
+        return session_id
 
     session_id = pending_sessions_by_response_id.pop(previous_response_id, None)
     if session_id is None:
@@ -472,13 +528,64 @@ def _pop_pending_session_id(
             message='No pending provider session matched the supplied previous_response_id.',
             status_code=400,
         )
+
+    matched_call_ids = [
+        call_id
+        for call_id in tool_result_call_ids
+        if call_id in pending_sessions_by_tool_call_id
+    ]
+    mismatched_call_ids = [
+        call_id
+        for call_id in matched_call_ids
+        if pending_sessions_by_tool_call_id[call_id] != session_id
+    ]
+    if mismatched_call_ids:
+        raise ProviderError(
+            code='invalid_tool_result',
+            message='Function call output items did not match the supplied previous_response_id.',
+            status_code=400,
+        )
+    for call_id in matched_call_ids:
+        pending_sessions_by_tool_call_id.pop(call_id, None)
     _logger.info(
         'openai_responses_continuation_resolved',
         previous_response_id=previous_response_id,
+        tool_result_call_ids=matched_call_ids,
         session_id=session_id,
         pending_response_session_count=len(pending_sessions_by_response_id),
+        pending_tool_call_session_count=len(pending_sessions_by_tool_call_id),
     )
     return session_id
+
+
+def _extract_tool_result_call_ids(
+    *, request: OpenAIResponsesCreateRequest
+) -> list[str]:
+    """Return function-call ids referenced by replayed tool results."""
+    if not isinstance(request.input, list):
+        return []
+
+    return [
+        item.call_id
+        for item in request.input
+        if isinstance(item, OpenAIResponsesFunctionCallOutputItem)
+    ]
+
+
+def _pop_pending_response_ids_for_session(
+    *,
+    pending_sessions_by_response_id: dict[str, str],
+    session_id: str,
+) -> list[str]:
+    """Remove response ids that still point at the resolved interactive session."""
+    cleared_response_ids = [
+        response_id
+        for response_id, mapped_session_id in pending_sessions_by_response_id.items()
+        if mapped_session_id == session_id
+    ]
+    for response_id in cleared_response_ids:
+        pending_sessions_by_response_id.pop(response_id, None)
+    return cleared_response_ids
 
 
 def _summarize_openai_responses_request(
@@ -501,7 +608,8 @@ def _summarize_openai_responses_request(
                 else:
                     input_content_part_types.extend(part.type for part in content)
                 continue
-            input_tool_result_count += 1
+            if isinstance(item, OpenAIResponsesFunctionCallOutputItem):
+                input_tool_result_count += 1
 
     instructions_kind = None
     if request.instructions is not None:

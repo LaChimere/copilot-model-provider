@@ -22,6 +22,7 @@ from copilot_model_provider.core.models import (
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCall,
     OpenAIResponsesFunctionCallOutputItem,
+    OpenAIResponsesFunctionCallReplayItem,
     OpenAIResponsesInputContentPart,
     OpenAIResponsesInputMessage,
     OpenAIResponsesOutputItem,
@@ -411,7 +412,11 @@ def _normalize_openai_responses_input(
     *,
     instructions: str | list[OpenAIResponsesInputMessage] | None,
     input_value: str
-    | list[OpenAIResponsesInputMessage | OpenAIResponsesFunctionCallOutputItem],
+    | list[
+        OpenAIResponsesInputMessage
+        | OpenAIResponsesFunctionCallReplayItem
+        | OpenAIResponsesFunctionCallOutputItem
+    ],
 ) -> tuple[list[CanonicalChatMessage], list[CanonicalToolResult]]:
     """Normalize the full Responses input payload into canonical messages and results."""
     messages: list[CanonicalChatMessage] = []
@@ -434,6 +439,8 @@ def _normalize_openai_responses_input(
     for item in input_value:
         if isinstance(item, OpenAIResponsesInputMessage):
             messages.extend(_normalize_responses_message_item(item=item))
+            continue
+        if isinstance(item, OpenAIResponsesFunctionCallReplayItem):
             continue
 
         tool_results.append(

@@ -7,6 +7,7 @@ from typing import cast
 from copilot_model_provider.core.models import (
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCallOutputItem,
+    OpenAIResponsesFunctionCallReplayItem,
     OpenAIResponsesInputContentPart,
     OpenAIResponsesInputMessage,
     OpenAIResponsesOutputMessage,
@@ -193,6 +194,47 @@ def test_normalize_openai_responses_request_preserves_routing_hints_on_continuat
     assert normalized.tool_routing_policy.hint is not None
     assert normalized.tool_routing_policy.hint.tool_choice == 'required'
     assert normalized.tool_routing_policy.hint.parallel_tool_calls is True
+
+
+def test_normalize_openai_responses_request_ignores_replayed_function_call_items() -> (
+    None
+):
+    """Verify that replayed function-call items do not block tool-result normalization."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesInputMessage(
+                role='assistant',
+                content='I will use the read_file tool.',
+            ),
+            OpenAIResponsesFunctionCallReplayItem(
+                call_id='call_123',
+                name='read_file',
+                arguments='{"path":"README.md"}',
+            ),
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_123',
+                output='README contents',
+            ),
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(
+        request=request,
+        session_id='provider-session-123',
+    )
+
+    assert [message.model_dump() for message in normalized.messages] == [
+        {'role': 'assistant', 'content': 'I will use the read_file tool.'}
+    ]
+    assert [result.model_dump() for result in normalized.tool_results] == [
+        {
+            'call_id': 'call_123',
+            'output_text': 'README contents',
+            'is_error': False,
+            'error_text': None,
+        }
+    ]
 
 
 def test_build_openai_responses_response_from_completion_normalizes_web_search_tools() -> (

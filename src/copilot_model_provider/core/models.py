@@ -506,6 +506,24 @@ class OpenAIResponsesFunctionCallOutputItem(BaseModel):
     output: Any = None
 
 
+class OpenAIResponsesFunctionCallReplayItem(BaseModel):
+    """Replayed function-call item accepted on continuation turns.
+
+    Some OpenAI-compatible clients replay the prior assistant tool call inside
+    ``input`` alongside the matching ``function_call_output`` item instead of
+    using ``previous_response_id``. The provider accepts and ignores this item
+    because the interactive runtime only needs the call id plus tool result.
+
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['function_call'] = 'function_call'
+    call_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: Any = None
+
+
 class OpenAIResponsesCreateRequest(BaseModel):
     """OpenAI-compatible request body for the minimal Responses route.
 
@@ -519,7 +537,12 @@ class OpenAIResponsesCreateRequest(BaseModel):
 
     model: str = Field(min_length=1)
     input: (
-        str | list[OpenAIResponsesInputMessage | OpenAIResponsesFunctionCallOutputItem]
+        str
+        | list[
+            OpenAIResponsesInputMessage
+            | OpenAIResponsesFunctionCallReplayItem
+            | OpenAIResponsesFunctionCallOutputItem
+        ]
     ) = Field(min_length=1)
     instructions: str | list[OpenAIResponsesInputMessage] | None = None
     stream: bool = False

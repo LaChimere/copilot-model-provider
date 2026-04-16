@@ -198,3 +198,69 @@ def test_container_responses_streaming_tool_call_supports_continuation(
     follow_up_payload = cast('dict[str, Any]', follow_up.json())
     follow_up_output = cast('list[dict[str, Any]]', follow_up_payload['output'])
     assert _extract_message_text(output=follow_up_output) == _TOOL_RESULT_TEXT
+
+
+def test_container_responses_streaming_tool_call_supports_replayed_continuation(
+    integration_client: httpx.Client,
+    integration_github_token: str,
+    integration_openai_tool_model_id: str,
+) -> None:
+    """Verify that replayed function_call inputs can resume a pending Responses turn."""
+    first_request_body: dict[str, object] = {
+        'model': integration_openai_tool_model_id,
+        'input': _RESPONSES_TOOL_PROMPT,
+        'stream': True,
+        'tools': [_build_responses_read_file_tool()],
+    }
+    with integration_client.stream(
+        'POST',
+        '/openai/v1/responses',
+        headers={'Authorization': f'Bearer {integration_github_token}'},
+        json=first_request_body,
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers['content-type'].startswith('text/event-stream')
+        first_payload = ''.join(response.iter_text())
+
+    completed_response = _extract_completed_response(payload=first_payload)
+    output = cast('list[dict[str, Any]]', completed_response['output'])
+    function_call_item = _extract_function_call_item(output=output)
+    call_id = cast('str', function_call_item['call_id'])
+    follow_up_request: dict[str, object] = {
+        'model': integration_openai_tool_model_id,
+        'input': [
+            {
+                'type': 'message',
+                'role': 'user',
+                'content': _RESPONSES_TOOL_PROMPT,
+            },
+            {
+                'type': 'message',
+                'role': 'assistant',
+                'content': 'I will inspect README.md.',
+                'phase': 'commentary',
+            },
+            {
+                'type': 'function_call',
+                'call_id': call_id,
+                'name': function_call_item['name'],
+                'arguments': function_call_item['arguments'],
+            },
+            {
+                'type': 'function_call_output',
+                'call_id': call_id,
+                'output': _TOOL_RESULT_TEXT,
+            },
+        ],
+    }
+
+    follow_up = integration_client.post(
+        '/openai/v1/responses',
+        headers={'Authorization': f'Bearer {integration_github_token}'},
+        json=follow_up_request,
+    )
+
+    assert follow_up.status_code == 200
+    follow_up_payload = cast('dict[str, Any]', follow_up.json())
+    follow_up_output = cast('list[dict[str, Any]]', follow_up_payload['output'])
+    assert _extract_message_text(output=follow_up_output) == _TOOL_RESULT_TEXT

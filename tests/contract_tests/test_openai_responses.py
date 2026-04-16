@@ -278,6 +278,11 @@ def _extract_completed_frame_data(*, payload: str) -> str:
     return completed_frame['data']
 
 
+def _extract_function_call_item(*, output: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the function-call item from one Responses output payload."""
+    return next(item for item in output if item.get('type') == 'function_call')
+
+
 @pytest.mark.asyncio
 async def test_post_responses_returns_openai_compatible_payload() -> None:
     """Verify that the Responses route returns the expected non-streaming payload."""
@@ -565,6 +570,104 @@ async def test_post_responses_streaming_supports_function_call_continuation() ->
     output = cast('list[dict[str, Any]]', follow_up_payload['output'])
     assert follow_up.status_code == 200
     assert output[0]['content'][0]['text'] == 'Tool says hello.'
+    assert runtime.last_request is not None
+    assert runtime.last_request.session_id == 'responses-tool-session'
+    assert [result.model_dump() for result in runtime.last_request.tool_results] == [
+        {
+            'call_id': 'call_readme',
+            'output_text': 'README contents',
+            'is_error': False,
+            'error_text': None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_responses_streaming_supports_replayed_function_call_continuation() -> (
+    None
+):
+    """Verify that replayed function-call inputs can recover a pending session."""
+    runtime = _FakeResponsesToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'stream': True,
+        'input': 'Open the readme',
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'read_file',
+                    'description': 'Read one file.',
+                    'parameters': {'type': 'object'},
+                },
+            }
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=first_request_body,
+        ) as response:
+            first_payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+        first_completed_payload = cast(
+            'dict[str, Any]',
+            json.loads(_extract_completed_frame_data(payload=first_payload)),
+        )
+        output_items = cast(
+            'list[dict[str, Any]]', first_completed_payload['response']['output']
+        )
+        function_call_item = _extract_function_call_item(output=output_items)
+        follow_up_request: dict[str, object] = {
+            'model': 'gpt-5.4',
+            'stream': True,
+            'input': [
+                {
+                    'type': 'message',
+                    'role': 'user',
+                    'content': 'Open the readme',
+                },
+                {
+                    'type': 'message',
+                    'role': 'assistant',
+                    'content': 'I will check the README.',
+                    'phase': 'commentary',
+                },
+                {
+                    'type': 'function_call',
+                    'call_id': function_call_item['call_id'],
+                    'name': function_call_item['name'],
+                    'arguments': function_call_item['arguments'],
+                },
+                {
+                    'type': 'function_call_output',
+                    'call_id': function_call_item['call_id'],
+                    'output': 'README contents',
+                },
+            ],
+        }
+
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=follow_up_request,
+        ) as follow_up:
+            follow_up_payload = cast(
+                'dict[str, Any]',
+                json.loads(
+                    _extract_completed_frame_data(
+                        payload=''.join(
+                            [chunk async for chunk in follow_up.aiter_text()]
+                        )
+                    )
+                ),
+            )
+
+    output = cast('list[dict[str, Any]]', follow_up_payload['response']['output'])
+    assert response.status_code == 200
+    assert follow_up.status_code == 200
+    assert output[0]['content'][0]['text'] == 'Done'
     assert runtime.last_request is not None
     assert runtime.last_request.session_id == 'responses-tool-session'
     assert [result.model_dump() for result in runtime.last_request.tool_results] == [
