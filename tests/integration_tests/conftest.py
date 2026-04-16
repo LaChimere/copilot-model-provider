@@ -136,6 +136,35 @@ def _wait_for_container(base_url: str) -> None:
     )
 
 
+def _select_preferred_live_model_id(
+    *,
+    model_ids: list[str],
+    preferred_model_id: str | None = None,
+    prefixes: tuple[str, ...] = (),
+) -> str | None:
+    """Select one preferred visible live model ID from the current auth context.
+
+    Args:
+        model_ids: Live model IDs visible to the integration auth context.
+        preferred_model_id: Optional exact model ID to prefer when present.
+        prefixes: Optional ordered model-ID prefixes used as a fallback selector.
+
+    Returns:
+        The preferred visible model ID when one matches the supplied criteria,
+        otherwise ``None``.
+
+    """
+    if preferred_model_id is not None and preferred_model_id in model_ids:
+        return preferred_model_id
+
+    for prefix in prefixes:
+        for model_id in model_ids:
+            if model_id.startswith(prefix):
+                return model_id
+
+    return None
+
+
 @pytest.fixture(scope='session')
 def integration_image() -> Iterator[str]:
     """Build the production image used by the black-box integration suite.
@@ -224,7 +253,41 @@ def integration_model_id(integration_model_ids: list[str]) -> str:
     if not integration_model_ids:
         pytest.skip('Integration tests require at least one live Copilot model.')
 
-    if 'gpt-5.4' in integration_model_ids:
-        return 'gpt-5.4'
+    model_id = _select_preferred_live_model_id(
+        model_ids=integration_model_ids,
+        preferred_model_id='gpt-5.4',
+    )
+    if model_id is not None:
+        return model_id
 
     return integration_model_ids[0]
+
+
+@pytest.fixture(scope='session')
+def integration_openai_tool_model_id(integration_model_ids: list[str]) -> str:
+    """Return one GPT-family live model ID for tool-loop integration coverage.
+
+    Args:
+        integration_model_ids: Live model IDs visible to the integration auth
+            context.
+
+    Returns:
+        The preferred GPT-family model ID used for OpenAI Responses tool-loop
+        integration tests.
+
+    Raises:
+        pytest.SkipTest: If no GPT-family live model is visible.
+
+    """
+    model_id = _select_preferred_live_model_id(
+        model_ids=integration_model_ids,
+        preferred_model_id='gpt-5.4',
+        prefixes=('gpt-',),
+    )
+    if model_id is None:
+        pytest.skip(
+            'OpenAI Responses tool-loop integration tests require one visible '
+            'GPT-family Copilot model.'
+        )
+
+    return model_id

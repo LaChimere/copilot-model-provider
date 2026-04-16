@@ -31,11 +31,11 @@
 
 ### OpenAI Responses routing slice
 
-- [ ] Derive Responses routing policy during normalization.
-- [ ] Preserve `function`, `web_search`, and `custom` tool surfaces.
-- [ ] Preserve narrow Responses routing hints.
-- [ ] Keep response-visible tools aligned with runtime-visible tools.
-- [ ] Add exact Codex replay-style regression coverage.
+- [x] Derive Responses routing policy during normalization.
+- [x] Preserve `function`, `web_search`, and `custom` tool surfaces.
+- [x] Preserve narrow Responses routing hints.
+- [x] Keep response-visible tools aligned with runtime-visible tools.
+- [x] Add exact Codex replay-style regression coverage.
 
 ### Anthropic Messages alignment slice
 

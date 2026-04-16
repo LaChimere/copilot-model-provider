@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
@@ -11,6 +12,7 @@ from copilot_model_provider.config import ProviderSettings
 from copilot_model_provider.core.compat import FieldHandling, ProtocolSurface
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
+    CanonicalToolCall,
     ResolvedRoute,
     RuntimeCompletion,
     RuntimeHealth,
@@ -162,6 +164,118 @@ class _FakeResponsesAggregateRuntime(_FakeResponsesRuntime):
                 yield event
 
         return RuntimeEventStream(session_id=None, events=_events())
+
+
+class _FakeResponsesToolRuntime(_FakeResponsesRuntime):
+    """Fake runtime that pauses on a function call and resumes on tool output."""
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Return a tool call on the first turn and final text on continuation."""
+        del route
+        self.last_request = request
+        if request.tool_results:
+            return RuntimeCompletion(
+                output_text='Tool says hello.',
+                session_id=request.session_id,
+                prompt_tokens=12,
+                completion_tokens=3,
+            )
+
+        return RuntimeCompletion(
+            output_text='Plan:',
+            finish_reason='tool_calls',
+            session_id='responses-tool-session',
+            pending_tool_call=CanonicalToolCall(
+                call_id='call_readme',
+                name='read_file',
+                arguments={'path': 'README.md'},
+            ),
+            prompt_tokens=9,
+            completion_tokens=1,
+        )
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit a tool request on the first turn and final text after tool output."""
+        del route
+        self.last_request = request
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield tool-request or final-turn events depending on the turn state."""
+            if request.tool_results:
+                events = (
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000121',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.message_delta',
+                            'data': {'deltaContent': 'Done'},
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000122',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.turn_end',
+                            'data': {
+                                'reason': 'stop',
+                                'inputTokens': 12,
+                                'outputTokens': 3,
+                            },
+                        }
+                    ),
+                )
+            else:
+                events = (
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000123',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.message_delta',
+                            'data': {'deltaContent': 'Plan'},
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000124',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'external_tool.requested',
+                            'data': {
+                                'requestId': 'tool-request-1',
+                                'toolName': 'read_file',
+                                'toolCallId': 'call_readme',
+                                'arguments': {'path': 'README.md'},
+                            },
+                        }
+                    ),
+                )
+
+            for event in events:
+                yield event
+
+        return RuntimeEventStream(session_id='responses-tool-session', events=_events())
+
+
+def _extract_completed_frame_data(*, payload: str) -> str:
+    """Return the serialized ``response.completed`` SSE payload."""
+    frames = parse_sse_frames(payload=payload)
+    completed_frame = next(
+        frame
+        for frame in frames
+        if '"type":"response.completed"' in frame.get('data', '')
+    )
+    return completed_frame['data']
 
 
 @pytest.mark.asyncio
@@ -328,12 +442,7 @@ async def test_post_responses_streams_openai_compatible_sse_frames() -> None:
     ):
         payload = ''.join([chunk async for chunk in response.aiter_text()])
 
-    frames = parse_sse_frames(payload=payload)
-    completed_frame = next(
-        frame
-        for frame in frames
-        if '"type":"response.completed"' in frame.get('data', '')
-    )
+    completed_frame_data = _extract_completed_frame_data(payload=payload)
     assert response.status_code == 200
     assert response.headers['content-type'].startswith('text/event-stream')
     assert '"type":"response.created"' in payload
@@ -342,7 +451,7 @@ async def test_post_responses_streams_openai_compatible_sse_frames() -> None:
     assert '"type":"response.completed"' in payload
     assert (
         '"usage":{"input_tokens":9,"output_tokens":6,"total_tokens":15}'
-        in (completed_frame['data'])
+        in completed_frame_data
     )
 
 
@@ -366,3 +475,72 @@ async def test_post_responses_streaming_deduplicates_final_aggregate_message() -
     assert response.status_code == 200
     assert payload.count('"type":"response.output_text.delta"') == 1
     assert '"text":"HelloHello"' not in payload
+
+
+@pytest.mark.asyncio
+async def test_post_responses_streaming_supports_function_call_continuation() -> None:
+    """Verify that Responses streams can pause on a tool call and continue later."""
+    runtime = _FakeResponsesToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'stream': True,
+        'input': 'Open the readme',
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'read_file',
+                    'description': 'Read one file.',
+                    'parameters': {'type': 'object'},
+                },
+            }
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=first_request_body,
+        ) as response:
+            first_payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+        first_completed_payload = cast(
+            'dict[str, Any]',
+            json.loads(_extract_completed_frame_data(payload=first_payload)),
+        )
+        response_id = cast('str', first_completed_payload['response']['id'])
+
+        assert response.status_code == 200
+        assert '"type":"response.output_text.done"' in first_payload
+        assert '"type":"function_call"' in first_payload
+        assert '"call_id":"call_readme"' in first_payload
+
+        follow_up = await client.post(
+            '/openai/v1/responses',
+            json={
+                'model': 'gpt-5.4',
+                'previous_response_id': response_id,
+                'input': [
+                    {
+                        'type': 'function_call_output',
+                        'call_id': 'call_readme',
+                        'output': 'README contents',
+                    }
+                ],
+            },
+        )
+
+    follow_up_payload = cast('dict[str, Any]', follow_up.json())
+    output = cast('list[dict[str, Any]]', follow_up_payload['output'])
+    assert follow_up.status_code == 200
+    assert output[0]['content'][0]['text'] == 'Tool says hello.'
+    assert runtime.last_request is not None
+    assert runtime.last_request.session_id == 'responses-tool-session'
+    assert [result.model_dump() for result in runtime.last_request.tool_results] == [
+        {
+            'call_id': 'call_readme',
+            'output_text': 'README contents',
+            'is_error': False,
+            'error_text': None,
+        }
+    ]
