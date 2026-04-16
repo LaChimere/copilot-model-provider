@@ -40,20 +40,26 @@ def _build_responses_read_file_tool() -> dict[str, object]:
     }
 
 
-def _extract_function_call_item(*, output: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return the function-call output item from one Responses payload.
+def _extract_function_call_items(
+    *, output: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return the function-call output items from one Responses payload.
 
     Args:
         output: OpenAI Responses ``output`` items returned by the provider.
 
     Returns:
-        The first ``function_call`` item present in the response payload.
+        All ``function_call`` items present in the response payload.
 
     Raises:
-        AssertionError: If the response does not contain a function-call item.
+        AssertionError: If the response does not contain any function-call items.
 
     """
-    return next(item for item in output if item.get('type') == 'function_call')
+    function_call_items = [
+        item for item in output if item.get('type') == 'function_call'
+    ]
+    assert function_call_items
+    return function_call_items
 
 
 def _extract_message_text(*, output: list[dict[str, Any]]) -> str:
@@ -172,11 +178,12 @@ def test_container_responses_streaming_tool_call_supports_continuation(
     completed_response = _extract_completed_response(payload=first_payload)
     response_id = cast('str', completed_response['id'])
     output = cast('list[dict[str, Any]]', completed_response['output'])
-    function_call_item = _extract_function_call_item(output=output)
-    call_id = cast('str', function_call_item['call_id'])
+    function_call_items = _extract_function_call_items(output=output)
+    read_file_call = next(
+        item for item in function_call_items if item.get('name') == 'read_file'
+    )
 
-    assert function_call_item['name'] == 'read_file'
-    assert '"path":"README.md"' in cast('str', function_call_item['arguments'])
+    assert '"path":"README.md"' in cast('str', read_file_call['arguments'])
 
     follow_up = integration_client.post(
         '/openai/v1/responses',
@@ -187,9 +194,10 @@ def test_container_responses_streaming_tool_call_supports_continuation(
             'input': [
                 {
                     'type': 'function_call_output',
-                    'call_id': call_id,
+                    'call_id': cast('str', function_call_item['call_id']),
                     'output': _TOOL_RESULT_TEXT,
                 }
+                for function_call_item in function_call_items
             ],
         },
     )
@@ -224,8 +232,7 @@ def test_container_responses_streaming_tool_call_supports_replayed_continuation(
 
     completed_response = _extract_completed_response(payload=first_payload)
     output = cast('list[dict[str, Any]]', completed_response['output'])
-    function_call_item = _extract_function_call_item(output=output)
-    call_id = cast('str', function_call_item['call_id'])
+    function_call_items = _extract_function_call_items(output=output)
     follow_up_request: dict[str, object] = {
         'model': integration_openai_tool_model_id,
         'input': [
@@ -240,19 +247,30 @@ def test_container_responses_streaming_tool_call_supports_replayed_continuation(
                 'content': 'I will inspect README.md.',
                 'phase': 'commentary',
             },
-            {
-                'type': 'function_call',
-                'call_id': call_id,
-                'name': function_call_item['name'],
-                'arguments': function_call_item['arguments'],
-            },
-            {
-                'type': 'function_call_output',
-                'call_id': call_id,
-                'output': _TOOL_RESULT_TEXT,
-            },
         ],
     }
+    follow_up_input = cast('list[dict[str, object]]', follow_up_request['input'])
+    follow_up_input.extend(
+        [
+            {
+                'type': 'function_call',
+                'call_id': cast('str', function_call_item['call_id']),
+                'name': cast('str', function_call_item['name']),
+                'arguments': cast('str', function_call_item['arguments']),
+            }
+            for function_call_item in function_call_items
+        ]
+    )
+    follow_up_input.extend(
+        [
+            {
+                'type': 'function_call_output',
+                'call_id': cast('str', function_call_item['call_id']),
+                'output': _TOOL_RESULT_TEXT,
+            }
+            for function_call_item in function_call_items
+        ]
+    )
 
     follow_up = integration_client.post(
         '/openai/v1/responses',

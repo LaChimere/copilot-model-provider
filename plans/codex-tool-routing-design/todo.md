@@ -49,7 +49,7 @@
       translators, OpenAI Responses, and Anthropic Messages.
 - [x] Add unit and contract coverage for batched continuation result handling
       across OpenAI Responses and Anthropic Messages.
-- [ ] Add container-backed integration coverage for the multi-tool batching
+- [x] Add container-backed integration coverage for the multi-tool batching
       slice.
 - [ ] Re-run final repo validation for the multi-tool batching slice.
 

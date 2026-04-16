@@ -34,20 +34,22 @@ def _build_anthropic_read_file_tool() -> dict[str, object]:
     }
 
 
-def _extract_tool_use_block(*, content: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return the ``tool_use`` block from one Anthropic message payload.
+def _extract_tool_use_blocks(*, content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the ``tool_use`` blocks from one Anthropic message payload.
 
     Args:
         content: Anthropic message ``content`` blocks returned by the provider.
 
     Returns:
-        The first ``tool_use`` block present in the response payload.
+        All ``tool_use`` blocks present in the response payload.
 
     Raises:
-        StopIteration: If the response does not contain a ``tool_use`` block.
+        AssertionError: If the response does not contain any ``tool_use`` blocks.
 
     """
-    return next(block for block in content if block.get('type') == 'tool_use')
+    tool_use_blocks = [block for block in content if block.get('type') == 'tool_use']
+    assert tool_use_blocks
+    return tool_use_blocks
 
 
 def _extract_text_block_text(*, content: list[dict[str, Any]]) -> str:
@@ -89,11 +91,12 @@ def test_container_anthropic_messages_support_tool_result_continuation(
     assert first_response.status_code == 200
     first_payload = cast('dict[str, Any]', first_response.json())
     first_content = cast('list[dict[str, Any]]', first_payload['content'])
-    tool_use_block = _extract_tool_use_block(content=first_content)
-    tool_use_id = cast('str', tool_use_block['id'])
+    tool_use_blocks = _extract_tool_use_blocks(content=first_content)
+    read_file_tool_use = next(
+        block for block in tool_use_blocks if block.get('name') == 'read_file'
+    )
     assert first_payload['stop_reason'] == 'tool_use'
-    assert tool_use_block['name'] == 'read_file'
-    assert cast('dict[str, Any]', tool_use_block['input'])['path'] == 'README.md'
+    assert cast('dict[str, Any]', read_file_tool_use['input'])['path'] == 'README.md'
 
     follow_up_request_body: dict[str, object] = {
         'model': integration_anthropic_model_id,
@@ -104,9 +107,10 @@ def test_container_anthropic_messages_support_tool_result_continuation(
                 'content': [
                     {
                         'type': 'tool_result',
-                        'tool_use_id': tool_use_id,
+                        'tool_use_id': cast('str', tool_use_block['id']),
                         'content': _TOOL_RESULT_TEXT,
                     }
+                    for tool_use_block in tool_use_blocks
                 ],
             }
         ],
