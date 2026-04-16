@@ -412,15 +412,30 @@ def _pop_pending_session_id_from_tool_results(
     if not tool_use_ids:
         return None
 
-    session_ids = {
-        pending_sessions_by_tool_use_id.pop(tool_use_id)
+    matched_tool_use_ids = [
+        tool_use_id
         for tool_use_id in tool_use_ids
         if tool_use_id in pending_sessions_by_tool_use_id
-    }
-    if len(session_ids) != 1:
+    ]
+    if not matched_tool_use_ids:
         raise ProviderError(
             code='invalid_tool_result',
             message='No pending provider session matched the supplied tool_result blocks.',
             status_code=400,
         )
-    return next(iter(session_ids))
+
+    session_ids = {
+        pending_sessions_by_tool_use_id[tool_use_id]
+        for tool_use_id in matched_tool_use_ids
+    }
+    if len(session_ids) != 1:
+        raise ProviderError(
+            code='invalid_tool_result',
+            message='Tool result blocks referenced multiple pending provider sessions.',
+            status_code=400,
+        )
+
+    session_id = next(iter(session_ids))
+    for tool_use_id in matched_tool_use_ids:
+        pending_sessions_by_tool_use_id.pop(tool_use_id, None)
+    return session_id
