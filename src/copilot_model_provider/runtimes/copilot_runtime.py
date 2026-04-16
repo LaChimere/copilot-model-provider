@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 from copilot import CopilotClient, SubprocessConfig
 from copilot.generated.session_events import (
@@ -14,11 +14,15 @@ from copilot.generated.session_events import (
     SessionEventType,
 )
 from copilot.session import PermissionRequestResult
+from copilot.tools import Tool, ToolInvocation, ToolResult
 
 from copilot_model_provider.core.chat import render_prompt
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
+    CanonicalChatMessage,
     CanonicalChatRequest,
+    CanonicalToolCall,
+    CanonicalToolResult,
     CopilotModelBilling,
     CopilotModelCapabilities,
     CopilotModelLimits,
@@ -35,9 +39,18 @@ from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
 )
+from copilot_model_provider.streaming.events import (
+    AssistantTextDeltaEvent,
+    AssistantTurnCompleteEvent,
+    AssistantUsageEvent,
+    ToolCallRequestedEvent,
+)
+from copilot_model_provider.streaming.translators import translate_session_event
 
 if TYPE_CHECKING:
     from copilot.session import CopilotSession
+
+_INTERACTIVE_TOOL_CONTINUATION_PROMPT = 'Continue.'
 
 PermissionRequestHandler = Callable[
     [PermissionRequest, dict[str, str]],
@@ -78,6 +91,10 @@ class CopilotRuntime(RuntimeProtocol):
         self._timeout_seconds = timeout_seconds
         self._working_directory = working_directory
         self._client: CopilotClient | None = None
+        self._interactive_sessions: dict[
+            str, CopilotRuntime._InteractiveCopilotSession
+        ] = {}
+        self._interactive_sessions_lock = asyncio.Lock()
 
     @property
     @override
@@ -148,6 +165,13 @@ class CopilotRuntime(RuntimeProtocol):
         route: ResolvedRoute,
     ) -> RuntimeCompletion:
         """Execute a canonical chat request through an ephemeral Copilot session."""
+        if self._uses_interactive_session(request=request):
+            self._validate_interactive_request(request=request)
+            return await self._complete_chat_with_interactive_session(
+                request=request,
+                route=route,
+            )
+
         if route.runtime_model_id is None:
             raise ProviderError(
                 code='runtime_route_invalid',
@@ -194,6 +218,22 @@ class CopilotRuntime(RuntimeProtocol):
         route: ResolvedRoute,
     ) -> RuntimeEventStream:
         """Execute a canonical streaming chat request through the Copilot SDK."""
+        if self._uses_interactive_session(request=request):
+            self._validate_interactive_request(request=request)
+            return await self._stream_chat_with_interactive_session(
+                request=request,
+                route=route,
+            )
+
+        return await self._stream_chat_stateless(request=request, route=route)
+
+    async def _stream_chat_stateless(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Execute the original stateless streaming chat flow."""
         active_session = await self._open_session(
             request=request,
             route=route,
@@ -272,6 +312,34 @@ class CopilotRuntime(RuntimeProtocol):
         session: CopilotSession
         client: CopilotRuntime._ResolvedCopilotClient
 
+    @dataclass(slots=True)
+    class _PendingToolCallState:
+        """External tool call that is waiting on the northbound client."""
+
+        tool_call_id: str
+        tool_name: str
+        arguments: Any
+        future: asyncio.Future[ToolResult] | None = None
+        submitted_result: ToolResult | None = None
+
+    @dataclass(slots=True)
+    class _InteractiveCopilotSession:
+        """Long-lived Copilot session kept alive across tool turns."""
+
+        active_session: CopilotRuntime._ActiveCopilotSession
+        event_queue: asyncio.Queue[SessionEvent]
+        pending_tool_calls: dict[str, CopilotRuntime._PendingToolCallState]
+
+    @dataclass(slots=True)
+    class _InteractiveCompletionState:
+        """Accumulated state while consuming one interactive completion stream."""
+
+        output_parts: list[str]
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
+        pending_tool_call: CanonicalToolCall | None = None
+        saw_text_delta: bool = False
+
     def _get_or_create_client(self) -> CopilotClient:
         """Build the lazy Copilot client on first use and cache it afterwards."""
         if self._client is None:
@@ -309,12 +377,19 @@ class CopilotRuntime(RuntimeProtocol):
 
         resolved_client = await self._get_client_for_request(request=request)
         await self._ensure_client_started(resolved_client.client)
+        create_session_kwargs: dict[str, Any] = {
+            'on_permission_request': self._deny_permission_request,
+            'model': route.runtime_model_id,
+            'working_directory': self._working_directory,
+            'streaming': streaming,
+        }
+        if request.tool_definitions:
+            create_session_kwargs['tools'] = self._build_tool_definitions(
+                request=request
+            )
         return self._ActiveCopilotSession(
             session=await resolved_client.client.create_session(
-                on_permission_request=self._deny_permission_request,
-                model=route.runtime_model_id,
-                working_directory=self._working_directory,
-                streaming=streaming,
+                **create_session_kwargs
             ),
             client=resolved_client,
         )
@@ -394,6 +469,402 @@ class CopilotRuntime(RuntimeProtocol):
             message='Server-side tools and MCP are disabled for this provider.',
         )
 
+    def _uses_interactive_session(self, *, request: CanonicalChatRequest) -> bool:
+        """Report whether the request routing policy requires session continuity."""
+        return request.tool_routing_policy.mode == 'client_passthrough'
+
+    def _validate_interactive_request(self, *, request: CanonicalChatRequest) -> None:
+        """Reject invalid tool-aware requests before opening or resuming sessions."""
+        if request.tool_results and request.session_id is None:
+            raise ProviderError(
+                code='invalid_previous_response_id',
+                message='Tool-result continuations require a live provider session.',
+                status_code=400,
+            )
+
+    async def _complete_chat_with_interactive_session(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Aggregate one interactive tool-aware turn into a runtime completion."""
+        runtime_stream = await self._stream_chat_with_interactive_session(
+            request=request,
+            route=route,
+        )
+        state = self._InteractiveCompletionState(output_parts=[])
+        try:
+            async for event in runtime_stream.events:
+                if self._consume_interactive_completion_event(
+                    event=event,
+                    state=state,
+                ):
+                    break
+        finally:
+            if state.pending_tool_call is None and runtime_stream.close is not None:
+                await runtime_stream.close()
+
+        if not state.output_parts and state.pending_tool_call is None:
+            raise ProviderError(
+                code='runtime_empty_response',
+                message='Copilot runtime returned no assistant content.',
+                status_code=502,
+            )
+
+        return RuntimeCompletion(
+            output_text=''.join(state.output_parts) or None,
+            finish_reason='tool_calls'
+            if state.pending_tool_call is not None
+            else 'stop',
+            session_id=runtime_stream.session_id,
+            pending_tool_call=state.pending_tool_call,
+            prompt_tokens=state.prompt_tokens,
+            completion_tokens=state.completion_tokens,
+        )
+
+    async def _stream_chat_with_interactive_session(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Return a persistent runtime stream that can pause at tool boundaries."""
+        session_state = await self._get_or_create_interactive_session(
+            request=request,
+            route=route,
+        )
+        if request.tool_results:
+            await self._submit_interactive_tool_results(
+                session_id=session_state.active_session.session.session_id,
+                tool_results=request.tool_results,
+            )
+
+        session_id = session_state.active_session.session.session_id
+
+        async def _event_stream() -> AsyncIterator[SessionEvent]:
+            """Yield session events until a tool boundary or terminal turn is reached."""
+            saw_visible_response = False
+            continuation_prompt_sent = False
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        session_state.event_queue.get(),
+                        timeout=self._timeout_seconds,
+                    )
+                except TimeoutError as error:
+                    raise ProviderError(
+                        code='runtime_timeout',
+                        message='Timed out while waiting for Copilot streaming events.',
+                        status_code=504,
+                    ) from error
+
+                stream_event = translate_session_event(event=event)
+                if isinstance(
+                    stream_event,
+                    AssistantTextDeltaEvent | ToolCallRequestedEvent,
+                ):
+                    saw_visible_response = True
+
+                if self._should_send_interactive_continuation_prompt(
+                    event=event,
+                    has_tool_results=bool(request.tool_results),
+                    saw_visible_response=saw_visible_response,
+                    continuation_prompt_sent=continuation_prompt_sent,
+                ):
+                    continuation_prompt_sent = True
+                    await session_state.active_session.session.send(
+                        _INTERACTIVE_TOOL_CONTINUATION_PROMPT
+                    )
+                    continue
+
+                yield event
+                if event.type == SessionEventType.EXTERNAL_TOOL_REQUESTED:
+                    break
+                if event.type in {
+                    SessionEventType.ASSISTANT_TURN_END,
+                    SessionEventType.SESSION_ERROR,
+                    SessionEventType.SESSION_IDLE,
+                }:
+                    await self._discard_interactive_session(
+                        session_id=session_id,
+                        disconnect=True,
+                    )
+                    break
+
+        async def _close() -> None:
+            """Abort one persistent interactive session stream."""
+            await self._discard_interactive_session(
+                session_id=session_id,
+                disconnect=True,
+            )
+
+        return RuntimeEventStream(
+            session_id=session_id,
+            events=_event_stream(),
+            close=_close,
+        )
+
+    def _consume_interactive_completion_event(
+        self,
+        *,
+        event: SessionEvent,
+        state: _InteractiveCompletionState,
+    ) -> bool:
+        """Update aggregated completion state from one interactive session event."""
+        if state.saw_text_delta and event.type == SessionEventType.ASSISTANT_MESSAGE:
+            return False
+
+        stream_event = translate_session_event(event=event)
+        if stream_event is None:
+            return False
+
+        if isinstance(stream_event, AssistantTextDeltaEvent):
+            if event.type in {
+                SessionEventType.ASSISTANT_MESSAGE_DELTA,
+                SessionEventType.ASSISTANT_STREAMING_DELTA,
+            }:
+                state.saw_text_delta = True
+            state.output_parts.append(stream_event.text)
+            return False
+
+        if isinstance(stream_event, AssistantUsageEvent):
+            if stream_event.prompt_tokens is not None:
+                state.prompt_tokens = stream_event.prompt_tokens
+            if stream_event.completion_tokens is not None:
+                state.completion_tokens = stream_event.completion_tokens
+            return False
+
+        if isinstance(stream_event, ToolCallRequestedEvent):
+            state.pending_tool_call = stream_event.tool_call
+            return True
+
+        if isinstance(stream_event, AssistantTurnCompleteEvent):
+            state.prompt_tokens = stream_event.prompt_tokens or state.prompt_tokens
+            state.completion_tokens = (
+                stream_event.completion_tokens or state.completion_tokens
+            )
+            return True
+
+        return False
+
+    def _should_send_interactive_continuation_prompt(
+        self,
+        *,
+        event: SessionEvent,
+        has_tool_results: bool,
+        saw_visible_response: bool,
+        continuation_prompt_sent: bool,
+    ) -> bool:
+        """Report whether a tool-result continuation needs a synthetic follow-up turn."""
+        return (
+            has_tool_results
+            and not saw_visible_response
+            and not continuation_prompt_sent
+            and event.type
+            in {
+                SessionEventType.ASSISTANT_TURN_END,
+                SessionEventType.SESSION_IDLE,
+            }
+        )
+
+    def _build_sdk_tool_result(self, *, tool_result: CanonicalToolResult) -> ToolResult:
+        """Convert one canonical tool result into the SDK tool-result payload."""
+        return ToolResult(
+            text_result_for_llm=tool_result.output_text,
+            result_type='failure' if tool_result.is_error else 'success',
+            error=tool_result.error_text,
+            tool_telemetry={},
+        )
+
+    def _build_expired_session_tool_result(self) -> ToolResult:
+        """Build the failure payload returned when a pending session has expired."""
+        return ToolResult(
+            text_result_for_llm='Provider session expired before the tool result arrived.',
+            result_type='failure',
+            error='provider session expired',
+            tool_telemetry={},
+        )
+
+    async def _get_or_create_interactive_session(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> _InteractiveCopilotSession:
+        """Reuse or create a persistent session for one tool-aware request."""
+        if request.session_id is not None:
+            async with self._interactive_sessions_lock:
+                session_state = self._interactive_sessions.get(request.session_id)
+            if session_state is None:
+                raise ProviderError(
+                    code='invalid_previous_response_id',
+                    message='No pending provider session matched the supplied continuation id.',
+                    status_code=400,
+                )
+            return session_state
+
+        if route.runtime_model_id is None:
+            raise ProviderError(
+                code='runtime_route_invalid',
+                message='Resolved route is missing a runtime model identifier.',
+                status_code=500,
+            )
+
+        resolved_client = await self._get_client_for_request(request=request)
+        await self._ensure_client_started(resolved_client.client)
+        event_queue: asyncio.Queue[SessionEvent] = asyncio.Queue()
+        session = await resolved_client.client.create_session(
+            on_permission_request=self._deny_permission_request,
+            on_event=event_queue.put_nowait,
+            model=route.runtime_model_id,
+            tools=self._build_tool_definitions(request=request) or None,
+            excluded_tools=list(request.tool_routing_policy.excluded_builtin_tools)
+            or None,
+            working_directory=self._working_directory,
+            streaming=True,
+        )
+        session_state = self._InteractiveCopilotSession(
+            active_session=self._ActiveCopilotSession(
+                session=session,
+                client=resolved_client,
+            ),
+            event_queue=event_queue,
+            pending_tool_calls={},
+        )
+        async with self._interactive_sessions_lock:
+            self._interactive_sessions[session.session_id] = session_state
+        await session.send(
+            render_prompt(
+                request=self._build_interactive_prompt_request(request=request)
+            )
+        )
+        return session_state
+
+    async def _submit_interactive_tool_results(
+        self,
+        *,
+        session_id: str,
+        tool_results: Sequence[CanonicalToolResult],
+    ) -> None:
+        """Deliver one or more northbound tool results into a pending SDK session."""
+        async with self._interactive_sessions_lock:
+            session_state = self._interactive_sessions.get(session_id)
+            if session_state is None:
+                raise ProviderError(
+                    code='invalid_previous_response_id',
+                    message='No pending provider session matched the supplied continuation id.',
+                    status_code=400,
+                )
+
+            for result in tool_results:
+                call_id = result.call_id
+                pending_call = session_state.pending_tool_calls.get(call_id)
+                submitted_result = self._build_sdk_tool_result(tool_result=result)
+                if pending_call is None:
+                    session_state.pending_tool_calls[call_id] = (
+                        self._PendingToolCallState(
+                            tool_call_id=call_id,
+                            tool_name='',
+                            arguments=None,
+                            submitted_result=submitted_result,
+                        )
+                    )
+                    continue
+
+                if pending_call.future is not None and not pending_call.future.done():
+                    pending_call.future.set_result(submitted_result)
+                else:
+                    pending_call.submitted_result = submitted_result
+
+    async def _wait_for_external_tool_result(
+        self,
+        invocation: ToolInvocation,
+    ) -> ToolResult:
+        """Wait for the northbound client to return the result for one tool call."""
+        async with self._interactive_sessions_lock:
+            session_state = self._interactive_sessions.get(invocation.session_id)
+            if session_state is None:
+                return self._build_expired_session_tool_result()
+
+            pending_call = session_state.pending_tool_calls.get(invocation.tool_call_id)
+            if pending_call is None:
+                pending_call = self._PendingToolCallState(
+                    tool_call_id=invocation.tool_call_id,
+                    tool_name=invocation.tool_name,
+                    arguments=invocation.arguments,
+                )
+                session_state.pending_tool_calls[invocation.tool_call_id] = pending_call
+
+            if pending_call.submitted_result is not None:
+                result = pending_call.submitted_result
+                session_state.pending_tool_calls.pop(invocation.tool_call_id, None)
+                return result
+
+            if pending_call.future is None or pending_call.future.done():
+                pending_call.future = asyncio.get_running_loop().create_future()
+            future = pending_call.future
+
+        try:
+            return await future
+        finally:
+            async with self._interactive_sessions_lock:
+                session_state = self._interactive_sessions.get(invocation.session_id)
+                if session_state is not None:
+                    session_state.pending_tool_calls.pop(invocation.tool_call_id, None)
+
+    def _build_tool_definitions(self, *, request: CanonicalChatRequest) -> list[Tool]:
+        """Convert canonical tool definitions into SDK tool registrations."""
+        return [
+            Tool(
+                name=tool_definition.name,
+                description=tool_definition.description,
+                parameters=tool_definition.parameters,
+                handler=self._wait_for_external_tool_result,
+                overrides_built_in_tool=_should_override_built_in_tool(
+                    tool_name=tool_definition.name
+                ),
+                skip_permission=True,
+            )
+            for tool_definition in request.tool_definitions
+        ]
+
+    def _build_interactive_prompt_request(
+        self, *, request: CanonicalChatRequest
+    ) -> CanonicalChatRequest:
+        """Return the prompt payload used when starting a tool-aware SDK session."""
+        guidance = request.tool_routing_policy.guidance
+        if guidance is None:
+            return request
+        return request.model_copy(
+            update={
+                'messages': [
+                    CanonicalChatMessage(
+                        role='system',
+                        content=guidance,
+                    ),
+                    *request.messages,
+                ]
+            }
+        )
+
+    async def _discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Remove a persistent session from the runtime and optionally disconnect it."""
+        async with self._interactive_sessions_lock:
+            session_state = self._interactive_sessions.pop(session_id, None)
+        if session_state is None:
+            return
+
+        if not disconnect:
+            return
+
+        await self._close_session(active_session=session_state.active_session)
+
 
 def _to_optional_int(value: int | float | str | None) -> int | None:
     """Convert SDK numeric fields into integers when values are present."""
@@ -401,6 +872,11 @@ def _to_optional_int(value: int | float | str | None) -> int | None:
         return None
 
     return int(value)
+
+
+def _should_override_built_in_tool(*, tool_name: str) -> bool:
+    """Report whether one external tool should override an SDK built-in tool."""
+    return tool_name == 'apply_patch'
 
 
 def _normalize_runtime_models(

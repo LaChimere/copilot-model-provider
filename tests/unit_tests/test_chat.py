@@ -30,6 +30,8 @@ def test_normalize_openai_chat_request_preserves_stream_and_request_metadata() -
     assert canonical_request.conversation_id == 'conversation-1'
     assert canonical_request.stream is True
     assert canonical_request.messages[0].content == 'Hello'
+    assert canonical_request.tool_routing_policy.mode == 'none'
+    assert canonical_request.tool_routing_policy.hint is None
 
 
 def test_render_prompt_preserves_roles_and_appends_assistant_turn() -> None:

@@ -7,6 +7,7 @@ from typing import Literal
 
 from copilot.generated.session_events import SessionEvent, SessionEventType
 
+from copilot_model_provider.core.models import CanonicalToolCall
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantTurnCompleteEvent,
@@ -17,6 +18,7 @@ from copilot_model_provider.streaming.events import (
     OpenAIChatCompletionChunkDelta,
     StreamFinishReason,
     StreamingErrorEvent,
+    ToolCallRequestedEvent,
 )
 
 
@@ -98,52 +100,24 @@ def translate_session_event(*, event: SessionEvent) -> CanonicalStreamingEvent |
         transport surface.
 
     """
-    data = event.data
+    text_event = _translate_text_event(event=event)
+    if text_event is not None:
+        return text_event
 
-    if event.type in {
-        SessionEventType.ASSISTANT_MESSAGE_DELTA,
-        SessionEventType.ASSISTANT_STREAMING_DELTA,
-    }:
-        text = _first_non_empty_text(data.delta_content, data.content)
-        if text is None:
-            return None
+    turn_end_event = _translate_turn_end_event(event=event)
+    if turn_end_event is not None:
+        return turn_end_event
 
-        return AssistantTextDeltaEvent(text=text)
+    usage_event = _translate_usage_event(event=event)
+    if usage_event is not None:
+        return usage_event
 
-    if event.type == SessionEventType.ASSISTANT_MESSAGE:
-        text = _first_non_empty_text(data.content, data.transformed_content)
-        if text is None:
-            return None
-
-        return AssistantTextDeltaEvent(text=text)
-
-    if event.type == SessionEventType.ASSISTANT_TURN_END:
-        return AssistantTurnCompleteEvent(
-            finish_reason=_normalize_finish_reason(reason=data.reason),
-            prompt_tokens=_normalize_optional_non_negative_int(
-                value=getattr(data, 'input_tokens', None)
-            ),
-            completion_tokens=_normalize_optional_non_negative_int(
-                value=getattr(data, 'output_tokens', None)
-            ),
-        )
-
-    if event.type == SessionEventType.ASSISTANT_USAGE:
-        prompt_tokens = _normalize_optional_non_negative_int(
-            value=getattr(data, 'input_tokens', None)
-        )
-        completion_tokens = _normalize_optional_non_negative_int(
-            value=getattr(data, 'output_tokens', None)
-        )
-        if prompt_tokens is None and completion_tokens is None:
-            return None
-
-        return AssistantUsageEvent(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
+    tool_event = _translate_tool_requested_event(event=event)
+    if tool_event is not None:
+        return tool_event
 
     if event.type == SessionEventType.SESSION_ERROR:
+        data = event.data
         return StreamingErrorEvent(
             code=_normalize_error_field(value=data.error_type) or 'session_error',
             message=_extract_error_message(event=event),
@@ -203,8 +177,90 @@ def translate_stream_event_to_openai_chunks(
             ),
         )
 
+    if isinstance(event, ToolCallRequestedEvent):
+        return ()
+
     message = 'Streaming error events do not have an OpenAI chat chunk representation.'
     raise ValueError(message)
+
+
+def _translate_text_event(*, event: SessionEvent) -> AssistantTextDeltaEvent | None:
+    """Translate SDK text-bearing events into canonical text deltas."""
+    data = event.data
+    if event.type in {
+        SessionEventType.ASSISTANT_MESSAGE_DELTA,
+        SessionEventType.ASSISTANT_STREAMING_DELTA,
+    }:
+        text = _first_non_empty_text(data.delta_content, data.content)
+        return AssistantTextDeltaEvent(text=text) if text is not None else None
+
+    if event.type == SessionEventType.ASSISTANT_MESSAGE:
+        text = _first_non_empty_text(data.content, data.transformed_content)
+        return AssistantTextDeltaEvent(text=text) if text is not None else None
+
+    return None
+
+
+def _translate_turn_end_event(
+    *, event: SessionEvent
+) -> AssistantTurnCompleteEvent | None:
+    """Translate SDK turn-end events into canonical completion events."""
+    if event.type != SessionEventType.ASSISTANT_TURN_END:
+        return None
+
+    data = event.data
+    return AssistantTurnCompleteEvent(
+        finish_reason=_normalize_finish_reason(reason=data.reason),
+        prompt_tokens=_normalize_optional_non_negative_int(
+            value=getattr(data, 'input_tokens', None)
+        ),
+        completion_tokens=_normalize_optional_non_negative_int(
+            value=getattr(data, 'output_tokens', None)
+        ),
+    )
+
+
+def _translate_usage_event(*, event: SessionEvent) -> AssistantUsageEvent | None:
+    """Translate SDK usage events into canonical usage metadata."""
+    if event.type != SessionEventType.ASSISTANT_USAGE:
+        return None
+
+    data = event.data
+    prompt_tokens = _normalize_optional_non_negative_int(
+        value=getattr(data, 'input_tokens', None)
+    )
+    completion_tokens = _normalize_optional_non_negative_int(
+        value=getattr(data, 'output_tokens', None)
+    )
+    if prompt_tokens is None and completion_tokens is None:
+        return None
+
+    return AssistantUsageEvent(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+
+
+def _translate_tool_requested_event(
+    *, event: SessionEvent
+) -> ToolCallRequestedEvent | None:
+    """Translate SDK external-tool events into canonical tool-call requests."""
+    if event.type != SessionEventType.EXTERNAL_TOOL_REQUESTED:
+        return None
+
+    data = event.data
+    tool_call_id = _normalize_error_field(value=getattr(data, 'tool_call_id', None))
+    tool_name = _normalize_error_field(value=getattr(data, 'tool_name', None))
+    if tool_call_id is None or tool_name is None:
+        return None
+
+    return ToolCallRequestedEvent(
+        tool_call=CanonicalToolCall(
+            call_id=tool_call_id,
+            name=tool_name,
+            arguments=getattr(data, 'arguments', None),
+        )
+    )
 
 
 def translate_session_event_to_openai_chunks(

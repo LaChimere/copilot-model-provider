@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from copilot_model_provider.core.models import CanonicalToolCall  # noqa: TC001
+
 StreamFinishReason = Literal['stop', 'length', 'content_filter', 'tool_calls']
 
 
@@ -70,6 +72,15 @@ class AssistantUsageEvent(BaseModel):
     completion_tokens: int | None = Field(default=None, ge=0)
 
 
+class ToolCallRequestedEvent(BaseModel):
+    """Canonical event emitted when the runtime requests an external tool call."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal['tool_call_requested'] = 'tool_call_requested'
+    tool_call: CanonicalToolCall
+
+
 class StreamingErrorEvent(BaseModel):
     """Canonical event emitted when the runtime reports a stream-level error."""
 
@@ -84,5 +95,6 @@ CanonicalStreamingEvent = (
     AssistantTextDeltaEvent
     | AssistantTurnCompleteEvent
     | AssistantUsageEvent
+    | ToolCallRequestedEvent
     | StreamingErrorEvent
 )

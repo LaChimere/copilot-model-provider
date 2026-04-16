@@ -18,6 +18,7 @@ from copilot_model_provider.api.anthropic.protocol import (
     build_anthropic_message_response_from_completion,
     build_anthropic_message_start_event,
     build_anthropic_message_stop_event,
+    build_anthropic_tool_use_content_block,
     build_anthropic_usage,
     estimate_anthropic_input_tokens,
     estimate_anthropic_output_tokens,
@@ -31,11 +32,13 @@ from copilot_model_provider.api.shared import (
     open_runtime_event_stream,
     resolve_runtime_auth_token_from_anthropic_headers,
 )
+from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     AnthropicCountTokensResponse,
     AnthropicMessageResponse,
     AnthropicMessagesCountTokensRequest,
     AnthropicMessagesCreateRequest,
+    AnthropicTextContentBlock,
     CanonicalChatRequest,
     ResolvedRoute,
 )
@@ -47,6 +50,7 @@ from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantUsageEvent,
     StreamingErrorEvent,
+    ToolCallRequestedEvent,
 )
 
 if TYPE_CHECKING:
@@ -72,17 +76,8 @@ def install_anthropic_messages_route(
     runtime: RuntimeProtocol,
     path: str = '/anthropic/v1/messages',
 ) -> None:
-    """Install the Anthropic-compatible ``POST /anthropic/v1/messages`` route.
-
-    Args:
-        app: Application instance that should serve the Messages endpoint.
-        default_runtime_auth_token: Optional configured fallback auth token used
-            when the request omits both ``Authorization`` and ``X-Api-Key``.
-        model_router: Router that validates visible models for the auth context.
-        runtime: Runtime implementation that executes the normalized request.
-        path: Public HTTP path where the Anthropic facade should be installed.
-
-    """
+    """Install the Anthropic-compatible ``POST /anthropic/v1/messages`` route."""
+    pending_sessions_by_tool_use_id: dict[str, str] = {}
 
     async def _create_message(
         request: AnthropicMessagesCreateRequest,
@@ -107,7 +102,7 @@ def install_anthropic_messages_route(
             Header(alias=_CLAUDE_CODE_SESSION_ID_HEADER_NAME),
         ] = None,
     ) -> AnthropicMessageResponse | StreamingResponse:
-        """Execute an Anthropic Messages request through the existing runtime."""
+        """Execute an Anthropic Messages request through the runtime."""
         gateway_headers = normalize_anthropic_gateway_headers(
             anthropic_version_header=anthropic_version_header,
             anthropic_beta_header=anthropic_beta_header,
@@ -125,8 +120,13 @@ def install_anthropic_messages_route(
             model_id=request.model,
             runtime_auth_token=runtime_auth_token,
         )
+        session_id = _pop_pending_session_id_from_tool_results(
+            request=request,
+            pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
+        )
         canonical_request = normalize_anthropic_messages_request(
             request=request,
+            session_id=session_id,
             runtime_auth_token=runtime_auth_token,
         )
         if request.stream:
@@ -135,12 +135,20 @@ def install_anthropic_messages_route(
                 runtime=runtime,
                 route=route,
                 canonical_request=canonical_request,
+                pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
             )
 
         completion = await runtime.complete_chat(
             request=canonical_request,
             route=route,
         )
+        if (
+            completion.pending_tool_call is not None
+            and completion.session_id is not None
+        ):
+            pending_sessions_by_tool_use_id[completion.pending_tool_call.call_id] = (
+                completion.session_id
+            )
         return build_anthropic_message_response_from_completion(
             request=request,
             completion=completion,
@@ -216,12 +224,13 @@ def install_anthropic_count_tokens_route(
     )
 
 
-async def _create_streaming_message(
+async def _create_streaming_message(  # noqa: C901
     *,
     request: AnthropicMessagesCreateRequest,
     runtime: RuntimeProtocol,
     route: ResolvedRoute,
     canonical_request: CanonicalChatRequest,
+    pending_sessions_by_tool_use_id: dict[str, str],
 ) -> StreamingResponse:
     """Create a streaming Anthropic-compatible SSE response."""
     runtime_stream = None
@@ -245,6 +254,7 @@ async def _create_streaming_message(
             completion_tokens=0,
         )
         output_parts: list[str] = []
+        text_block_started = False
         yield encode_anthropic_event(
             event='message_start',
             payload=build_anthropic_message_start_event(
@@ -253,28 +263,12 @@ async def _create_streaming_message(
                 usage=latest_usage,
             ).model_dump_json(exclude_none=True),
         )
-        yield encode_anthropic_event(
-            event='content_block_start',
-            payload=build_anthropic_content_block_start_event().model_dump_json(
-                exclude_none=True
-            ),
-        )
         async for stream_event in iter_canonical_runtime_stream_events(
             runtime_stream=runtime_stream
         ):
             if isinstance(stream_event, StreamingErrorEvent):
                 yield encode_anthropic_error_event(message=stream_event.message)
                 return
-
-            if isinstance(stream_event, AssistantTextDeltaEvent):
-                output_parts.append(stream_event.text)
-                yield encode_anthropic_event(
-                    event='content_block_delta',
-                    payload=build_anthropic_content_block_delta_event(
-                        text=stream_event.text
-                    ).model_dump_json(exclude_none=True),
-                )
-                continue
 
             if isinstance(stream_event, AssistantUsageEvent):
                 latest_usage = build_anthropic_usage(
@@ -293,12 +287,74 @@ async def _create_streaming_message(
                 )
                 continue
 
-            yield encode_anthropic_event(
-                event='content_block_stop',
-                payload=build_anthropic_content_block_stop_event().model_dump_json(
-                    exclude_none=True
-                ),
-            )
+            if isinstance(stream_event, AssistantTextDeltaEvent):
+                if not text_block_started:
+                    yield encode_anthropic_event(
+                        event='content_block_start',
+                        payload=build_anthropic_content_block_start_event(
+                            content_block=AnthropicTextContentBlock(text='')
+                        ).model_dump_json(exclude_none=True),
+                    )
+                    text_block_started = True
+
+                output_parts.append(stream_event.text)
+                yield encode_anthropic_event(
+                    event='content_block_delta',
+                    payload=build_anthropic_content_block_delta_event(
+                        text=stream_event.text
+                    ).model_dump_json(exclude_none=True),
+                )
+                continue
+
+            if isinstance(stream_event, ToolCallRequestedEvent):
+                if text_block_started:
+                    yield encode_anthropic_event(
+                        event='content_block_stop',
+                        payload=build_anthropic_content_block_stop_event().model_dump_json(
+                            exclude_none=True
+                        ),
+                    )
+                tool_use_block = build_anthropic_tool_use_content_block(
+                    tool_call=stream_event.tool_call
+                )
+                yield encode_anthropic_event(
+                    event='content_block_start',
+                    payload=build_anthropic_content_block_start_event(
+                        content_block=tool_use_block
+                    ).model_dump_json(exclude_none=True),
+                )
+                yield encode_anthropic_event(
+                    event='content_block_stop',
+                    payload=build_anthropic_content_block_stop_event().model_dump_json(
+                        exclude_none=True
+                    ),
+                )
+                if runtime_stream.session_id is not None:
+                    pending_sessions_by_tool_use_id[stream_event.tool_call.call_id] = (
+                        runtime_stream.session_id
+                    )
+                yield encode_anthropic_event(
+                    event='message_delta',
+                    payload=build_anthropic_message_delta_event(
+                        stop_reason='tool_use',
+                        usage=latest_usage,
+                    ).model_dump_json(exclude_none=True),
+                )
+                yield encode_anthropic_event(
+                    event='message_stop',
+                    payload=build_anthropic_message_stop_event().model_dump_json(
+                        exclude_none=True
+                    ),
+                )
+                return
+
+            if text_block_started:
+                yield encode_anthropic_event(
+                    event='content_block_stop',
+                    payload=build_anthropic_content_block_stop_event().model_dump_json(
+                        exclude_none=True
+                    ),
+                )
             yield encode_anthropic_event(
                 event='message_delta',
                 payload=build_anthropic_message_delta_event(
@@ -328,15 +384,43 @@ def _log_anthropic_gateway_headers(
     surface: str,
     gateway_headers: AnthropicGatewayHeaders,
 ) -> None:
-    """Log Anthropic gateway headers when the client supplied meaningful values.
-
-    Args:
-        surface: Anthropic route surface handling the current request.
-        gateway_headers: Normalized header bundle returned by shared helpers.
-
-    """
+    """Log Anthropic gateway headers when the client supplied meaningful values."""
     payload = gateway_headers.model_dump(exclude_none=True)
     if not payload:
         return
 
     _logger.info('anthropic_gateway_headers', surface=surface, **payload)
+
+
+def _pop_pending_session_id_from_tool_results(
+    *,
+    request: AnthropicMessagesCreateRequest,
+    pending_sessions_by_tool_use_id: dict[str, str],
+) -> str | None:
+    """Resolve a pending provider session from Anthropic ``tool_result`` blocks."""
+    tool_use_ids: list[str] = []
+    for message in request.messages:
+        if isinstance(message.content, str):
+            continue
+        for block in message.content:
+            if block.get('type') != 'tool_result':
+                continue
+            tool_use_id = block.get('tool_use_id')
+            if isinstance(tool_use_id, str) and tool_use_id:
+                tool_use_ids.append(tool_use_id)
+
+    if not tool_use_ids:
+        return None
+
+    session_ids = {
+        pending_sessions_by_tool_use_id.pop(tool_use_id)
+        for tool_use_id in tool_use_ids
+        if tool_use_id in pending_sessions_by_tool_use_id
+    }
+    if len(session_ids) != 1:
+        raise ProviderError(
+            code='invalid_tool_result',
+            message='No pending provider session matched the supplied tool_result blocks.',
+            status_code=400,
+        )
+    return next(iter(session_ids))

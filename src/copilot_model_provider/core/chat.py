@@ -14,7 +14,20 @@ from copilot_model_provider.core.models import (
     OpenAIChatMessage,
     OpenAIUsage,
     RuntimeCompletion,
+    derive_tool_routing_policy,
 )
+
+
+def _build_openai_usage(*, completion: RuntimeCompletion) -> OpenAIUsage | None:
+    """Build OpenAI usage totals when the runtime reports both token counts."""
+    if completion.prompt_tokens is None or completion.completion_tokens is None:
+        return None
+
+    return OpenAIUsage(
+        prompt_tokens=completion.prompt_tokens,
+        completion_tokens=completion.completion_tokens,
+        total_tokens=completion.prompt_tokens + completion.completion_tokens,
+    )
 
 
 def normalize_openai_chat_request(
@@ -49,6 +62,7 @@ def normalize_openai_chat_request(
             CanonicalChatMessage(role=message.role, content=message.content)
             for message in request.messages
         ],
+        tool_routing_policy=derive_tool_routing_policy(),
         stream=request.stream,
     )
 
@@ -93,17 +107,6 @@ def build_openai_chat_completion_response(
         compatibility surface implemented by this slice.
 
     """
-    usage = None
-    if (
-        completion.prompt_tokens is not None
-        and completion.completion_tokens is not None
-    ):
-        usage = OpenAIUsage(
-            prompt_tokens=completion.prompt_tokens,
-            completion_tokens=completion.completion_tokens,
-            total_tokens=completion.prompt_tokens + completion.completion_tokens,
-        )
-
     return OpenAIChatCompletionResponse(
         id=completion.provider_response_id or f'chatcmpl-{uuid4().hex}',
         created=int(time()),
@@ -113,10 +116,10 @@ def build_openai_chat_completion_response(
                 index=0,
                 message=OpenAIChatMessage(
                     role='assistant',
-                    content=completion.output_text,
+                    content=completion.output_text or '',
                 ),
                 finish_reason=completion.finish_reason,
             )
         ],
-        usage=usage,
+        usage=_build_openai_usage(completion=completion),
     )

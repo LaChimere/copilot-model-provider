@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from copilot_model_provider.core.models import (
     OpenAIResponsesCreateRequest,
+    OpenAIResponsesFunctionCallOutputItem,
     OpenAIResponsesInputMessage,
     OpenAIResponsesInputTextPart,
+    OpenAIResponsesOutputMessage,
     RuntimeCompletion,
 )
 from copilot_model_provider.core.responses import (
@@ -55,6 +59,7 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
     assert normalized.request_id == 'req-123'
     assert normalized.conversation_id == 'conversation-1'
     assert normalized.stream is True
+    assert normalized.tool_routing_policy.mode == 'none'
     assert [message.model_dump() for message in normalized.messages] == [
         {'role': 'system', 'content': 'Top-level instructions'},
         {'role': 'system', 'content': 'Developer context'},
@@ -79,7 +84,8 @@ def test_build_openai_responses_response_from_completion_maps_usage() -> None:
     assert response.id == 'resp_req-456'
     assert response.status == 'completed'
     assert response.model == 'default'
-    assert response.output[0].content[0].text == 'Hi from runtime.'
+    output_message = cast('OpenAIResponsesOutputMessage', response.output[0])
+    assert output_message.content[0].text == 'Hi from runtime.'
     assert response.usage is not None
     assert response.usage.model_dump() == {
         'input_tokens': 11,
@@ -87,6 +93,117 @@ def test_build_openai_responses_response_from_completion_maps_usage() -> None:
         'total_tokens': 18,
     }
     assert response.conversation is None
+
+
+def test_normalize_openai_responses_request_preserves_web_search_and_custom_tools() -> (
+    None
+):
+    """Verify that non-function Responses tools survive canonical normalization."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input='Research this topic',
+        tools=[
+            {'type': 'web_search'},
+            {
+                'type': 'custom',
+                'name': 'apply_patch',
+                'description': 'Apply a patch to local files.',
+            },
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(request=request)
+
+    assert [tool.name for tool in normalized.tool_definitions] == [
+        'web_search',
+        'apply_patch',
+    ]
+    assert normalized.tool_definitions[0].description
+    assert normalized.tool_definitions[0].parameters == {
+        'type': 'object',
+        'properties': {
+            'query': {
+                'type': 'string',
+                'description': 'Search query.',
+            }
+        },
+        'required': ['query'],
+        'additionalProperties': False,
+    }
+    assert normalized.tool_definitions[1].description == 'Apply a patch to local files.'
+    assert normalized.tool_routing_policy.mode == 'client_passthrough'
+    assert normalized.tool_routing_policy.hint is not None
+    assert normalized.tool_routing_policy.hint.surface == 'openai_responses'
+    assert normalized.tool_routing_policy.excluded_builtin_tools == (
+        'web_search',
+        'web_fetch',
+    )
+    assert normalized.tool_routing_policy.guidance is not None
+
+
+def test_normalize_openai_responses_request_preserves_routing_hints_on_continuation() -> (
+    None
+):
+    """Verify that continuation turns preserve the shared routing-policy hints."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_123',
+                output='Done',
+            )
+        ],
+        previous_response_id='resp_123',
+        tool_choice='required',
+        parallel_tool_calls=True,
+    )
+
+    normalized = normalize_openai_responses_request(
+        request=request,
+        session_id='provider-session-123',
+    )
+
+    assert normalized.tool_results[0].call_id == 'call_123'
+    assert normalized.tool_routing_policy.mode == 'client_passthrough'
+    assert normalized.tool_routing_policy.hint is not None
+    assert normalized.tool_routing_policy.hint.tool_choice == 'required'
+    assert normalized.tool_routing_policy.hint.parallel_tool_calls is True
+
+
+def test_build_openai_responses_response_from_completion_normalizes_web_search_tools() -> (
+    None
+):
+    """Verify that Responses payloads expose web search as a named function tool."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input='Hello',
+        tools=[{'type': 'web_search'}],
+    )
+
+    response = build_openai_responses_response_from_completion(
+        request=request,
+        completion=RuntimeCompletion(output_text='Hi from runtime.'),
+        response_id=build_response_id(request_id='req-web-search'),
+    )
+
+    assert response.tools == [
+        {
+            'type': 'function',
+            'name': 'web_search',
+            'description': 'Search the web for recent information and official sources.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {
+                        'type': 'string',
+                        'description': 'Search query.',
+                    }
+                },
+                'required': ['query'],
+                'additionalProperties': False,
+            },
+        }
+    ]
 
 
 def test_build_openai_responses_response_from_text_can_render_in_progress_payload() -> (

@@ -61,20 +61,20 @@ _SURFACE_RULES: dict[ProtocolSurface, dict[str, FieldCompatibilityRule]] = {
             note='Context truncation policy remains runtime-managed.',
         ),
         'previous_response_id': FieldCompatibilityRule(
-            handling=FieldHandling.ACCEPT_IGNORE,
-            note='Accepted as opaque client state without provider-owned session state.',
+            handling=FieldHandling.SUPPORTED,
+            note='Supported as provider-side continuation state via response-id to session-id recovery.',
         ),
         'parallel_tool_calls': FieldCompatibilityRule(
-            handling=FieldHandling.ACCEPT_IGNORE,
-            note='Tool execution is outside the provider boundary.',
+            handling=FieldHandling.SUPPORTED,
+            note='Preserved as a routing hint for tool-aware sessions; full parallel execution semantics remain runtime-managed.',
         ),
         'tool_choice': FieldCompatibilityRule(
-            handling=FieldHandling.ACCEPT_IGNORE,
-            note='Tool routing is not implemented by the provider.',
+            handling=FieldHandling.SUPPORTED,
+            note='Preserved as a routing hint for tool-aware sessions; the provider does not yet guarantee full tool-policy enforcement.',
         ),
         'tools': FieldCompatibilityRule(
-            handling=FieldHandling.ACCEPT_IGNORE,
-            note='Tool definitions are accepted for upstream compatibility only.',
+            handling=FieldHandling.SUPPORTED,
+            note='Supported as client-passthrough tool definitions forwarded into tool-aware runtime sessions.',
         ),
         'include': FieldCompatibilityRule(
             handling=FieldHandling.ACCEPT_IGNORE,
@@ -103,8 +103,8 @@ _SURFACE_RULES: dict[ProtocolSurface, dict[str, FieldCompatibilityRule]] = {
             note='Metadata is accepted for compatibility but not surfaced northbound.',
         ),
         'tools': FieldCompatibilityRule(
-            handling=FieldHandling.ACCEPT_IGNORE,
-            note='Tool definitions are accepted without server-side tool execution.',
+            handling=FieldHandling.SUPPORTED,
+            note='Supported as client-passthrough tool definitions forwarded into tool-aware runtime sessions.',
         ),
         'thinking': FieldCompatibilityRule(
             handling=FieldHandling.ACCEPT_IGNORE,

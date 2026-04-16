@@ -16,6 +16,7 @@ from copilot_model_provider.api.shared import (
     open_runtime_event_stream,
     resolve_runtime_auth_token,
 )
+from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     OpenAIResponse,
@@ -27,9 +28,12 @@ from copilot_model_provider.core.responses import (
     build_openai_responses_content_part_added_event,
     build_openai_responses_content_part_done_event,
     build_openai_responses_created_event,
+    build_openai_responses_function_call_item,
     build_openai_responses_output_item_added_event,
     build_openai_responses_output_item_done_event,
+    build_openai_responses_output_message,
     build_openai_responses_output_text_delta_event,
+    build_openai_responses_output_text_done_event,
     build_openai_responses_response_from_completion,
     build_openai_responses_usage,
     build_response_id,
@@ -37,7 +41,9 @@ from copilot_model_provider.core.responses import (
 )
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
+    AssistantUsageEvent,
     StreamingErrorEvent,
+    ToolCallRequestedEvent,
 )
 from copilot_model_provider.streaming.responses import (
     encode_openai_responses_error_event,
@@ -62,17 +68,8 @@ def install_openai_responses_route(
     runtime: RuntimeProtocol,
     path: str = '/openai/v1/responses',
 ) -> None:
-    """Install the OpenAI-compatible ``POST /openai/v1/responses`` route.
-
-    Args:
-        app: Application instance that should serve the Responses route.
-        default_runtime_auth_token: Optional configured fallback auth token used
-            when the request omits ``Authorization``.
-        model_router: Router that validates visible models for the auth context.
-        runtime: Runtime implementation that executes the normalized request.
-        path: Public HTTP path where the OpenAI facade should be installed.
-
-    """
+    """Install the OpenAI-compatible ``POST /openai/v1/responses`` route."""
+    pending_sessions_by_response_id: dict[str, str] = {}
 
     async def _create_response(
         request: OpenAIResponsesCreateRequest,
@@ -85,7 +82,7 @@ def install_openai_responses_route(
             Header(alias=_CLIENT_REQUEST_ID_HEADER_NAME),
         ] = None,
     ) -> OpenAIResponse | StreamingResponse:
-        """Execute a Responses request through the existing runtime."""
+        """Execute a Responses request through the runtime."""
         request_id = normalize_optional_header_value(value=client_request_id_header)
         if request_id is None:
             request_id = uuid4().hex
@@ -98,9 +95,14 @@ def install_openai_responses_route(
             model_id=request.model,
             runtime_auth_token=runtime_auth_token,
         )
+        session_id = _pop_pending_session_id(
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            previous_response_id=request.previous_response_id,
+        )
         canonical_request = normalize_openai_responses_request(
             request=request,
             request_id=request_id,
+            session_id=session_id,
             runtime_auth_token=runtime_auth_token,
         )
         if request.stream:
@@ -109,16 +111,23 @@ def install_openai_responses_route(
                 runtime=runtime,
                 route=route,
                 canonical_request=canonical_request,
+                pending_sessions_by_response_id=pending_sessions_by_response_id,
             )
 
         completion = await runtime.complete_chat(
             request=canonical_request,
             route=route,
         )
+        response_id = build_response_id(request_id=canonical_request.request_id)
+        if (
+            completion.pending_tool_call is not None
+            and completion.session_id is not None
+        ):
+            pending_sessions_by_response_id[response_id] = completion.session_id
         return build_openai_responses_response_from_completion(
             request=request,
             completion=completion,
-            response_id=build_response_id(request_id=canonical_request.request_id),
+            response_id=response_id,
         )
 
     app.add_api_route(
@@ -129,12 +138,13 @@ def install_openai_responses_route(
     )
 
 
-async def _create_streaming_response(
+async def _create_streaming_response(  # noqa: C901
     *,
     request: OpenAIResponsesCreateRequest,
     runtime: RuntimeProtocol,
     route: ResolvedRoute,
     canonical_request: CanonicalChatRequest,
+    pending_sessions_by_response_id: dict[str, str],
 ) -> StreamingResponse:
     """Create a streaming OpenAI Responses-compatible SSE response."""
     runtime_stream = None
@@ -151,32 +161,21 @@ async def _create_streaming_response(
             await close_runtime_event_stream(runtime_stream=runtime_stream)
         raise
 
-    async def _frame_stream() -> AsyncIterator[str]:
+    async def _frame_stream() -> AsyncIterator[str]:  # noqa: C901
         """Yield OpenAI Responses-compatible SSE frames for one stream."""
         sequence_number = 0
-        completed_at = created_at
         output_parts: list[str] = []
+        completed_at = created_at
+        usage = None
+        message_item_started = False
         completion_emitted = False
+
         yield encode_openai_responses_event(
             payload=build_openai_responses_created_event(
                 request=request,
                 response_id=response_id,
                 sequence_number=sequence_number,
                 created_at=created_at,
-            ).model_dump_json(exclude_none=True)
-        )
-        sequence_number += 1
-        yield encode_openai_responses_event(
-            payload=build_openai_responses_output_item_added_event(
-                response_id=response_id,
-                sequence_number=sequence_number,
-            ).model_dump_json(exclude_none=True)
-        )
-        sequence_number += 1
-        yield encode_openai_responses_event(
-            payload=build_openai_responses_content_part_added_event(
-                response_id=response_id,
-                sequence_number=sequence_number,
             ).model_dump_json(exclude_none=True)
         )
         sequence_number += 1
@@ -191,45 +190,169 @@ async def _create_streaming_response(
                 )
                 return
 
+            if isinstance(stream_event, AssistantUsageEvent):
+                usage = build_openai_responses_usage(
+                    prompt_tokens=stream_event.prompt_tokens,
+                    completion_tokens=stream_event.completion_tokens,
+                )
+                continue
+
             if isinstance(stream_event, AssistantTextDeltaEvent):
+                if not message_item_started:
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_item_added_event(
+                            item=build_openai_responses_output_message(
+                                response_id=response_id,
+                                output_text='',
+                                status='in_progress',
+                            ),
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_content_part_added_event(
+                            response_id=response_id,
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    message_item_started = True
+
                 output_parts.append(stream_event.text)
                 yield encode_openai_responses_event(
                     payload=build_openai_responses_output_text_delta_event(
                         response_id=response_id,
                         text=stream_event.text,
                         sequence_number=sequence_number,
+                        output_index=0,
                     ).model_dump_json(exclude_none=True)
                 )
                 sequence_number += 1
                 continue
 
+            if isinstance(stream_event, ToolCallRequestedEvent):
+                completed_at = int(time())
+                if message_item_started:
+                    final_text = ''.join(output_parts)
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_text_done_event(
+                            response_id=response_id,
+                            text=final_text,
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_content_part_done_event(
+                            response_id=response_id,
+                            text=final_text,
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+                    yield encode_openai_responses_event(
+                        payload=build_openai_responses_output_item_done_event(
+                            item=build_openai_responses_output_message(
+                                response_id=response_id,
+                                output_text=final_text,
+                                status='completed',
+                            ),
+                            sequence_number=sequence_number,
+                            output_index=0,
+                        ).model_dump_json(exclude_none=True)
+                    )
+                    sequence_number += 1
+
+                function_output_index = 1 if message_item_started else 0
+                function_call_item = build_openai_responses_function_call_item(
+                    response_id=response_id,
+                    tool_call=stream_event.tool_call,
+                )
+                yield encode_openai_responses_event(
+                    payload=build_openai_responses_output_item_added_event(
+                        item=function_call_item,
+                        sequence_number=sequence_number,
+                        output_index=function_output_index,
+                    ).model_dump_json(exclude_none=True)
+                )
+                sequence_number += 1
+                yield encode_openai_responses_event(
+                    payload=build_openai_responses_output_item_done_event(
+                        item=function_call_item,
+                        sequence_number=sequence_number,
+                        output_index=function_output_index,
+                    ).model_dump_json(exclude_none=True)
+                )
+                sequence_number += 1
+                if runtime_stream.session_id is not None:
+                    pending_sessions_by_response_id[response_id] = (
+                        runtime_stream.session_id
+                    )
+                yield encode_openai_responses_event(
+                    payload=build_openai_responses_completed_event(
+                        request=request,
+                        response_id=response_id,
+                        output_text=''.join(output_parts) or None,
+                        pending_tool_call=stream_event.tool_call,
+                        sequence_number=sequence_number,
+                        created_at=created_at,
+                        completed_at=completed_at,
+                        usage=usage,
+                    ).model_dump_json(exclude_none=True)
+                )
+                completion_emitted = True
+                return
+
             completed_at = int(time())
-            final_text = ''.join(output_parts)
-            usage = build_openai_responses_usage(
-                prompt_tokens=stream_event.prompt_tokens,
-                completion_tokens=stream_event.completion_tokens,
-            )
-            yield encode_openai_responses_event(
-                payload=build_openai_responses_content_part_done_event(
-                    response_id=response_id,
-                    text=final_text,
-                    sequence_number=sequence_number,
-                ).model_dump_json(exclude_none=True)
-            )
-            sequence_number += 1
-            yield encode_openai_responses_event(
-                payload=build_openai_responses_output_item_done_event(
-                    response_id=response_id,
-                    text=final_text,
-                    sequence_number=sequence_number,
-                ).model_dump_json(exclude_none=True)
-            )
-            sequence_number += 1
+            if usage is None:
+                usage = build_openai_responses_usage(
+                    prompt_tokens=stream_event.prompt_tokens,
+                    completion_tokens=stream_event.completion_tokens,
+                )
+            if message_item_started:
+                final_text = ''.join(output_parts)
+                yield encode_openai_responses_event(
+                    payload=build_openai_responses_output_text_done_event(
+                        response_id=response_id,
+                        text=final_text,
+                        sequence_number=sequence_number,
+                        output_index=0,
+                    ).model_dump_json(exclude_none=True)
+                )
+                sequence_number += 1
+                yield encode_openai_responses_event(
+                    payload=build_openai_responses_content_part_done_event(
+                        response_id=response_id,
+                        text=final_text,
+                        sequence_number=sequence_number,
+                        output_index=0,
+                    ).model_dump_json(exclude_none=True)
+                )
+                sequence_number += 1
+                yield encode_openai_responses_event(
+                    payload=build_openai_responses_output_item_done_event(
+                        item=build_openai_responses_output_message(
+                            response_id=response_id,
+                            output_text=final_text,
+                            status='completed',
+                        ),
+                        sequence_number=sequence_number,
+                        output_index=0,
+                    ).model_dump_json(exclude_none=True)
+                )
+                sequence_number += 1
+
             yield encode_openai_responses_event(
                 payload=build_openai_responses_completed_event(
                     request=request,
                     response_id=response_id,
-                    output_text=final_text or None,
+                    output_text=''.join(output_parts) or None,
+                    pending_tool_call=None,
                     sequence_number=sequence_number,
                     created_at=created_at,
                     completed_at=completed_at,
@@ -240,32 +363,36 @@ async def _create_streaming_response(
             return
 
         if not completion_emitted:
-            final_text = ''.join(output_parts)
-            yield encode_openai_responses_event(
-                payload=build_openai_responses_content_part_done_event(
-                    response_id=response_id,
-                    text=final_text,
-                    sequence_number=sequence_number,
-                ).model_dump_json(exclude_none=True)
-            )
-            sequence_number += 1
-            yield encode_openai_responses_event(
-                payload=build_openai_responses_output_item_done_event(
-                    response_id=response_id,
-                    text=final_text,
-                    sequence_number=sequence_number,
-                ).model_dump_json(exclude_none=True)
-            )
-            sequence_number += 1
             yield encode_openai_responses_event(
                 payload=build_openai_responses_completed_event(
                     request=request,
                     response_id=response_id,
-                    output_text=final_text or None,
+                    output_text=''.join(output_parts) or None,
+                    pending_tool_call=None,
                     sequence_number=sequence_number,
                     created_at=created_at,
                     completed_at=completed_at,
+                    usage=usage,
                 ).model_dump_json(exclude_none=True)
             )
 
     return StreamingResponse(_frame_stream(), media_type='text/event-stream')
+
+
+def _pop_pending_session_id(
+    *,
+    pending_sessions_by_response_id: dict[str, str],
+    previous_response_id: str | None,
+) -> str | None:
+    """Resolve and consume one pending session continuation id."""
+    if previous_response_id is None:
+        return None
+
+    session_id = pending_sessions_by_response_id.pop(previous_response_id, None)
+    if session_id is None:
+        raise ProviderError(
+            code='invalid_previous_response_id',
+            message='No pending provider session matched the supplied previous_response_id.',
+            status_code=400,
+        )
+    return session_id

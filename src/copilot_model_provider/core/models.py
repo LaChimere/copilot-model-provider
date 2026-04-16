@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 AnthropicStopReason = Literal['end_turn', 'max_tokens', 'stop_sequence', 'tool_use']
 
@@ -39,6 +42,192 @@ class CanonicalChatMessage(BaseModel):
     content: str = Field(min_length=1)
 
 
+class CanonicalToolDefinition(BaseModel):
+    """Normalized tool definition forwarded into a Copilot SDK session."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1)
+    description: str = ''
+    parameters: dict[str, Any] | None = None
+
+
+class CanonicalToolCall(BaseModel):
+    """Normalized external tool request emitted by the runtime."""
+
+    model_config = ConfigDict(frozen=True)
+
+    call_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: Any = None
+
+
+class CanonicalToolResult(BaseModel):
+    """Normalized client-supplied tool result returned on a later turn."""
+
+    model_config = ConfigDict(frozen=True)
+
+    call_id: str = Field(min_length=1)
+    output_text: str = ''
+    is_error: bool = False
+    error_text: str | None = None
+
+
+CanonicalToolRoutingSurface = Literal['openai_responses', 'anthropic_messages']
+CanonicalToolRoutingMode = Literal['none', 'client_passthrough']
+
+_CLIENT_PASSTHROUGH_EXCLUDED_BUILTIN_TOOLS = ('web_search', 'web_fetch')
+_CLIENT_PASSTHROUGH_GUIDANCE = (
+    'When tools are available, prefer the provided external or MCP tools for '
+    'actions and for current-information research. Use them directly in this '
+    'turn when needed, instead of ending your turn with a plan to use them later.'
+)
+
+
+class CanonicalToolRoutingHint(BaseModel):
+    """Preserved northbound tool-routing hints carried into runtime policy.
+
+    Attributes:
+        surface: Public request surface that supplied the routing hint.
+        tool_choice: Optional OpenAI Responses tool-choice payload preserved as a
+            routing hint. The provider does not yet guarantee full enforcement of
+            this hint, but preserves it so the shared policy can make
+            evidence-backed routing decisions.
+        parallel_tool_calls: Optional OpenAI Responses parallel-tool-calls hint
+            preserved alongside ``tool_choice`` for the same reason.
+
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    surface: CanonicalToolRoutingSurface
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
+
+
+def _empty_excluded_builtin_tool_tuple() -> tuple[str, ...]:
+    """Return a typed empty tuple for excluded built-in tool collections."""
+    return ()
+
+
+class CanonicalToolRoutingPolicy(BaseModel):
+    """Canonical policy describing how one request should route tool-aware turns.
+
+    Attributes:
+        mode: Whether the runtime should treat the request as a regular stateless
+            chat turn or as a client-passthrough tool-aware session.
+        hint: Optional preserved northbound routing hint payload.
+        excluded_builtin_tools: SDK built-in tools that should yield to
+            northbound client tools for this request.
+        guidance: Optional guidance message prepended to tool-aware prompts so
+            the model prefers the client-visible external tool loop.
+
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: CanonicalToolRoutingMode = 'none'
+    hint: CanonicalToolRoutingHint | None = None
+    excluded_builtin_tools: tuple[str, ...] = Field(
+        default_factory=_empty_excluded_builtin_tool_tuple
+    )
+    guidance: str | None = None
+
+
+def _empty_canonical_tool_definition_list() -> list[CanonicalToolDefinition]:
+    """Return a typed empty list for canonical tool-definition collections."""
+    return []
+
+
+def _empty_canonical_tool_result_list() -> list[CanonicalToolResult]:
+    """Return a typed empty list for canonical tool-result collections."""
+    return []
+
+
+def _empty_canonical_chat_message_list() -> list[CanonicalChatMessage]:
+    """Return a typed empty list for canonical chat-message collections."""
+    return []
+
+
+def _default_tool_routing_policy() -> CanonicalToolRoutingPolicy:
+    """Return the no-op routing policy used for non-tool requests."""
+    return CanonicalToolRoutingPolicy()
+
+
+def _has_tool_routing_context(
+    *,
+    session_id: str | None,
+    tool_definitions: Sequence[CanonicalToolDefinition],
+    tool_results: Sequence[CanonicalToolResult],
+) -> bool:
+    """Report whether a normalized request needs tool-aware runtime routing."""
+    return bool(session_id or tool_definitions or tool_results)
+
+
+def _build_tool_routing_hint(
+    *,
+    surface: CanonicalToolRoutingSurface | None,
+    tool_choice: str | dict[str, Any] | None,
+    parallel_tool_calls: bool | None,
+) -> CanonicalToolRoutingHint | None:
+    """Build the preserved northbound routing hint when one applies."""
+    if surface != 'openai_responses':
+        return None
+
+    return CanonicalToolRoutingHint(
+        surface=surface,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+    )
+
+
+def derive_tool_routing_policy(
+    *,
+    surface: CanonicalToolRoutingSurface | None = None,
+    session_id: str | None = None,
+    tool_definitions: Sequence[CanonicalToolDefinition] = (),
+    tool_results: Sequence[CanonicalToolResult] = (),
+    tool_choice: str | dict[str, Any] | None = None,
+    parallel_tool_calls: bool | None = None,
+) -> CanonicalToolRoutingPolicy:
+    """Derive the canonical routing policy for one normalized request.
+
+    Args:
+        surface: Optional public protocol surface that supplied the request.
+        session_id: Provider-side continuation session identifier, when this
+            request resumes a prior tool-aware turn.
+        tool_definitions: Normalized client-visible tool definitions present on
+            the request.
+        tool_results: Normalized tool results supplied by a continuation turn.
+        tool_choice: Optional OpenAI Responses tool-choice payload preserved as
+            a routing hint.
+        parallel_tool_calls: Optional OpenAI Responses parallel-tool-calls hint
+            preserved as part of the same routing context.
+
+    Returns:
+        A no-op policy for regular stateless chat requests, or a
+        ``client_passthrough`` policy for tool-aware requests.
+
+    """
+    if not _has_tool_routing_context(
+        session_id=session_id,
+        tool_definitions=tool_definitions,
+        tool_results=tool_results,
+    ):
+        return _default_tool_routing_policy()
+
+    return CanonicalToolRoutingPolicy(
+        mode='client_passthrough',
+        hint=_build_tool_routing_hint(
+            surface=surface,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+        ),
+        excluded_builtin_tools=_CLIENT_PASSTHROUGH_EXCLUDED_BUILTIN_TOOLS,
+        guidance=_CLIENT_PASSTHROUGH_GUIDANCE,
+    )
+
+
 class CanonicalChatRequest(BaseModel):
     """Canonical chat request passed to runtime implementations."""
 
@@ -46,9 +235,21 @@ class CanonicalChatRequest(BaseModel):
 
     request_id: str | None = None
     conversation_id: str | None = None
+    session_id: str | None = None
     runtime_auth_token: str | None = None
     model_id: str = Field(min_length=1)
-    messages: list[CanonicalChatMessage] = Field(min_length=1)
+    messages: list[CanonicalChatMessage] = Field(
+        default_factory=_empty_canonical_chat_message_list
+    )
+    tool_definitions: list[CanonicalToolDefinition] = Field(
+        default_factory=_empty_canonical_tool_definition_list
+    )
+    tool_results: list[CanonicalToolResult] = Field(
+        default_factory=_empty_canonical_tool_result_list
+    )
+    tool_routing_policy: CanonicalToolRoutingPolicy = Field(
+        default_factory=_default_tool_routing_policy
+    )
     stream: bool = False
 
 
@@ -260,12 +461,9 @@ def _empty_responses_output_text_list() -> list[OpenAIResponsesOutputText]:
     return []
 
 
-def _empty_responses_output_message_list() -> list[OpenAIResponsesOutputMessage]:
-    """Return a typed empty list for Responses output-message collections."""
-    return []
-
-
-def _empty_anthropic_content_block_list() -> list[AnthropicTextContentBlock]:
+def _empty_anthropic_content_block_list() -> list[
+    AnthropicTextContentBlock | AnthropicToolUseContentBlock
+]:
     """Return a typed empty list for Anthropic content-block collections."""
     return []
 
@@ -289,6 +487,16 @@ class OpenAIResponsesInputMessage(BaseModel):
     content: str | list[OpenAIResponsesInputTextPart] = Field(min_length=1)
 
 
+class OpenAIResponsesFunctionCallOutputItem(BaseModel):
+    """Tool-result item accepted by continuation turns on the Responses route."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['function_call_output'] = 'function_call_output'
+    call_id: str = Field(min_length=1)
+    output: Any = None
+
+
 class OpenAIResponsesCreateRequest(BaseModel):
     """OpenAI-compatible request body for the minimal Responses route.
 
@@ -301,7 +509,9 @@ class OpenAIResponsesCreateRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     model: str = Field(min_length=1)
-    input: str | list[OpenAIResponsesInputMessage] = Field(min_length=1)
+    input: (
+        str | list[OpenAIResponsesInputMessage | OpenAIResponsesFunctionCallOutputItem]
+    ) = Field(min_length=1)
     instructions: str | list[OpenAIResponsesInputMessage] | None = None
     stream: bool = False
     store: bool = False
@@ -340,6 +550,27 @@ class OpenAIResponsesOutputMessage(BaseModel):
     phase: Literal['commentary', 'final_answer'] | None = 'final_answer'
 
 
+class OpenAIResponsesFunctionCall(BaseModel):
+    """Function-call output item returned by the Responses route."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1)
+    type: Literal['function_call'] = 'function_call'
+    status: Literal['in_progress', 'completed'] = 'completed'
+    call_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: str = ''
+
+
+OpenAIResponsesOutputItem = OpenAIResponsesOutputMessage | OpenAIResponsesFunctionCall
+
+
+def _empty_responses_output_item_list() -> list[OpenAIResponsesOutputItem]:
+    """Return a typed empty list for Responses output-item collections."""
+    return []
+
+
 class OpenAIResponsesUsage(BaseModel):
     """Token accounting returned by the minimal Responses route."""
 
@@ -368,8 +599,8 @@ class OpenAIResponse(BaseModel):
     created_at: int = Field(ge=0)
     status: Literal['completed', 'in_progress']
     model: str = Field(min_length=1)
-    output: list[OpenAIResponsesOutputMessage] = Field(
-        default_factory=_empty_responses_output_message_list
+    output: list[OpenAIResponsesOutputItem] = Field(
+        default_factory=_empty_responses_output_item_list
     )
     parallel_tool_calls: bool = False
     tool_choice: str | dict[str, Any] | None = None
@@ -400,7 +631,7 @@ class OpenAIResponsesOutputItemAddedEvent(BaseModel):
     type: Literal['response.output_item.added'] = 'response.output_item.added'
     sequence_number: int = Field(ge=0)
     output_index: int = Field(ge=0, default=0)
-    item: OpenAIResponsesOutputMessage
+    item: OpenAIResponsesOutputItem
 
 
 class OpenAIResponsesContentPartAddedEvent(BaseModel):
@@ -465,7 +696,7 @@ class OpenAIResponsesOutputItemDoneEvent(BaseModel):
     type: Literal['response.output_item.done'] = 'response.output_item.done'
     sequence_number: int = Field(ge=0)
     output_index: int = Field(ge=0, default=0)
-    item: OpenAIResponsesOutputMessage
+    item: OpenAIResponsesOutputItem
 
 
 class OpenAIResponsesCompletedEvent(BaseModel):
@@ -487,6 +718,17 @@ class AnthropicTextContentBlock(BaseModel):
     text: str = ''
 
 
+class AnthropicToolUseContentBlock(BaseModel):
+    """Anthropic-compatible tool-use block returned by the Messages facade."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal['tool_use'] = 'tool_use'
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
 class AnthropicMessageInput(BaseModel):
     """One Anthropic Messages API input message."""
 
@@ -501,9 +743,9 @@ class AnthropicMessagesCreateRequest(BaseModel):
 
     The provider intentionally accepts the fields Claude Code sends in gateway
     mode, but only normalizes the text-bearing subset onto the internal
-    ``CanonicalChatRequest`` path. Tool definitions are accepted for compatibility
-    and preserved in the request model, but the current provider does not execute
-    Anthropic tool-use flows northbound.
+    ``CanonicalChatRequest`` path. Tool definitions are preserved so tool-aware
+    Anthropic requests can participate in the shared client-passthrough routing
+    policy, while tool execution itself remains outside the provider boundary.
 
     """
 
@@ -557,7 +799,7 @@ class AnthropicMessageResponse(BaseModel):
     type: Literal['message'] = 'message'
     role: Literal['assistant'] = 'assistant'
     model: str = Field(min_length=1)
-    content: list[AnthropicTextContentBlock] = Field(
+    content: list[AnthropicTextContentBlock | AnthropicToolUseContentBlock] = Field(
         default_factory=_empty_anthropic_content_block_list
     )
     stop_reason: AnthropicStopReason | None = 'end_turn'
@@ -581,7 +823,7 @@ class AnthropicContentBlockStartEvent(BaseModel):
 
     type: Literal['content_block_start'] = 'content_block_start'
     index: int = Field(ge=0, default=0)
-    content_block: AnthropicTextContentBlock
+    content_block: AnthropicTextContentBlock | AnthropicToolUseContentBlock
 
 
 class AnthropicTextDelta(BaseModel):
@@ -653,9 +895,10 @@ class RuntimeCompletion(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    output_text: str = Field(min_length=1)
+    output_text: str | None = None
     finish_reason: Literal['stop', 'length', 'content_filter', 'tool_calls'] = 'stop'
     provider_response_id: str | None = None
     session_id: str | None = None
+    pending_tool_call: CanonicalToolCall | None = None
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
