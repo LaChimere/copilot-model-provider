@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import structlog
 from copilot.generated.session_events import SessionEventType
 from pydantic import BaseModel, ConfigDict
 
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
         RuntimeProtocol,
     )
     from copilot_model_provider.streaming.events import CanonicalStreamingEvent
+
+_logger = structlog.get_logger(__name__)
 
 
 class AnthropicGatewayHeaders(BaseModel):
@@ -51,7 +54,18 @@ async def open_runtime_event_stream(
         A ``RuntimeEventStream`` ready to be consumed by an HTTP streaming route.
 
     """
-    return await runtime.stream_chat(request=request, route=route)
+    runtime_stream = await runtime.stream_chat(request=request, route=route)
+    _logger.info(
+        'runtime_event_stream_opened',
+        route_runtime=route.runtime,
+        route_model_id=route.runtime_model_id,
+        session_id=runtime_stream.session_id,
+        tool_routing_mode=request.tool_routing_policy.mode,
+        message_count=len(request.messages),
+        tool_definition_count=len(request.tool_definitions),
+        tool_result_count=len(request.tool_results),
+    )
+    return runtime_stream
 
 
 async def iter_canonical_runtime_stream_events(
@@ -73,6 +87,11 @@ async def iter_canonical_runtime_stream_events(
             event=event,
             saw_text_delta=saw_text_delta,
         ):
+            _logger.info(
+                'runtime_stream_aggregate_message_skipped',
+                session_id=runtime_stream.session_id,
+                event_type=event.type,
+            )
             continue
 
         stream_event = translate_session_event(event=event)
@@ -238,11 +257,21 @@ async def close_runtime_event_stream(*, runtime_stream: RuntimeEventStream) -> N
 
     """
     if runtime_stream.close is not None:
+        _logger.info(
+            'runtime_event_stream_closed',
+            session_id=runtime_stream.session_id,
+            close_strategy='callback',
+        )
         await runtime_stream.close()
         return
 
     aclose = getattr(runtime_stream.events, 'aclose', None)
     if aclose is not None:
+        _logger.info(
+            'runtime_event_stream_closed',
+            session_id=runtime_stream.session_id,
+            close_strategy='aclose',
+        )
         await aclose()
 
 

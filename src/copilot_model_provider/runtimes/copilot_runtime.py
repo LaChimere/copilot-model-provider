@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast, override
 
+import structlog
 from copilot import CopilotClient, SubprocessConfig
 from copilot.generated.session_events import (
     PermissionRequest,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from copilot.session import CopilotSession
 
 _INTERACTIVE_TOOL_CONTINUATION_PROMPT = 'Continue.'
+_logger = structlog.get_logger(__name__)
 
 PermissionRequestHandler = Callable[
     [PermissionRequest, dict[str, str]],
@@ -165,7 +167,15 @@ class CopilotRuntime(RuntimeProtocol):
         route: ResolvedRoute,
     ) -> RuntimeCompletion:
         """Execute a canonical chat request through an ephemeral Copilot session."""
-        if self._uses_interactive_session(request=request):
+        uses_interactive_session = self._uses_interactive_session(request=request)
+        _logger.info(
+            'copilot_runtime_complete_chat_started',
+            route_runtime=route.runtime,
+            route_model_id=route.runtime_model_id,
+            uses_interactive_session=uses_interactive_session,
+            **_summarize_canonical_request(request=request),
+        )
+        if uses_interactive_session:
             self._validate_interactive_request(request=request)
             return await self._complete_chat_with_interactive_session(
                 request=request,
@@ -184,14 +194,28 @@ class CopilotRuntime(RuntimeProtocol):
             route=route,
             streaming=False,
         )
+        completion: RuntimeCompletion
         try:
             event = await active_session.session.send_and_wait(
                 render_prompt(request=request),
                 timeout=self._timeout_seconds,
             )
-            return _build_runtime_completion(
+            completion = _build_runtime_completion(
                 event=event,
                 session_id=active_session.session.session_id,
+            )
+            _logger.info(
+                'copilot_runtime_complete_chat_finished',
+                route_runtime=route.runtime,
+                route_model_id=route.runtime_model_id,
+                session_id=completion.session_id,
+                finish_reason=completion.finish_reason,
+                output_text_chars=len(completion.output_text or ''),
+                pending_tool_call_name=(
+                    completion.pending_tool_call.name
+                    if completion.pending_tool_call is not None
+                    else None
+                ),
             )
         except TimeoutError as error:
             raise ProviderError(
@@ -210,6 +234,8 @@ class CopilotRuntime(RuntimeProtocol):
         finally:
             await self._close_session(active_session=active_session)
 
+        return completion
+
     @override
     async def stream_chat(
         self,
@@ -218,7 +244,15 @@ class CopilotRuntime(RuntimeProtocol):
         route: ResolvedRoute,
     ) -> RuntimeEventStream:
         """Execute a canonical streaming chat request through the Copilot SDK."""
-        if self._uses_interactive_session(request=request):
+        uses_interactive_session = self._uses_interactive_session(request=request)
+        _logger.info(
+            'copilot_runtime_stream_chat_started',
+            route_runtime=route.runtime,
+            route_model_id=route.runtime_model_id,
+            uses_interactive_session=uses_interactive_session,
+            **_summarize_canonical_request(request=request),
+        )
+        if uses_interactive_session:
             self._validate_interactive_request(request=request)
             return await self._stream_chat_with_interactive_session(
                 request=request,
@@ -279,6 +313,11 @@ class CopilotRuntime(RuntimeProtocol):
                         SessionEventType.SESSION_ERROR,
                         SessionEventType.SESSION_IDLE,
                     }:
+                        _logger.info(
+                            'copilot_runtime_stateless_stream_terminal_event',
+                            session_id=active_session.session.session_id,
+                            event_type=event.type,
+                        )
                         break
             except ProviderError:
                 raise
@@ -535,6 +574,14 @@ class CopilotRuntime(RuntimeProtocol):
             route=route,
         )
         if request.tool_results:
+            _logger.info(
+                'copilot_runtime_interactive_tool_results_received',
+                session_id=session_state.active_session.session.session_id,
+                tool_result_count=len(request.tool_results),
+                tool_result_call_ids=[
+                    result.call_id for result in request.tool_results
+                ],
+            )
             await self._submit_interactive_tool_results(
                 session_id=session_state.active_session.session.session_id,
                 tool_results=request.tool_results,
@@ -573,6 +620,11 @@ class CopilotRuntime(RuntimeProtocol):
                     continuation_prompt_sent=continuation_prompt_sent,
                 ):
                     continuation_prompt_sent = True
+                    _logger.info(
+                        'copilot_runtime_interactive_continuation_prompt_sent',
+                        session_id=session_id,
+                        event_type=event.type,
+                    )
                     await session_state.active_session.session.send(
                         _INTERACTIVE_TOOL_CONTINUATION_PROMPT
                     )
@@ -580,12 +632,21 @@ class CopilotRuntime(RuntimeProtocol):
 
                 yield event
                 if event.type == SessionEventType.EXTERNAL_TOOL_REQUESTED:
+                    _logger.info(
+                        'copilot_runtime_interactive_tool_boundary_reached',
+                        session_id=session_id,
+                    )
                     break
                 if event.type in {
                     SessionEventType.ASSISTANT_TURN_END,
                     SessionEventType.SESSION_ERROR,
                     SessionEventType.SESSION_IDLE,
                 }:
+                    _logger.info(
+                        'copilot_runtime_interactive_terminal_event',
+                        session_id=session_id,
+                        event_type=event.type,
+                    )
                     await self._discard_interactive_session(
                         session_id=session_id,
                         disconnect=True,
@@ -637,12 +698,23 @@ class CopilotRuntime(RuntimeProtocol):
 
         if isinstance(stream_event, ToolCallRequestedEvent):
             state.pending_tool_call = stream_event.tool_call
+            _logger.info(
+                'copilot_runtime_interactive_completion_tool_call',
+                tool_call_id=stream_event.tool_call.call_id,
+                tool_name=stream_event.tool_call.name,
+            )
             return True
 
         if isinstance(stream_event, AssistantTurnCompleteEvent):
             state.prompt_tokens = stream_event.prompt_tokens or state.prompt_tokens
             state.completion_tokens = (
                 stream_event.completion_tokens or state.completion_tokens
+            )
+            _logger.info(
+                'copilot_runtime_interactive_completion_finished',
+                output_text_chars=len(''.join(state.output_parts)),
+                prompt_tokens=state.prompt_tokens,
+                completion_tokens=state.completion_tokens,
             )
             return True
 
@@ -702,6 +774,11 @@ class CopilotRuntime(RuntimeProtocol):
                     message='No pending provider session matched the supplied continuation id.',
                     status_code=400,
                 )
+            _logger.info(
+                'copilot_runtime_interactive_session_reused',
+                session_id=request.session_id,
+                pending_tool_call_count=len(session_state.pending_tool_calls),
+            )
             return session_state
 
         if route.runtime_model_id is None:
@@ -734,6 +811,16 @@ class CopilotRuntime(RuntimeProtocol):
         )
         async with self._interactive_sessions_lock:
             self._interactive_sessions[session.session_id] = session_state
+        _logger.info(
+            'copilot_runtime_interactive_session_created',
+            session_id=session.session_id,
+            route_model_id=route.runtime_model_id,
+            tool_definition_names=[tool.name for tool in request.tool_definitions],
+            excluded_builtin_tools=list(
+                request.tool_routing_policy.excluded_builtin_tools
+            ),
+            has_guidance=request.tool_routing_policy.guidance is not None,
+        )
         await session.send(
             render_prompt(
                 request=self._build_interactive_prompt_request(request=request)
@@ -776,6 +863,12 @@ class CopilotRuntime(RuntimeProtocol):
                     pending_call.future.set_result(submitted_result)
                 else:
                     pending_call.submitted_result = submitted_result
+        _logger.info(
+            'copilot_runtime_interactive_tool_results_submitted',
+            session_id=session_id,
+            tool_result_count=len(tool_results),
+            tool_result_call_ids=[result.call_id for result in tool_results],
+        )
 
     async def _wait_for_external_tool_result(
         self,
@@ -860,6 +953,13 @@ class CopilotRuntime(RuntimeProtocol):
         if session_state is None:
             return
 
+        _logger.info(
+            'copilot_runtime_interactive_session_discarded',
+            session_id=session_id,
+            disconnect=disconnect,
+            pending_tool_call_count=len(session_state.pending_tool_calls),
+        )
+
         if not disconnect:
             return
 
@@ -877,6 +977,24 @@ def _to_optional_int(value: int | float | str | None) -> int | None:
 def _should_override_built_in_tool(*, tool_name: str) -> bool:
     """Report whether one external tool should override an SDK built-in tool."""
     return tool_name == 'apply_patch'
+
+
+def _summarize_canonical_request(*, request: CanonicalChatRequest) -> dict[str, object]:
+    """Return a compact diagnostic summary for one runtime request."""
+    return {
+        'session_id': request.session_id,
+        'message_count': len(request.messages),
+        'message_roles': [message.role for message in request.messages],
+        'tool_definition_count': len(request.tool_definitions),
+        'tool_definition_names': [tool.name for tool in request.tool_definitions],
+        'tool_result_count': len(request.tool_results),
+        'tool_result_call_ids': [result.call_id for result in request.tool_results],
+        'tool_routing_mode': request.tool_routing_policy.mode,
+        'excluded_builtin_tools': list(
+            request.tool_routing_policy.excluded_builtin_tools
+        ),
+        'has_guidance': request.tool_routing_policy.guidance is not None,
+    }
 
 
 def _normalize_runtime_models(

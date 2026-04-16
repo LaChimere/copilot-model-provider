@@ -108,6 +108,10 @@ def install_anthropic_messages_route(
             anthropic_beta_header=anthropic_beta_header,
             claude_code_session_id_header=claude_code_session_id_header,
         )
+        _logger.info(
+            'anthropic_messages_request_received',
+            **_summarize_anthropic_request(request=request),
+        )
         _log_anthropic_gateway_headers(
             surface='messages', gateway_headers=gateway_headers
         )
@@ -129,6 +133,13 @@ def install_anthropic_messages_route(
             session_id=session_id,
             runtime_auth_token=runtime_auth_token,
         )
+        _logger.info(
+            'anthropic_messages_request_normalized',
+            route_runtime=route.runtime,
+            route_model_id=route.runtime_model_id,
+            **_summarize_canonical_request(request=canonical_request),
+            pending_tool_use_session_count=len(pending_sessions_by_tool_use_id),
+        )
         if request.stream:
             return await _create_streaming_message(
                 request=request,
@@ -149,6 +160,18 @@ def install_anthropic_messages_route(
             pending_sessions_by_tool_use_id[completion.pending_tool_call.call_id] = (
                 completion.session_id
             )
+        _logger.info(
+            'anthropic_messages_completion_ready',
+            session_id=completion.session_id,
+            finish_reason=completion.finish_reason,
+            output_text_chars=len(completion.output_text or ''),
+            pending_tool_call_name=(
+                completion.pending_tool_call.name
+                if completion.pending_tool_call is not None
+                else None
+            ),
+            pending_tool_use_session_count=len(pending_sessions_by_tool_use_id),
+        )
         return build_anthropic_message_response_from_completion(
             request=request,
             completion=completion,
@@ -205,6 +228,12 @@ def install_anthropic_count_tokens_route(
             surface='count_tokens',
             gateway_headers=gateway_headers,
         )
+        _logger.info(
+            'anthropic_count_tokens_requested',
+            model=request.model,
+            message_count=len(request.messages),
+            tool_count=len(request.tools),
+        )
         runtime_auth_token = resolve_runtime_auth_token_from_anthropic_headers(
             authorization_header=authorization_header,
             api_key_header=api_key_header,
@@ -241,6 +270,14 @@ async def _create_streaming_message(  # noqa: C901
             route=route,
         )
         message_id = build_anthropic_message_id()
+        _logger.info(
+            'anthropic_messages_stream_started',
+            message_id=message_id,
+            session_id=runtime_stream.session_id,
+            route_runtime=route.runtime,
+            route_model_id=route.runtime_model_id,
+            **_summarize_canonical_request(request=canonical_request),
+        )
     except Exception:
         if runtime_stream is not None:
             await close_runtime_event_stream(runtime_stream=runtime_stream)
@@ -267,6 +304,11 @@ async def _create_streaming_message(  # noqa: C901
             runtime_stream=runtime_stream
         ):
             if isinstance(stream_event, StreamingErrorEvent):
+                _logger.info(
+                    'anthropic_messages_stream_error',
+                    message_id=message_id,
+                    session_id=runtime_stream.session_id,
+                )
                 yield encode_anthropic_error_event(message=stream_event.message)
                 return
 
@@ -333,6 +375,15 @@ async def _create_streaming_message(  # noqa: C901
                     pending_sessions_by_tool_use_id[stream_event.tool_call.call_id] = (
                         runtime_stream.session_id
                     )
+                _logger.info(
+                    'anthropic_messages_stream_tool_call_requested',
+                    message_id=message_id,
+                    session_id=runtime_stream.session_id,
+                    tool_call_id=stream_event.tool_call.call_id,
+                    tool_name=stream_event.tool_call.name,
+                    output_text_chars=len(''.join(output_parts)),
+                    pending_tool_use_session_count=len(pending_sessions_by_tool_use_id),
+                )
                 yield encode_anthropic_event(
                     event='message_delta',
                     payload=build_anthropic_message_delta_event(
@@ -345,6 +396,14 @@ async def _create_streaming_message(  # noqa: C901
                     payload=build_anthropic_message_stop_event().model_dump_json(
                         exclude_none=True
                     ),
+                )
+                _logger.info(
+                    'anthropic_messages_stream_completed',
+                    message_id=message_id,
+                    session_id=runtime_stream.session_id,
+                    output_text_chars=len(''.join(output_parts)),
+                    saw_tool_call=True,
+                    pending_tool_use_session_count=len(pending_sessions_by_tool_use_id),
                 )
                 return
 
@@ -373,6 +432,14 @@ async def _create_streaming_message(  # noqa: C901
                 payload=build_anthropic_message_stop_event().model_dump_json(
                     exclude_none=True
                 ),
+            )
+            _logger.info(
+                'anthropic_messages_stream_completed',
+                message_id=message_id,
+                session_id=runtime_stream.session_id,
+                output_text_chars=len(''.join(output_parts)),
+                saw_tool_call=False,
+                pending_tool_use_session_count=len(pending_sessions_by_tool_use_id),
             )
             return
 
@@ -438,4 +505,62 @@ def _pop_pending_session_id_from_tool_results(
     session_id = next(iter(session_ids))
     for tool_use_id in matched_tool_use_ids:
         pending_sessions_by_tool_use_id.pop(tool_use_id, None)
+    _logger.info(
+        'anthropic_messages_continuation_resolved',
+        tool_use_ids=matched_tool_use_ids,
+        session_id=session_id,
+        pending_tool_use_session_count=len(pending_sessions_by_tool_use_id),
+    )
     return session_id
+
+
+def _summarize_anthropic_request(
+    *, request: AnthropicMessagesCreateRequest
+) -> dict[str, object]:
+    """Return a compact diagnostic summary for one Anthropic request."""
+    message_roles = [message.role for message in request.messages]
+    content_block_types: list[str] = []
+    for message in request.messages:
+        if isinstance(message.content, str):
+            content_block_types.append('text_string')
+            continue
+        content_block_types.extend(
+            type_name
+            for type_name in (block.get('type') for block in message.content)
+            if isinstance(type_name, str)
+        )
+
+    return {
+        'model': request.model,
+        'stream': request.stream,
+        'message_count': len(request.messages),
+        'message_roles': message_roles,
+        'content_block_types': content_block_types,
+        'tool_count': len(request.tools),
+        'tool_names': [tool.get('name') for tool in request.tools],
+        'system_kind': (
+            None
+            if request.system is None
+            else 'string'
+            if isinstance(request.system, str)
+            else 'blocks'
+        ),
+    }
+
+
+def _summarize_canonical_request(*, request: CanonicalChatRequest) -> dict[str, object]:
+    """Return a compact diagnostic summary for one canonical Anthropic request."""
+    return {
+        'canonical_session_id': request.session_id,
+        'stream': request.stream,
+        'message_count': len(request.messages),
+        'message_roles': [message.role for message in request.messages],
+        'tool_definition_count': len(request.tool_definitions),
+        'tool_definition_names': [tool.name for tool in request.tool_definitions],
+        'tool_result_count': len(request.tool_results),
+        'tool_routing_mode': request.tool_routing_policy.mode,
+        'excluded_builtin_tools': list(
+            request.tool_routing_policy.excluded_builtin_tools
+        ),
+        'has_guidance': request.tool_routing_policy.guidance is not None,
+    }

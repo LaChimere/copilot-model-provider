@@ -6,6 +6,7 @@ from time import time
 from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
 
+import structlog
 from fastapi import FastAPI, Header
 from fastapi.responses import StreamingResponse
 
@@ -21,6 +22,7 @@ from copilot_model_provider.core.models import (
     CanonicalChatRequest,
     OpenAIResponse,
     OpenAIResponsesCreateRequest,
+    OpenAIResponsesInputMessage,
     ResolvedRoute,
 )
 from copilot_model_provider.core.responses import (
@@ -58,6 +60,7 @@ if TYPE_CHECKING:
 
 _AUTHORIZATION_HEADER_NAME = 'Authorization'
 _CLIENT_REQUEST_ID_HEADER_NAME = 'x-client-request-id'
+_logger = structlog.get_logger(__name__)
 
 
 def install_openai_responses_route(
@@ -87,6 +90,12 @@ def install_openai_responses_route(
         if request_id is None:
             request_id = uuid4().hex
 
+        _logger.info(
+            'openai_responses_request_received',
+            request_id=request_id,
+            **_summarize_openai_responses_request(request=request),
+        )
+
         runtime_auth_token = resolve_runtime_auth_token(
             authorization_header=authorization_header,
             default_token=default_runtime_auth_token,
@@ -104,6 +113,14 @@ def install_openai_responses_route(
             request_id=request_id,
             session_id=session_id,
             runtime_auth_token=runtime_auth_token,
+        )
+        _logger.info(
+            'openai_responses_request_normalized',
+            request_id=request_id,
+            route_runtime=route.runtime,
+            route_model_id=route.runtime_model_id,
+            **_summarize_canonical_request(request=canonical_request),
+            pending_response_session_count=len(pending_sessions_by_response_id),
         )
         if request.stream:
             return await _create_streaming_response(
@@ -124,6 +141,20 @@ def install_openai_responses_route(
             and completion.session_id is not None
         ):
             pending_sessions_by_response_id[response_id] = completion.session_id
+        _logger.info(
+            'openai_responses_completion_ready',
+            request_id=request_id,
+            response_id=response_id,
+            session_id=completion.session_id,
+            finish_reason=completion.finish_reason,
+            output_text_chars=len(completion.output_text or ''),
+            pending_tool_call_name=(
+                completion.pending_tool_call.name
+                if completion.pending_tool_call is not None
+                else None
+            ),
+            pending_response_session_count=len(pending_sessions_by_response_id),
+        )
         return build_openai_responses_response_from_completion(
             request=request,
             completion=completion,
@@ -156,6 +187,15 @@ async def _create_streaming_response(  # noqa: C901
         )
         response_id = build_response_id(request_id=canonical_request.request_id)
         created_at = int(time())
+        _logger.info(
+            'openai_responses_stream_started',
+            request_id=canonical_request.request_id,
+            response_id=response_id,
+            session_id=runtime_stream.session_id,
+            route_runtime=route.runtime,
+            route_model_id=route.runtime_model_id,
+            **_summarize_canonical_request(request=canonical_request),
+        )
     except Exception:
         if runtime_stream is not None:
             await close_runtime_event_stream(runtime_stream=runtime_stream)
@@ -169,6 +209,7 @@ async def _create_streaming_response(  # noqa: C901
         usage = None
         message_item_started = False
         completion_emitted = False
+        saw_tool_call = False
 
         yield encode_openai_responses_event(
             payload=build_openai_responses_created_event(
@@ -184,6 +225,13 @@ async def _create_streaming_response(  # noqa: C901
             runtime_stream=runtime_stream
         ):
             if isinstance(stream_event, StreamingErrorEvent):
+                _logger.info(
+                    'openai_responses_stream_error',
+                    request_id=canonical_request.request_id,
+                    response_id=response_id,
+                    session_id=runtime_stream.session_id,
+                    error_code=stream_event.code,
+                )
                 yield encode_openai_responses_error_event(
                     code=stream_event.code,
                     message=stream_event.message,
@@ -234,6 +282,7 @@ async def _create_streaming_response(  # noqa: C901
                 continue
 
             if isinstance(stream_event, ToolCallRequestedEvent):
+                saw_tool_call = True
                 completed_at = int(time())
                 if message_item_started:
                     final_text = ''.join(output_parts)
@@ -293,6 +342,16 @@ async def _create_streaming_response(  # noqa: C901
                     pending_sessions_by_response_id[response_id] = (
                         runtime_stream.session_id
                     )
+                _logger.info(
+                    'openai_responses_stream_tool_call_requested',
+                    request_id=canonical_request.request_id,
+                    response_id=response_id,
+                    session_id=runtime_stream.session_id,
+                    tool_call_id=stream_event.tool_call.call_id,
+                    tool_name=stream_event.tool_call.name,
+                    output_text_chars=len(''.join(output_parts)),
+                    pending_response_session_count=len(pending_sessions_by_response_id),
+                )
                 yield encode_openai_responses_event(
                     payload=build_openai_responses_completed_event(
                         request=request,
@@ -360,6 +419,15 @@ async def _create_streaming_response(  # noqa: C901
                 ).model_dump_json(exclude_none=True)
             )
             completion_emitted = True
+            _logger.info(
+                'openai_responses_stream_completed',
+                request_id=canonical_request.request_id,
+                response_id=response_id,
+                session_id=runtime_stream.session_id,
+                output_text_chars=len(''.join(output_parts)),
+                saw_tool_call=saw_tool_call,
+                pending_response_session_count=len(pending_sessions_by_response_id),
+            )
             return
 
         if not completion_emitted:
@@ -374,6 +442,15 @@ async def _create_streaming_response(  # noqa: C901
                     completed_at=completed_at,
                     usage=usage,
                 ).model_dump_json(exclude_none=True)
+            )
+            _logger.info(
+                'openai_responses_stream_completed',
+                request_id=canonical_request.request_id,
+                response_id=response_id,
+                session_id=runtime_stream.session_id,
+                output_text_chars=len(''.join(output_parts)),
+                saw_tool_call=saw_tool_call,
+                pending_response_session_count=len(pending_sessions_by_response_id),
             )
 
     return StreamingResponse(_frame_stream(), media_type='text/event-stream')
@@ -395,4 +472,71 @@ def _pop_pending_session_id(
             message='No pending provider session matched the supplied previous_response_id.',
             status_code=400,
         )
+    _logger.info(
+        'openai_responses_continuation_resolved',
+        previous_response_id=previous_response_id,
+        session_id=session_id,
+        pending_response_session_count=len(pending_sessions_by_response_id),
+    )
     return session_id
+
+
+def _summarize_openai_responses_request(
+    *, request: OpenAIResponsesCreateRequest
+) -> dict[str, object]:
+    """Return a compact diagnostic summary for one public Responses request."""
+    input_kind = 'string' if isinstance(request.input, str) else 'items'
+    input_item_types: list[str] = []
+    input_message_roles: list[str] = []
+    input_content_part_types: list[str] = []
+    input_tool_result_count = 0
+    if isinstance(request.input, list):
+        for item in request.input:
+            input_item_types.append(item.type)
+            if isinstance(item, OpenAIResponsesInputMessage):
+                input_message_roles.append(item.role)
+                content = item.content
+                if isinstance(content, str):
+                    input_content_part_types.append('text_string')
+                else:
+                    input_content_part_types.extend(part.type for part in content)
+                continue
+            input_tool_result_count += 1
+
+    instructions_kind = None
+    if request.instructions is not None:
+        instructions_kind = (
+            'string' if isinstance(request.instructions, str) else 'messages'
+        )
+
+    return {
+        'model': request.model,
+        'stream': request.stream,
+        'previous_response_id': request.previous_response_id,
+        'tool_count': len(request.tools),
+        'tool_names': [tool.get('name') or tool.get('type') for tool in request.tools],
+        'input_kind': input_kind,
+        'input_item_types': input_item_types,
+        'input_message_roles': input_message_roles,
+        'input_content_part_types': input_content_part_types,
+        'input_tool_result_count': input_tool_result_count,
+        'instructions_kind': instructions_kind,
+    }
+
+
+def _summarize_canonical_request(*, request: CanonicalChatRequest) -> dict[str, object]:
+    """Return a compact diagnostic summary for one canonical Responses request."""
+    return {
+        'canonical_session_id': request.session_id,
+        'stream': request.stream,
+        'message_count': len(request.messages),
+        'message_roles': [message.role for message in request.messages],
+        'tool_definition_count': len(request.tool_definitions),
+        'tool_definition_names': [tool.name for tool in request.tool_definitions],
+        'tool_result_count': len(request.tool_results),
+        'tool_routing_mode': request.tool_routing_policy.mode,
+        'excluded_builtin_tools': list(
+            request.tool_routing_policy.excluded_builtin_tools
+        ),
+        'has_guidance': request.tool_routing_policy.guidance is not None,
+    }

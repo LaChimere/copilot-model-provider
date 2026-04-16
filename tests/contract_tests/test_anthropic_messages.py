@@ -425,17 +425,15 @@ async def test_post_messages_logs_gateway_headers(
         )
 
     assert response.status_code == 200
-    assert captured_logger.events == [
-        (
-            'anthropic_gateway_headers',
-            {
-                'surface': 'messages',
-                'anthropic_version': '2023-06-01',
-                'anthropic_beta': 'tools-2025-01-01',
-                'claude_code_session_id': 'session-123',
-            },
-        )
-    ]
+    assert (
+        'anthropic_gateway_headers',
+        {
+            'surface': 'messages',
+            'anthropic_version': '2023-06-01',
+            'anthropic_beta': 'tools-2025-01-01',
+            'claude_code_session_id': 'session-123',
+        },
+    ) in captured_logger.events
 
 
 @pytest.mark.asyncio
