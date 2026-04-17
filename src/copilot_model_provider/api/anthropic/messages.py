@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Annotated
 
 import structlog
@@ -31,6 +32,9 @@ from copilot_model_provider.api.shared import (
     normalize_anthropic_gateway_headers,
     open_runtime_event_stream,
     resolve_runtime_auth_token_from_anthropic_headers,
+)
+from copilot_model_provider.core.continuations import (
+    PENDING_CONTINUATION_TTL_SECONDS,
 )
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
@@ -66,6 +70,7 @@ _API_KEY_HEADER_NAME = 'X-Api-Key'
 _ANTHROPIC_VERSION_HEADER_NAME = 'anthropic-version'
 _ANTHROPIC_BETA_HEADER_NAME = 'anthropic-beta'
 _CLAUDE_CODE_SESSION_ID_HEADER_NAME = 'X-Claude-Code-Session-Id'
+_PENDING_TOOL_USE_SESSION_TTL_SECONDS = PENDING_CONTINUATION_TTL_SECONDS
 
 _logger = structlog.get_logger(__name__)
 
@@ -81,6 +86,7 @@ def install_anthropic_messages_route(
     """Install the Anthropic-compatible ``POST /anthropic/v1/messages`` route."""
     pending_sessions_by_tool_use_id: dict[str, str] = {}
     pending_tool_use_batches_by_session_id: dict[str, frozenset[str]] = {}
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]] = {}
 
     async def _create_message(
         request: AnthropicMessagesCreateRequest,
@@ -136,6 +142,13 @@ def install_anthropic_messages_route(
                 ),
             )
         )
+        if session_id is not None:
+            _cancel_pending_tool_use_session_expiry(
+                session_id=session_id,
+                pending_session_expiry_tasks_by_session_id=(
+                    pending_session_expiry_tasks_by_session_id
+                ),
+            )
         canonical_request = normalize_anthropic_messages_request(
             request=request,
             session_id=session_id,
@@ -159,6 +172,9 @@ def install_anthropic_messages_route(
                 pending_tool_use_batches_by_session_id=(
                     pending_tool_use_batches_by_session_id
                 ),
+                pending_session_expiry_tasks_by_session_id=(
+                    pending_session_expiry_tasks_by_session_id
+                ),
             )
 
         completion = await runtime.complete_chat(
@@ -172,6 +188,9 @@ def install_anthropic_messages_route(
                 pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
                 pending_tool_use_batches_by_session_id=(
                     pending_tool_use_batches_by_session_id
+                ),
+                pending_session_expiry_tasks_by_session_id=(
+                    pending_session_expiry_tasks_by_session_id
                 ),
             )
         _logger.info(
@@ -274,6 +293,7 @@ async def _create_streaming_message(  # noqa: C901
     canonical_request: CanonicalChatRequest,
     pending_sessions_by_tool_use_id: dict[str, str],
     pending_tool_use_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
 ) -> StreamingResponse:
     """Create a streaming Anthropic-compatible SSE response."""
     runtime_stream = None
@@ -423,6 +443,9 @@ async def _create_streaming_message(  # noqa: C901
                         pending_tool_use_batches_by_session_id=(
                             pending_tool_use_batches_by_session_id
                         ),
+                        pending_session_expiry_tasks_by_session_id=(
+                            pending_session_expiry_tasks_by_session_id
+                        ),
                     )
                 _logger.info(
                     'anthropic_messages_stream_tool_calls_requested',
@@ -527,6 +550,9 @@ async def _create_streaming_message(  # noqa: C901
                     pending_tool_use_batches_by_session_id=(
                         pending_tool_use_batches_by_session_id
                     ),
+                    pending_session_expiry_tasks_by_session_id=(
+                        pending_session_expiry_tasks_by_session_id
+                    ),
                 )
             yield encode_anthropic_event(
                 event='message_delta',
@@ -576,6 +602,7 @@ def _pop_pending_session_id_from_tool_results(
             if isinstance(tool_use_id, str) and tool_use_id:
                 tool_use_ids.append(tool_use_id)
 
+    _validate_no_duplicate_tool_result_ids(tool_use_ids=tool_use_ids)
     if not tool_use_ids:
         return None, frozenset()
 
@@ -625,6 +652,7 @@ def _remember_pending_tool_use_batch(
     pending_tool_calls: Sequence[CanonicalToolCall],
     pending_sessions_by_tool_use_id: dict[str, str],
     pending_tool_use_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
 ) -> None:
     """Record one paused Anthropic tool-use batch so later continuations can resume it."""
     pending_tool_use_batches_by_session_id[session_id] = frozenset(
@@ -632,6 +660,95 @@ def _remember_pending_tool_use_batch(
     )
     for pending_tool_call in pending_tool_calls:
         pending_sessions_by_tool_use_id[pending_tool_call.call_id] = session_id
+    _schedule_pending_tool_use_session_expiry(
+        session_id=session_id,
+        pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
+        pending_tool_use_batches_by_session_id=(pending_tool_use_batches_by_session_id),
+        pending_session_expiry_tasks_by_session_id=(
+            pending_session_expiry_tasks_by_session_id
+        ),
+    )
+
+
+def _validate_no_duplicate_tool_result_ids(*, tool_use_ids: Sequence[str]) -> None:
+    """Reject malformed Anthropic continuations that repeat one ``tool_use_id``."""
+    if len(tool_use_ids) == len(set(tool_use_ids)):
+        return
+
+    raise ProviderError(
+        code='invalid_tool_result',
+        message='Tool result blocks must not repeat the same tool_use_id.',
+        status_code=400,
+    )
+
+
+def _cancel_pending_tool_use_session_expiry(
+    *,
+    session_id: str,
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
+) -> None:
+    """Cancel the scheduled expiry task for one paused Anthropic continuation."""
+    expiry_task = pending_session_expiry_tasks_by_session_id.pop(session_id, None)
+    if expiry_task is None:
+        return
+
+    expiry_task.cancel()
+
+
+def _schedule_pending_tool_use_session_expiry(
+    *,
+    session_id: str,
+    pending_sessions_by_tool_use_id: dict[str, str],
+    pending_tool_use_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
+) -> None:
+    """Schedule automatic cleanup for one paused Anthropic continuation."""
+    _cancel_pending_tool_use_session_expiry(
+        session_id=session_id,
+        pending_session_expiry_tasks_by_session_id=(
+            pending_session_expiry_tasks_by_session_id
+        ),
+    )
+    pending_session_expiry_tasks_by_session_id[session_id] = asyncio.create_task(
+        _expire_pending_tool_use_session_after_ttl(
+            session_id=session_id,
+            pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
+            pending_tool_use_batches_by_session_id=(
+                pending_tool_use_batches_by_session_id
+            ),
+            pending_session_expiry_tasks_by_session_id=(
+                pending_session_expiry_tasks_by_session_id
+            ),
+        )
+    )
+
+
+async def _expire_pending_tool_use_session_after_ttl(
+    *,
+    session_id: str,
+    pending_sessions_by_tool_use_id: dict[str, str],
+    pending_tool_use_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
+) -> None:
+    """Drop abandoned Anthropic continuation bookkeeping after the shared TTL."""
+    try:
+        await asyncio.sleep(_PENDING_TOOL_USE_SESSION_TTL_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+    outstanding_tool_use_ids = pending_tool_use_batches_by_session_id.pop(
+        session_id,
+        frozenset(),
+    )
+    for tool_use_id in outstanding_tool_use_ids:
+        pending_sessions_by_tool_use_id.pop(tool_use_id, None)
+    pending_session_expiry_tasks_by_session_id.pop(session_id, None)
+    _logger.info(
+        'anthropic_messages_pending_session_expired',
+        session_id=session_id,
+        cleared_tool_use_ids=sorted(outstanding_tool_use_ids),
+        ttl_seconds=_PENDING_TOOL_USE_SESSION_TTL_SECONDS,
+    )
 
 
 def _append_unique_tool_calls(

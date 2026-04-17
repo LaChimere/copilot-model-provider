@@ -58,6 +58,9 @@
       filtering, Anthropic streaming block indexes, OpenAI `response_id`
       generation, mixed aggregate assistant-message tool routing, and runtime
       zero-token / expired-session handling.
+- [x] Resolve late re-review findings around continuation context drift,
+      abandoned pending-session cleanup, duplicate tool-result rejection, and
+      direct translator suppression coverage.
 - [x] Re-run final repo validation for the multi-tool batching slice.
 
 ### Verification

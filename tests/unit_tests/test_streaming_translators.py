@@ -15,6 +15,7 @@ from copilot_model_provider.streaming.events import (
     AssistantUsageEvent,
     StreamFinishReason,
     StreamingErrorEvent,
+    ToolCallRequestedEvent,
     ToolCallsRequestedEvent,
 )
 from copilot_model_provider.streaming.translators import (
@@ -22,6 +23,7 @@ from copilot_model_provider.streaming.translators import (
     build_text_delta_chunk,
     translate_session_event,
     translate_session_event_to_openai_chunks,
+    translate_session_events,
 )
 
 
@@ -147,6 +149,38 @@ def test_translate_session_event_to_openai_chunks_preserves_text_from_mixed_aggr
 
     assert [chunk.choices[0].delta.content for chunk in chunks] == ['Whole message']
     assert chunks[0].choices[0].delta.role == 'assistant'
+
+
+def test_translate_session_events_can_suppress_aggregate_text_while_preserving_tools() -> (
+    None
+):
+    """Verify that aggregate assistant-message text can be suppressed without losing tools."""
+    stream_events = translate_session_events(
+        event=_build_session_event(
+            event_type='assistant.message',
+            data={
+                'content': 'Whole message',
+                'toolRequests': [
+                    {
+                        'toolCallId': 'call_readme',
+                        'name': 'read_file',
+                        'arguments': {'path': 'README.md'},
+                    }
+                ],
+            },
+        ),
+        suppress_aggregate_message_text=True,
+    )
+
+    assert stream_events == (
+        ToolCallRequestedEvent(
+            tool_call=CanonicalToolCall(
+                call_id='call_readme',
+                name='read_file',
+                arguments={'path': 'README.md'},
+            )
+        ),
+    )
 
 
 @pytest.mark.parametrize(

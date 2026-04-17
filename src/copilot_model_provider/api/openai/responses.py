@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from time import time
 from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
@@ -16,6 +17,9 @@ from copilot_model_provider.api.shared import (
     normalize_optional_header_value,
     open_runtime_event_stream,
     resolve_runtime_auth_token,
+)
+from copilot_model_provider.core.continuations import (
+    PENDING_CONTINUATION_TTL_SECONDS,
 )
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
@@ -63,6 +67,7 @@ if TYPE_CHECKING:
 
 _AUTHORIZATION_HEADER_NAME = 'Authorization'
 _CLIENT_REQUEST_ID_HEADER_NAME = 'x-client-request-id'
+_PENDING_RESPONSE_SESSION_TTL_SECONDS = PENDING_CONTINUATION_TTL_SECONDS
 _logger = structlog.get_logger(__name__)
 
 
@@ -78,6 +83,7 @@ def install_openai_responses_route(
     pending_sessions_by_response_id: dict[str, str] = {}
     pending_sessions_by_tool_call_id: dict[str, str] = {}
     pending_tool_call_batches_by_session_id: dict[str, frozenset[str]] = {}
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]] = {}
 
     async def _create_response(
         request: OpenAIResponsesCreateRequest,
@@ -118,6 +124,13 @@ def install_openai_responses_route(
             ),
             previous_response_id=request.previous_response_id,
         )
+        if session_id is not None:
+            _cancel_pending_response_session_expiry(
+                session_id=session_id,
+                pending_session_expiry_tasks_by_session_id=(
+                    pending_session_expiry_tasks_by_session_id
+                ),
+            )
         canonical_request = normalize_openai_responses_request(
             request=request,
             request_id=request_id,
@@ -144,6 +157,9 @@ def install_openai_responses_route(
                 pending_tool_call_batches_by_session_id=(
                     pending_tool_call_batches_by_session_id
                 ),
+                pending_session_expiry_tasks_by_session_id=(
+                    pending_session_expiry_tasks_by_session_id
+                ),
             )
 
         completion = await runtime.complete_chat(
@@ -160,6 +176,9 @@ def install_openai_responses_route(
                 pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
                 pending_tool_call_batches_by_session_id=(
                     pending_tool_call_batches_by_session_id
+                ),
+                pending_session_expiry_tasks_by_session_id=(
+                    pending_session_expiry_tasks_by_session_id
                 ),
             )
         _logger.info(
@@ -198,6 +217,7 @@ async def _create_streaming_response(  # noqa: C901
     pending_sessions_by_response_id: dict[str, str],
     pending_sessions_by_tool_call_id: dict[str, str],
     pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
 ) -> StreamingResponse:
     """Create a streaming OpenAI Responses-compatible SSE response."""
     runtime_stream = None
@@ -400,6 +420,9 @@ async def _create_streaming_response(  # noqa: C901
                         pending_tool_call_batches_by_session_id=(
                             pending_tool_call_batches_by_session_id
                         ),
+                        pending_session_expiry_tasks_by_session_id=(
+                            pending_session_expiry_tasks_by_session_id
+                        ),
                     )
                 _logger.info(
                     'openai_responses_stream_tool_calls_requested',
@@ -527,6 +550,9 @@ async def _create_streaming_response(  # noqa: C901
                         pending_tool_call_batches_by_session_id=(
                             pending_tool_call_batches_by_session_id
                         ),
+                        pending_session_expiry_tasks_by_session_id=(
+                            pending_session_expiry_tasks_by_session_id
+                        ),
                     )
             yield encode_openai_responses_event(
                 payload=build_openai_responses_completed_event(
@@ -563,6 +589,9 @@ def _pop_pending_session_id(
 ) -> tuple[str | None, frozenset[str]]:
     """Resolve and consume one pending session continuation id."""
     tool_result_call_ids = _extract_tool_result_call_ids(request=request)
+    _validate_no_duplicate_tool_result_call_ids(
+        tool_result_call_ids=tool_result_call_ids
+    )
     if previous_response_id is None:
         if not tool_result_call_ids:
             return None, frozenset()
@@ -643,13 +672,17 @@ def _pop_pending_session_id(
         session_id=session_id,
         pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
     )
-    pending_sessions_by_response_id.pop(previous_response_id, None)
+    cleared_response_ids = _pop_pending_response_ids_for_session(
+        pending_sessions_by_response_id=pending_sessions_by_response_id,
+        session_id=session_id,
+    )
     for call_id in matched_call_ids:
         pending_sessions_by_tool_call_id.pop(call_id, None)
     _logger.info(
         'openai_responses_continuation_resolved',
         previous_response_id=previous_response_id,
         tool_result_call_ids=matched_call_ids,
+        cleared_response_ids=cleared_response_ids,
         session_id=session_id,
         pending_response_session_count=len(pending_sessions_by_response_id),
         pending_tool_call_session_count=len(pending_sessions_by_tool_call_id),
@@ -671,6 +704,21 @@ def _extract_tool_result_call_ids(
     ]
 
 
+def _validate_no_duplicate_tool_result_call_ids(
+    *,
+    tool_result_call_ids: Sequence[str],
+) -> None:
+    """Reject malformed Responses continuations that repeat one call id."""
+    if len(tool_result_call_ids) == len(set(tool_result_call_ids)):
+        return
+
+    raise ProviderError(
+        code='invalid_tool_result',
+        message='Function call output items must not repeat the same call_id.',
+        status_code=400,
+    )
+
+
 def _remember_pending_response_tool_batch(
     *,
     response_id: str,
@@ -679,6 +727,7 @@ def _remember_pending_response_tool_batch(
     pending_sessions_by_response_id: dict[str, str],
     pending_sessions_by_tool_call_id: dict[str, str],
     pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
 ) -> None:
     """Record one paused Responses turn so continuation requests can resume it."""
     pending_sessions_by_response_id[response_id] = session_id
@@ -687,6 +736,94 @@ def _remember_pending_response_tool_batch(
     )
     for pending_tool_call in pending_tool_calls:
         pending_sessions_by_tool_call_id[pending_tool_call.call_id] = session_id
+    _schedule_pending_response_session_expiry(
+        session_id=session_id,
+        pending_sessions_by_response_id=pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+        pending_tool_call_batches_by_session_id=(
+            pending_tool_call_batches_by_session_id
+        ),
+        pending_session_expiry_tasks_by_session_id=(
+            pending_session_expiry_tasks_by_session_id
+        ),
+    )
+
+
+def _cancel_pending_response_session_expiry(
+    *,
+    session_id: str,
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
+) -> None:
+    """Cancel the scheduled expiry task for one paused Responses continuation."""
+    expiry_task = pending_session_expiry_tasks_by_session_id.pop(session_id, None)
+    if expiry_task is None:
+        return
+
+    expiry_task.cancel()
+
+
+def _schedule_pending_response_session_expiry(
+    *,
+    session_id: str,
+    pending_sessions_by_response_id: dict[str, str],
+    pending_sessions_by_tool_call_id: dict[str, str],
+    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
+) -> None:
+    """Schedule automatic cleanup for one paused Responses continuation."""
+    _cancel_pending_response_session_expiry(
+        session_id=session_id,
+        pending_session_expiry_tasks_by_session_id=(
+            pending_session_expiry_tasks_by_session_id
+        ),
+    )
+    pending_session_expiry_tasks_by_session_id[session_id] = asyncio.create_task(
+        _expire_pending_response_session_after_ttl(
+            session_id=session_id,
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            pending_tool_call_batches_by_session_id=(
+                pending_tool_call_batches_by_session_id
+            ),
+            pending_session_expiry_tasks_by_session_id=(
+                pending_session_expiry_tasks_by_session_id
+            ),
+        )
+    )
+
+
+async def _expire_pending_response_session_after_ttl(
+    *,
+    session_id: str,
+    pending_sessions_by_response_id: dict[str, str],
+    pending_sessions_by_tool_call_id: dict[str, str],
+    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
+    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
+) -> None:
+    """Drop abandoned Responses continuation bookkeeping after the shared TTL."""
+    try:
+        await asyncio.sleep(_PENDING_RESPONSE_SESSION_TTL_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+    cleared_response_ids = _pop_pending_response_ids_for_session(
+        pending_sessions_by_response_id=pending_sessions_by_response_id,
+        session_id=session_id,
+    )
+    outstanding_call_ids = pending_tool_call_batches_by_session_id.pop(
+        session_id,
+        frozenset(),
+    )
+    for call_id in outstanding_call_ids:
+        pending_sessions_by_tool_call_id.pop(call_id, None)
+    pending_session_expiry_tasks_by_session_id.pop(session_id, None)
+    _logger.info(
+        'openai_responses_pending_session_expired',
+        session_id=session_id,
+        cleared_response_ids=cleared_response_ids,
+        cleared_tool_call_ids=sorted(outstanding_call_ids),
+        ttl_seconds=_PENDING_RESPONSE_SESSION_TTL_SECONDS,
+    )
 
 
 def _append_unique_tool_calls(

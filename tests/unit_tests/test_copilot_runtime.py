@@ -325,10 +325,18 @@ def _build_tool_aware_request(
 def _build_interactive_session_state(
     *,
     session: _FakeSession | None = None,
+    request_model_id: str = 'gpt-5.4',
+    runtime_model_id: str = 'copilot-default',
+    runtime_auth_token: str | None = None,
 ) -> CopilotRuntime._InteractiveCopilotSession:
     """Construct interactive session state with the deterministic fake session."""
     resolved_session = session or _FakeSession(session_id='copilot-session-tool')
     return CopilotRuntime._InteractiveCopilotSession(
+        context=CopilotRuntime._InteractiveSessionContext(
+            request_model_id=request_model_id,
+            runtime_model_id=runtime_model_id,
+            runtime_auth_token=runtime_auth_token,
+        ),
         active_session=CopilotRuntime._ActiveCopilotSession(
             session=cast('Any', resolved_session),
             client=CopilotRuntime._ResolvedCopilotClient(
@@ -1275,6 +1283,52 @@ async def test_copilot_runtime_rejects_unknown_interactive_session_ids() -> None
             request=_build_tool_aware_request(session_id='missing-session'),
             route=ResolvedRoute(runtime='copilot', runtime_model_id='copilot-default'),
         )
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_rejects_mismatched_interactive_session_context() -> None:
+    """Verify that continuations cannot switch model or auth context mid-session."""
+    runtime = CopilotRuntime()
+    runtime._interactive_sessions['copilot-session-tool'] = (
+        _build_interactive_session_state()
+    )
+
+    with pytest.raises(
+        ProviderError,
+        match=(
+            r'Continuation request did not match the pending provider session '
+            r'configuration\.'
+        ),
+    ):
+        await runtime._get_or_create_interactive_session(
+            request=_build_tool_aware_request(
+                session_id='copilot-session-tool'
+            ).model_copy(
+                update={
+                    'model_id': 'gpt-5.4-mini',
+                }
+            ),
+            route=ResolvedRoute(runtime='copilot', runtime_model_id='copilot-default'),
+        )
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_expires_abandoned_interactive_sessions() -> None:
+    """Verify that paused interactive sessions are cleaned up after the TTL elapses."""
+    session = _FakeSession(session_id='copilot-session-tool-expire')
+    runtime = CopilotRuntime(interactive_session_ttl_seconds=0.01)
+    runtime._interactive_sessions['copilot-session-tool-expire'] = (
+        _build_interactive_session_state(session=session)
+    )
+
+    runtime._schedule_interactive_session_expiry(
+        session_id='copilot-session-tool-expire',
+        session_state=runtime._interactive_sessions['copilot-session-tool-expire'],
+    )
+    await asyncio.sleep(0.05)
+
+    assert runtime._interactive_sessions == {}
+    assert session.disconnected is True
 
 
 @pytest.mark.asyncio

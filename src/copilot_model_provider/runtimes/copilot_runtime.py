@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -18,6 +19,9 @@ from copilot.session import PermissionRequestResult
 from copilot.tools import Tool, ToolInvocation, ToolResult
 
 from copilot_model_provider.core.chat import render_prompt
+from copilot_model_provider.core.continuations import (
+    PENDING_CONTINUATION_TTL_SECONDS,
+)
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     CanonicalChatMessage,
@@ -85,6 +89,7 @@ class CopilotRuntime(RuntimeProtocol):
         authenticated_client_factory: Callable[[str], CopilotClient] | None = None,
         timeout_seconds: float = 60.0,
         working_directory: str | None = None,
+        interactive_session_ttl_seconds: float = PENDING_CONTINUATION_TTL_SECONDS,
     ) -> None:
         """Initialize the runtime with lazy Copilot client construction.
 
@@ -98,6 +103,9 @@ class CopilotRuntime(RuntimeProtocol):
                 assistant response.
             working_directory: Optional working directory forwarded into new
                 ephemeral Copilot sessions.
+            interactive_session_ttl_seconds: Maximum time to keep one paused
+                interactive session alive while waiting for continuation tool
+                results from the northbound client.
 
         """
         self._runtime_name = 'copilot'
@@ -107,6 +115,7 @@ class CopilotRuntime(RuntimeProtocol):
         )
         self._timeout_seconds = timeout_seconds
         self._working_directory = working_directory
+        self._interactive_session_ttl_seconds = interactive_session_ttl_seconds
         self._client: CopilotClient | None = None
         self._interactive_sessions: dict[
             str, CopilotRuntime._InteractiveCopilotSession
@@ -359,6 +368,14 @@ class CopilotRuntime(RuntimeProtocol):
         stop_on_close: bool = False
 
     @dataclass(frozen=True, slots=True)
+    class _InteractiveSessionContext:
+        """Stable context that one continuation session must keep using."""
+
+        request_model_id: str
+        runtime_model_id: str
+        runtime_auth_token: str | None
+
+    @dataclass(frozen=True, slots=True)
     class _ActiveCopilotSession:
         """Opened Copilot session plus the client lifecycle policy that owns it."""
 
@@ -379,9 +396,11 @@ class CopilotRuntime(RuntimeProtocol):
     class _InteractiveCopilotSession:
         """Long-lived Copilot session kept alive across tool turns."""
 
+        context: CopilotRuntime._InteractiveSessionContext
         active_session: CopilotRuntime._ActiveCopilotSession
         event_queue: asyncio.Queue[SessionEvent]
         pending_tool_calls: dict[str, CopilotRuntime._PendingToolCallState]
+        expiry_task: asyncio.Task[None] | None = None
 
     @dataclass(slots=True)
     class _InteractiveCompletionState:
@@ -628,6 +647,10 @@ class CopilotRuntime(RuntimeProtocol):
                     except TimeoutError as error:
                         if saw_tool_call:
                             preserve_session = True
+                            self._schedule_interactive_session_expiry(
+                                session_id=session_id,
+                                session_state=session_state,
+                            )
                             _logger.info(
                                 'copilot_runtime_interactive_tool_batch_settled',
                                 session_id=session_id,
@@ -704,6 +727,10 @@ class CopilotRuntime(RuntimeProtocol):
                             and event.type != SessionEventType.SESSION_ERROR
                         ):
                             preserve_session = True
+                            self._schedule_interactive_session_expiry(
+                                session_id=session_id,
+                                session_state=session_state,
+                            )
                             _logger.info(
                                 'copilot_runtime_interactive_tool_batch_completed',
                                 session_id=session_id,
@@ -872,6 +899,97 @@ class CopilotRuntime(RuntimeProtocol):
             tool_telemetry={},
         )
 
+    def _build_interactive_session_context(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> _InteractiveSessionContext:
+        """Capture the request context that must remain stable across continuation turns."""
+        runtime_model_id = route.runtime_model_id
+        if runtime_model_id is None:
+            raise ProviderError(
+                code='runtime_route_invalid',
+                message='Resolved route is missing a runtime model identifier.',
+                status_code=500,
+            )
+
+        return self._InteractiveSessionContext(
+            request_model_id=request.model_id,
+            runtime_model_id=runtime_model_id,
+            runtime_auth_token=request.runtime_auth_token,
+        )
+
+    def _validate_interactive_session_context(
+        self,
+        *,
+        session_state: _InteractiveCopilotSession,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> None:
+        """Reject continuation requests that drift from the paused session context."""
+        runtime_model_id = route.runtime_model_id
+        expected_context = session_state.context
+        if (
+            request.model_id != expected_context.request_model_id
+            or runtime_model_id != expected_context.runtime_model_id
+            or request.runtime_auth_token != expected_context.runtime_auth_token
+        ):
+            raise ProviderError(
+                code='invalid_previous_response_id',
+                message=(
+                    'Continuation request did not match the pending provider '
+                    'session configuration.'
+                ),
+                status_code=400,
+            )
+
+    def _cancel_interactive_session_expiry(
+        self,
+        *,
+        session_state: _InteractiveCopilotSession,
+    ) -> None:
+        """Cancel any scheduled expiry task for one paused interactive session."""
+        expiry_task = session_state.expiry_task
+        if expiry_task is None:
+            return
+
+        expiry_task.cancel()
+        session_state.expiry_task = None
+
+    def _schedule_interactive_session_expiry(
+        self,
+        *,
+        session_id: str,
+        session_state: _InteractiveCopilotSession,
+    ) -> None:
+        """Schedule automatic cleanup for one paused interactive session."""
+        self._cancel_interactive_session_expiry(session_state=session_state)
+        session_state.expiry_task = asyncio.create_task(
+            self._expire_interactive_session_after_ttl(session_id=session_id)
+        )
+
+    async def _expire_interactive_session_after_ttl(
+        self,
+        *,
+        session_id: str,
+    ) -> None:
+        """Discard one paused interactive session after its continuation TTL elapses."""
+        try:
+            await asyncio.sleep(self._interactive_session_ttl_seconds)
+        except asyncio.CancelledError:
+            return
+
+        _logger.info(
+            'copilot_runtime_interactive_session_expired',
+            session_id=session_id,
+            ttl_seconds=self._interactive_session_ttl_seconds,
+        )
+        await self._discard_interactive_session(
+            session_id=session_id,
+            disconnect=True,
+        )
+
     async def _get_or_create_interactive_session(
         self,
         *,
@@ -882,6 +1000,13 @@ class CopilotRuntime(RuntimeProtocol):
         if request.session_id is not None:
             async with self._interactive_sessions_lock:
                 session_state = self._interactive_sessions.get(request.session_id)
+                if session_state is not None:
+                    self._validate_interactive_session_context(
+                        session_state=session_state,
+                        request=request,
+                        route=route,
+                    )
+                    self._cancel_interactive_session_expiry(session_state=session_state)
             if session_state is None:
                 raise ProviderError(
                     code='invalid_previous_response_id',
@@ -916,6 +1041,10 @@ class CopilotRuntime(RuntimeProtocol):
             streaming=True,
         )
         session_state = self._InteractiveCopilotSession(
+            context=self._build_interactive_session_context(
+                request=request,
+                route=route,
+            ),
             active_session=self._ActiveCopilotSession(
                 session=session,
                 client=resolved_client,
@@ -1067,6 +1196,8 @@ class CopilotRuntime(RuntimeProtocol):
         if session_state is None:
             return
 
+        self._cancel_interactive_session_expiry(session_state=session_state)
+
         for pending_call in session_state.pending_tool_calls.values():
             if pending_call.future is not None and not pending_call.future.done():
                 pending_call.future.set_result(
@@ -1083,7 +1214,8 @@ class CopilotRuntime(RuntimeProtocol):
         if not disconnect:
             return
 
-        await self._close_session(active_session=session_state.active_session)
+        with suppress(asyncio.CancelledError):
+            await self._close_session(active_session=session_state.active_session)
 
 
 def _to_optional_int(value: int | float | str | None) -> int | None:

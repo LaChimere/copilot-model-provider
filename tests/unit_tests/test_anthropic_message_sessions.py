@@ -118,3 +118,25 @@ def test_pop_pending_session_id_from_tool_results_rejects_partial_batch() -> Non
         'toolu_1': 'session_123',
         'toolu_2': 'session_123',
     }
+
+
+def test_pop_pending_session_id_from_tool_results_rejects_duplicate_tool_use_ids() -> (
+    None
+):
+    """Verify that duplicate Anthropic tool_result ids are rejected explicitly."""
+    pending_sessions = {'toolu_1': 'session_123'}
+
+    with pytest.raises(ProviderError) as error_info:
+        _pop_pending_session_id_from_tool_results(
+            request=_build_tool_result_request('toolu_1', 'toolu_1'),
+            pending_sessions_by_tool_use_id=pending_sessions,
+            pending_tool_use_batches_by_session_id={
+                'session_123': frozenset({'toolu_1'})
+            },
+        )
+
+    assert error_info.value.code == 'invalid_tool_result'
+    assert (
+        error_info.value.message
+        == 'Tool result blocks must not repeat the same tool_use_id.'
+    )

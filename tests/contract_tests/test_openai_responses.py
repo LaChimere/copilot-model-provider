@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from copilot.generated.session_events import SessionEvent
 
+import copilot_model_provider.api.openai.responses as openai_responses_api
 from copilot_model_provider.config import ProviderSettings
 from copilot_model_provider.core.compat import FieldHandling, ProtocolSurface
 from copilot_model_provider.core.models import (
@@ -858,6 +860,67 @@ async def test_post_responses_streaming_supports_function_call_continuation() ->
             'error_text': None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_post_responses_continuation_expires_after_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that abandoned Responses continuations expire instead of leaking forever."""
+    monkeypatch.setattr(
+        openai_responses_api,
+        '_PENDING_RESPONSE_SESSION_TTL_SECONDS',
+        0.01,
+    )
+    runtime = _FakeResponsesToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'stream': True,
+        'input': 'Open the readme',
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'read_file',
+                    'description': 'Read one file.',
+                    'parameters': {'type': 'object'},
+                },
+            }
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=first_request_body,
+        ) as response:
+            first_payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+        first_completed_payload = cast(
+            'dict[str, Any]',
+            json.loads(_extract_completed_frame_data(payload=first_payload)),
+        )
+        await asyncio.sleep(0.05)
+        follow_up_request_body: dict[str, object] = {
+            'model': 'gpt-5.4',
+            'previous_response_id': first_completed_payload['response']['id'],
+            'input': [
+                {
+                    'type': 'function_call_output',
+                    'call_id': 'call_readme',
+                    'output': 'README contents',
+                }
+            ],
+        }
+        follow_up = await client.post(
+            '/openai/v1/responses',
+            json=follow_up_request_body,
+        )
+
+    follow_up_payload = cast('dict[str, Any]', follow_up.json())
+    assert response.status_code == 200
+    assert follow_up.status_code == 400
+    assert follow_up_payload['error']['code'] == 'invalid_previous_response_id'
 
 
 @pytest.mark.asyncio

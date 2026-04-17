@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 from typing import TYPE_CHECKING, Any, cast, override
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import pytest
 from copilot.generated.session_events import SessionEvent
 
+import copilot_model_provider.api.anthropic.messages as anthropic_messages_api
 from copilot_model_provider.api.anthropic.protocol import (
     estimate_anthropic_input_tokens,
     estimate_anthropic_output_tokens,
@@ -732,6 +734,59 @@ async def test_post_messages_supports_tool_result_continuation() -> None:
             'error_text': None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_post_messages_continuation_expires_after_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that abandoned Anthropic continuations expire instead of leaking forever."""
+    monkeypatch.setattr(
+        anthropic_messages_api,
+        '_PENDING_TOOL_USE_SESSION_TTL_SECONDS',
+        0.01,
+    )
+    runtime = _FakeAnthropicToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Read the README'}],
+        'tools': [_build_read_file_tool_definition()],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        first_response = await client.post(
+            '/anthropic/v1/messages',
+            json=first_request_body,
+        )
+
+        first_payload = cast('dict[str, Any]', first_response.json())
+        tool_use_block = cast('dict[str, Any]', first_payload['content'][1])
+        await asyncio.sleep(0.05)
+        follow_up_request_body: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': tool_use_block['id'],
+                            'content': 'README contents',
+                        }
+                    ],
+                }
+            ],
+        }
+        follow_up = await client.post(
+            '/anthropic/v1/messages',
+            json=follow_up_request_body,
+        )
+
+    follow_up_payload = cast('dict[str, Any]', follow_up.json())
+    assert first_response.status_code == 200
+    assert follow_up.status_code == 400
+    assert follow_up_payload['error']['message'] == (
+        'No pending provider session matched the supplied tool_result blocks.'
+    )
 
 
 @pytest.mark.asyncio

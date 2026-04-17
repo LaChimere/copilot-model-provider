@@ -128,3 +128,25 @@ def test_pop_pending_session_id_ignores_historical_replayed_tool_results() -> No
     assert pending_sessions_by_response_id == {}
     assert pending_sessions_by_tool_call_id == {}
     assert pending_tool_call_batches_by_session_id == {}
+
+
+def test_pop_pending_session_id_rejects_duplicate_tool_result_call_ids() -> None:
+    """Verify that duplicate function_call_output items are rejected explicitly."""
+    pending_sessions_by_response_id = {'resp_123': 'session_123'}
+    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
+    pending_tool_call_batches_by_session_id = {'session_123': frozenset({'call_1'})}
+
+    with pytest.raises(ProviderError) as error_info:
+        _pop_pending_session_id(
+            request=_build_tool_result_request('call_1', 'call_1'),
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
+            previous_response_id='resp_123',
+        )
+
+    assert error_info.value.code == 'invalid_tool_result'
+    assert (
+        error_info.value.message
+        == 'Function call output items must not repeat the same call_id.'
+    )
