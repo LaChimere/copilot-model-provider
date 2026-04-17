@@ -109,7 +109,7 @@ def install_openai_responses_route(
             model_id=request.model,
             runtime_auth_token=runtime_auth_token,
         )
-        session_id = _pop_pending_session_id(
+        session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
             request=request,
             pending_sessions_by_response_id=pending_sessions_by_response_id,
             pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
@@ -123,6 +123,7 @@ def install_openai_responses_route(
             request_id=request_id,
             session_id=session_id,
             runtime_auth_token=runtime_auth_token,
+            accepted_tool_result_call_ids=accepted_tool_result_call_ids or None,
         )
         _logger.info(
             'openai_responses_request_normalized',
@@ -559,18 +560,18 @@ def _pop_pending_session_id(
     pending_sessions_by_tool_call_id: dict[str, str],
     pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
     previous_response_id: str | None,
-) -> str | None:
+) -> tuple[str | None, frozenset[str]]:
     """Resolve and consume one pending session continuation id."""
     tool_result_call_ids = _extract_tool_result_call_ids(request=request)
     if previous_response_id is None:
         if not tool_result_call_ids:
-            return None
+            return None, frozenset()
 
-        matched_call_ids = [
+        matched_call_ids = frozenset(
             call_id
             for call_id in tool_result_call_ids
             if call_id in pending_sessions_by_tool_call_id
-        ]
+        )
         if not matched_call_ids:
             raise ProviderError(
                 code='invalid_tool_result',
@@ -590,7 +591,7 @@ def _pop_pending_session_id(
 
         session_id = next(iter(session_ids))
         _validate_full_tool_result_batch(
-            tool_result_call_ids=tool_result_call_ids,
+            tool_result_call_ids=matched_call_ids,
             session_id=session_id,
             pending_tool_call_batches_by_session_id=(
                 pending_tool_call_batches_by_session_id
@@ -611,7 +612,7 @@ def _pop_pending_session_id(
             pending_response_session_count=len(pending_sessions_by_response_id),
             pending_tool_call_session_count=len(pending_sessions_by_tool_call_id),
         )
-        return session_id
+        return session_id, matched_call_ids
 
     session_id = pending_sessions_by_response_id.get(previous_response_id)
     if session_id is None:
@@ -621,11 +622,11 @@ def _pop_pending_session_id(
             status_code=400,
         )
 
-    matched_call_ids = [
+    matched_call_ids = frozenset(
         call_id
         for call_id in tool_result_call_ids
         if call_id in pending_sessions_by_tool_call_id
-    ]
+    )
     mismatched_call_ids = [
         call_id
         for call_id in matched_call_ids
@@ -638,7 +639,7 @@ def _pop_pending_session_id(
             status_code=400,
         )
     _validate_full_tool_result_batch(
-        tool_result_call_ids=tool_result_call_ids,
+        tool_result_call_ids=matched_call_ids,
         session_id=session_id,
         pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
     )
@@ -653,7 +654,7 @@ def _pop_pending_session_id(
         pending_response_session_count=len(pending_sessions_by_response_id),
         pending_tool_call_session_count=len(pending_sessions_by_tool_call_id),
     )
-    return session_id
+    return session_id, matched_call_ids
 
 
 def _extract_tool_result_call_ids(
@@ -704,7 +705,7 @@ def _append_unique_tool_calls(
 
 def _validate_full_tool_result_batch(
     *,
-    tool_result_call_ids: list[str],
+    tool_result_call_ids: frozenset[str],
     session_id: str,
     pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
 ) -> None:
@@ -712,11 +713,7 @@ def _validate_full_tool_result_batch(
     outstanding_call_ids = pending_tool_call_batches_by_session_id.get(session_id)
     if outstanding_call_ids is None:
         return
-    submitted_call_ids = frozenset(tool_result_call_ids)
-    if (
-        len(tool_result_call_ids) != len(outstanding_call_ids)
-        or submitted_call_ids != outstanding_call_ids
-    ):
+    if tool_result_call_ids != outstanding_call_ids:
         raise ProviderError(
             code='invalid_tool_result',
             message='Function call output items must provide the full pending tool-result batch.',

@@ -32,7 +32,7 @@ def test_pop_pending_session_id_returns_matching_session() -> None:
     pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
     pending_tool_call_batches_by_session_id = {'session_123': frozenset({'call_1'})}
 
-    session_id = _pop_pending_session_id(
+    session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
         request=_build_tool_result_request('call_1'),
         pending_sessions_by_response_id=pending_sessions_by_response_id,
         pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
@@ -41,6 +41,7 @@ def test_pop_pending_session_id_returns_matching_session() -> None:
     )
 
     assert session_id == 'session_123'
+    assert accepted_tool_result_call_ids == frozenset({'call_1'})
     assert pending_sessions_by_response_id == {}
     assert pending_sessions_by_tool_call_id == {}
     assert pending_tool_call_batches_by_session_id == {}
@@ -101,3 +102,29 @@ def test_pop_pending_session_id_rejects_partial_batch_without_consuming_session(
     assert pending_tool_call_batches_by_session_id == {
         'session_123': frozenset({'call_1', 'call_2'})
     }
+
+
+def test_pop_pending_session_id_ignores_historical_replayed_tool_results() -> None:
+    """Verify that replayed historical tool outputs do not break current batch recovery."""
+    pending_sessions_by_response_id = {'resp_456': 'session_456'}
+    pending_sessions_by_tool_call_id = {
+        'call_2': 'session_456',
+        'call_3': 'session_456',
+    }
+    pending_tool_call_batches_by_session_id = {
+        'session_456': frozenset({'call_2', 'call_3'})
+    }
+
+    session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
+        request=_build_tool_result_request('call_1', 'call_2', 'call_3'),
+        pending_sessions_by_response_id=pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+        pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
+        previous_response_id=None,
+    )
+
+    assert session_id == 'session_456'
+    assert accepted_tool_result_call_ids == frozenset({'call_2', 'call_3'})
+    assert pending_sessions_by_response_id == {}
+    assert pending_sessions_by_tool_call_id == {}
+    assert pending_tool_call_batches_by_session_id == {}

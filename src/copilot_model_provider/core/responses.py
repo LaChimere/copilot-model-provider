@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
 from copilot_model_provider.core.models import (
     CanonicalChatMessage,
@@ -48,12 +48,14 @@ def normalize_openai_responses_request(
     conversation_id: str | None = None,
     session_id: str | None = None,
     runtime_auth_token: str | None = None,
+    accepted_tool_result_call_ids: Collection[str] | None = None,
 ) -> CanonicalChatRequest:
     """Normalize an OpenAI Responses request into the provider chat contract."""
     tool_definitions = _normalize_openai_tool_definitions(tools=request.tools)
     messages, tool_results = _normalize_openai_responses_input(
         instructions=request.instructions,
         input_value=request.input,
+        accepted_tool_result_call_ids=accepted_tool_result_call_ids,
     )
 
     return CanonicalChatRequest(
@@ -420,6 +422,7 @@ def _normalize_openai_responses_input(
         | OpenAIResponsesFunctionCallReplayItem
         | OpenAIResponsesFunctionCallOutputItem
     ],
+    accepted_tool_result_call_ids: Collection[str] | None = None,
 ) -> tuple[list[CanonicalChatMessage], list[CanonicalToolResult]]:
     """Normalize the full Responses input payload into canonical messages and results."""
     messages: list[CanonicalChatMessage] = []
@@ -444,6 +447,12 @@ def _normalize_openai_responses_input(
             messages.extend(_normalize_responses_message_item(item=item))
             continue
         if isinstance(item, OpenAIResponsesFunctionCallReplayItem):
+            continue
+
+        if (
+            accepted_tool_result_call_ids is not None
+            and item.call_id not in accepted_tool_result_call_ids
+        ):
             continue
 
         tool_results.append(

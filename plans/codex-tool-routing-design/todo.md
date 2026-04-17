@@ -51,6 +51,9 @@
       across OpenAI Responses and Anthropic Messages.
 - [x] Add container-backed integration coverage for the multi-tool batching
       slice.
+- [x] Fix OpenAI Responses replay-history continuation handling so live Codex
+      requests ignore historical `function_call_output` items and only submit
+      the current pending batch.
 - [x] Re-run final repo validation for the multi-tool batching slice.
 
 ### Verification
@@ -63,3 +66,5 @@
 - [x] Run `uv run ty check .`.
 - [x] Run `uv run pyright`.
 - [x] Run `uv run pytest -q`.
+- [x] Rebuild the local provider container and confirm live Codex/Desktop tool
+      continuations converge to a final answer.

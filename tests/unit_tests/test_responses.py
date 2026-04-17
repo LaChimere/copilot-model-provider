@@ -275,6 +275,48 @@ def test_normalize_openai_responses_request_ignores_replayed_function_call_items
     ]
 
 
+def test_normalize_openai_responses_request_filters_historical_tool_results() -> None:
+    """Verify that continuation normalization can ignore replayed historical outputs."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_old',
+                output='previous result',
+            ),
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_current_1',
+                output='current result 1',
+            ),
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_current_2',
+                output='current result 2',
+            ),
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(
+        request=request,
+        session_id='provider-session-123',
+        accepted_tool_result_call_ids={'call_current_1', 'call_current_2'},
+    )
+
+    assert [result.model_dump() for result in normalized.tool_results] == [
+        {
+            'call_id': 'call_current_1',
+            'output_text': 'current result 1',
+            'is_error': False,
+            'error_text': None,
+        },
+        {
+            'call_id': 'call_current_2',
+            'output_text': 'current result 2',
+            'is_error': False,
+            'error_text': None,
+        },
+    ]
+
+
 def test_build_openai_responses_response_from_completion_normalizes_web_search_tools() -> (
     None
 ):

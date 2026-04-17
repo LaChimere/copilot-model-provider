@@ -405,6 +405,112 @@ class _FakeResponsesMultiToolRuntime(_FakeResponsesRuntime):
         )
 
 
+class _FakeResponsesReplayHistoryRuntime(_FakeResponsesRuntime):
+    """Fake runtime that emits a second tool batch after one replayed continuation."""
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit one tool call, then a second tool batch, then a final response."""
+        del route
+        self.last_request = request
+        tool_result_call_ids = [result.call_id for result in request.tool_results]
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield events for each step of the replay-history continuation flow."""
+            if not tool_result_call_ids:
+                events = (
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000301',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'external_tool.requested',
+                            'data': {
+                                'requestId': 'tool-request-skill',
+                                'toolName': 'skill',
+                                'toolCallId': 'call_skill',
+                                'arguments': {'skill': 'research'},
+                            },
+                        }
+                    ),
+                )
+            elif tool_result_call_ids == ['call_skill']:
+                events = (
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000302',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.message_delta',
+                            'data': {'deltaContent': 'I will inspect the workspace.'},
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000303',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'external_tool.requested',
+                            'data': {
+                                'requestId': 'tool-request-intent',
+                                'toolName': 'report_intent',
+                                'toolCallId': 'call_intent',
+                                'arguments': {'intent': 'Inspecting the workspace'},
+                            },
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000304',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'external_tool.requested',
+                            'data': {
+                                'requestId': 'tool-request-view',
+                                'toolName': 'view',
+                                'toolCallId': 'call_view',
+                                'arguments': {'path': 'README.md'},
+                            },
+                        }
+                    ),
+                )
+            elif tool_result_call_ids == ['call_intent', 'call_view']:
+                events = (
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000305',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.message_delta',
+                            'data': {'deltaContent': 'Done'},
+                        }
+                    ),
+                    SessionEvent.from_dict(
+                        {
+                            'id': '00000000-0000-0000-0000-000000000306',
+                            'timestamp': '2025-01-01T00:00:00Z',
+                            'type': 'assistant.turn_end',
+                            'data': {
+                                'reason': 'stop',
+                                'inputTokens': 20,
+                                'outputTokens': 5,
+                            },
+                        }
+                    ),
+                )
+            else:
+                msg = f'Unexpected tool results: {tool_result_call_ids!r}'
+                raise AssertionError(msg)
+
+            for event in events:
+                yield event
+
+        return RuntimeEventStream(
+            session_id='responses-replay-history-session',
+            events=_events(),
+        )
+
+
 def _extract_completed_frame_data(*, payload: str) -> str:
     """Return the serialized ``response.completed`` SSE payload."""
     frames = parse_sse_frames(payload=payload)
@@ -923,4 +1029,178 @@ async def test_post_responses_streaming_supports_replayed_function_call_continua
             'is_error': False,
             'error_text': None,
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_responses_replay_continuation_ignores_historical_tool_outputs() -> (
+    None
+):
+    """Verify that replay continuations ignore old tool outputs from earlier batches."""
+    runtime = _FakeResponsesReplayHistoryRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'stream': True,
+        'input': 'Research the repository',
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'skill',
+                    'description': 'Run one skill.',
+                    'parameters': {'type': 'object'},
+                },
+            },
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'report_intent',
+                    'description': 'Report one intent.',
+                    'parameters': {'type': 'object'},
+                },
+            },
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'view',
+                    'description': 'View one file.',
+                    'parameters': {'type': 'object'},
+                },
+            },
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=first_request_body,
+        ) as response:
+            first_payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+        first_completed_payload = cast(
+            'dict[str, Any]',
+            json.loads(_extract_completed_frame_data(payload=first_payload)),
+        )
+        first_output_items = cast(
+            'list[dict[str, Any]]', first_completed_payload['response']['output']
+        )
+        first_function_call = _extract_function_call_item(output=first_output_items)
+        first_follow_up_request: dict[str, object] = {
+            'model': 'gpt-5.4',
+            'stream': True,
+            'input': [
+                {
+                    'type': 'message',
+                    'role': 'user',
+                    'content': 'Research the repository',
+                },
+                {
+                    'type': 'function_call',
+                    'call_id': first_function_call['call_id'],
+                    'name': first_function_call['name'],
+                    'arguments': first_function_call['arguments'],
+                },
+                {
+                    'type': 'function_call_output',
+                    'call_id': first_function_call['call_id'],
+                    'output': 'skill result',
+                },
+            ],
+        }
+
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=first_follow_up_request,
+        ) as first_follow_up:
+            second_payload = ''.join(
+                [chunk async for chunk in first_follow_up.aiter_text()]
+            )
+
+        second_completed_payload = cast(
+            'dict[str, Any]',
+            json.loads(_extract_completed_frame_data(payload=second_payload)),
+        )
+        second_output_items = cast(
+            'list[dict[str, Any]]', second_completed_payload['response']['output']
+        )
+        second_function_calls = _extract_function_call_items(output=second_output_items)
+        second_follow_up_request: dict[str, object] = {
+            'model': 'gpt-5.4',
+            'stream': True,
+            'input': [
+                {
+                    'type': 'message',
+                    'role': 'user',
+                    'content': 'Research the repository',
+                },
+                {
+                    'type': 'function_call',
+                    'call_id': first_function_call['call_id'],
+                    'name': first_function_call['name'],
+                    'arguments': first_function_call['arguments'],
+                },
+                {
+                    'type': 'function_call_output',
+                    'call_id': first_function_call['call_id'],
+                    'output': 'skill result',
+                },
+                {
+                    'type': 'message',
+                    'role': 'assistant',
+                    'content': 'I will inspect the workspace.',
+                    'phase': 'commentary',
+                },
+            ],
+        }
+        second_follow_up_input = cast(
+            'list[dict[str, object]]', second_follow_up_request['input']
+        )
+        second_follow_up_input.extend(
+            [
+                {
+                    'type': 'function_call',
+                    'call_id': cast('str', function_call_item['call_id']),
+                    'name': cast('str', function_call_item['name']),
+                    'arguments': cast('str', function_call_item['arguments']),
+                }
+                for function_call_item in second_function_calls
+            ]
+        )
+        second_follow_up_input.extend(
+            [
+                {
+                    'type': 'function_call_output',
+                    'call_id': cast('str', function_call_item['call_id']),
+                    'output': f'result for {cast("str", function_call_item["call_id"])}',
+                }
+                for function_call_item in second_function_calls
+            ]
+        )
+
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=second_follow_up_request,
+        ) as second_follow_up:
+            third_payload = ''.join(
+                [chunk async for chunk in second_follow_up.aiter_text()]
+            )
+
+    third_completed_payload = cast(
+        'dict[str, Any]',
+        json.loads(_extract_completed_frame_data(payload=third_payload)),
+    )
+    third_output = cast(
+        'list[dict[str, Any]]', third_completed_payload['response']['output']
+    )
+    assert response.status_code == 200
+    assert first_follow_up.status_code == 200
+    assert second_follow_up.status_code == 200
+    assert third_output[0]['content'][0]['text'] == 'Done'
+    assert runtime.last_request is not None
+    assert runtime.last_request.session_id == 'responses-replay-history-session'
+    assert [result.call_id for result in runtime.last_request.tool_results] == [
+        'call_intent',
+        'call_view',
     ]
