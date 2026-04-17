@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
 from copilot_model_provider.core.models import (
     AnthropicContentBlockDeltaEvent,
@@ -62,6 +62,7 @@ def normalize_anthropic_messages_request(
     request_id: str | None = None,
     session_id: str | None = None,
     runtime_auth_token: str | None = None,
+    accepted_tool_result_ids: Collection[str] | None = None,
 ) -> CanonicalChatRequest:
     """Normalize an Anthropic Messages request into the canonical provider shape."""
     messages: list[CanonicalChatMessage] = []
@@ -69,7 +70,8 @@ def normalize_anthropic_messages_request(
     tool_definitions = _normalize_anthropic_tool_definitions(tools=request.tools)
     messages.extend(_normalize_anthropic_system_blocks(value=request.system))
     normalized_messages, normalized_tool_results = _normalize_anthropic_messages(
-        value=request.messages
+        value=request.messages,
+        accepted_tool_result_ids=accepted_tool_result_ids,
     )
     messages.extend(normalized_messages)
     tool_results.extend(normalized_tool_results)
@@ -193,22 +195,28 @@ def build_anthropic_message_start_event(
 def build_anthropic_content_block_start_event(
     *,
     content_block: AnthropicTextContentBlock | AnthropicToolUseContentBlock,
+    index: int = 0,
 ) -> AnthropicContentBlockStartEvent:
     """Build the event that starts one Anthropic content block."""
-    return AnthropicContentBlockStartEvent(content_block=content_block)
+    return AnthropicContentBlockStartEvent(index=index, content_block=content_block)
 
 
 def build_anthropic_content_block_delta_event(
     *,
     text: str,
+    index: int = 0,
 ) -> AnthropicContentBlockDeltaEvent:
     """Build one Anthropic text-delta event."""
-    return AnthropicContentBlockDeltaEvent(delta=AnthropicTextDelta(text=text))
+    return AnthropicContentBlockDeltaEvent(
+        index=index, delta=AnthropicTextDelta(text=text)
+    )
 
 
-def build_anthropic_content_block_stop_event() -> AnthropicContentBlockStopEvent:
+def build_anthropic_content_block_stop_event(
+    *, index: int = 0
+) -> AnthropicContentBlockStopEvent:
     """Build the event that closes the current Anthropic content block."""
-    return AnthropicContentBlockStopEvent()
+    return AnthropicContentBlockStopEvent(index=index)
 
 
 def build_anthropic_message_delta_event(
@@ -328,6 +336,7 @@ def _normalize_anthropic_system_blocks(
 def _normalize_anthropic_messages(
     *,
     value: list[AnthropicMessageInput],
+    accepted_tool_result_ids: Collection[str] | None = None,
 ) -> tuple[list[CanonicalChatMessage], list[CanonicalToolResult]]:
     """Normalize Anthropic input messages into canonical chat and tool-result items."""
     messages: list[CanonicalChatMessage] = []
@@ -337,6 +346,7 @@ def _normalize_anthropic_messages(
             _normalize_anthropic_message_content(
                 role=message.role,
                 content=message.content,
+                accepted_tool_result_ids=accepted_tool_result_ids,
             )
         )
         messages.extend(normalized_messages)
@@ -348,6 +358,7 @@ def _normalize_anthropic_message_content(
     *,
     role: Literal['user', 'assistant'],
     content: str | list[dict[str, Any]],
+    accepted_tool_result_ids: Collection[str] | None = None,
 ) -> tuple[list[CanonicalChatMessage], list[CanonicalToolResult]]:
     """Normalize one Anthropic message content payload."""
     if isinstance(content, str):
@@ -360,6 +371,11 @@ def _normalize_anthropic_message_content(
         if block_type == 'tool_result':
             tool_use_id = block.get('tool_use_id')
             if isinstance(tool_use_id, str) and tool_use_id:
+                if (
+                    accepted_tool_result_ids is not None
+                    and tool_use_id not in accepted_tool_result_ids
+                ):
+                    continue
                 tool_results.append(
                     CanonicalToolResult(
                         call_id=tool_use_id,

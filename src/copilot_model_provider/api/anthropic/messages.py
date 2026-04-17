@@ -127,17 +127,20 @@ def install_anthropic_messages_route(
             model_id=request.model,
             runtime_auth_token=runtime_auth_token,
         )
-        session_id = _pop_pending_session_id_from_tool_results(
-            request=request,
-            pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
-            pending_tool_use_batches_by_session_id=(
-                pending_tool_use_batches_by_session_id
-            ),
+        session_id, accepted_tool_result_ids = (
+            _pop_pending_session_id_from_tool_results(
+                request=request,
+                pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
+                pending_tool_use_batches_by_session_id=(
+                    pending_tool_use_batches_by_session_id
+                ),
+            )
         )
         canonical_request = normalize_anthropic_messages_request(
             request=request,
             session_id=session_id,
             runtime_auth_token=runtime_auth_token,
+            accepted_tool_result_ids=accepted_tool_result_ids or None,
         )
         _logger.info(
             'anthropic_messages_request_normalized',
@@ -305,6 +308,8 @@ async def _create_streaming_message(  # noqa: C901
         pending_tool_calls: list[CanonicalToolCall] = []
         pending_tool_call_ids: set[str] = set()
         text_block_started = False
+        active_text_block_index: int | None = None
+        next_content_block_index = 0
         yield encode_anthropic_event(
             event='message_start',
             payload=build_anthropic_message_start_event(
@@ -344,10 +349,13 @@ async def _create_streaming_message(  # noqa: C901
 
             if isinstance(stream_event, AssistantTextDeltaEvent):
                 if not text_block_started:
+                    active_text_block_index = next_content_block_index
+                    next_content_block_index += 1
                     yield encode_anthropic_event(
                         event='content_block_start',
                         payload=build_anthropic_content_block_start_event(
-                            content_block=AnthropicTextContentBlock(text='')
+                            content_block=AnthropicTextContentBlock(text=''),
+                            index=active_text_block_index,
                         ).model_dump_json(exclude_none=True),
                     )
                     text_block_started = True
@@ -356,7 +364,8 @@ async def _create_streaming_message(  # noqa: C901
                 yield encode_anthropic_event(
                     event='content_block_delta',
                     payload=build_anthropic_content_block_delta_event(
-                        text=stream_event.text
+                        text=stream_event.text,
+                        index=active_text_block_index or 0,
                     ).model_dump_json(exclude_none=True),
                 )
                 continue
@@ -380,26 +389,31 @@ async def _create_streaming_message(  # noqa: C901
             if text_block_started:
                 yield encode_anthropic_event(
                     event='content_block_stop',
-                    payload=build_anthropic_content_block_stop_event().model_dump_json(
-                        exclude_none=True
-                    ),
+                    payload=build_anthropic_content_block_stop_event(
+                        index=active_text_block_index or 0
+                    ).model_dump_json(exclude_none=True),
                 )
+                text_block_started = False
+                active_text_block_index = None
             if pending_tool_calls:
                 for pending_tool_call in pending_tool_calls:
+                    tool_block_index = next_content_block_index
+                    next_content_block_index += 1
                     tool_use_block = build_anthropic_tool_use_content_block(
                         tool_call=pending_tool_call
                     )
                     yield encode_anthropic_event(
                         event='content_block_start',
                         payload=build_anthropic_content_block_start_event(
-                            content_block=tool_use_block
+                            content_block=tool_use_block,
+                            index=tool_block_index,
                         ).model_dump_json(exclude_none=True),
                     )
                     yield encode_anthropic_event(
                         event='content_block_stop',
-                        payload=build_anthropic_content_block_stop_event().model_dump_json(
-                            exclude_none=True
-                        ),
+                        payload=build_anthropic_content_block_stop_event(
+                            index=tool_block_index
+                        ).model_dump_json(exclude_none=True),
                     )
                 if runtime_stream.session_id is not None:
                     _remember_pending_tool_use_batch(
@@ -480,25 +494,30 @@ async def _create_streaming_message(  # noqa: C901
             if text_block_started:
                 yield encode_anthropic_event(
                     event='content_block_stop',
-                    payload=build_anthropic_content_block_stop_event().model_dump_json(
-                        exclude_none=True
-                    ),
+                    payload=build_anthropic_content_block_stop_event(
+                        index=active_text_block_index or 0
+                    ).model_dump_json(exclude_none=True),
                 )
+                text_block_started = False
+                active_text_block_index = None
             for pending_tool_call in pending_tool_calls:
+                tool_block_index = next_content_block_index
+                next_content_block_index += 1
                 tool_use_block = build_anthropic_tool_use_content_block(
                     tool_call=pending_tool_call
                 )
                 yield encode_anthropic_event(
                     event='content_block_start',
                     payload=build_anthropic_content_block_start_event(
-                        content_block=tool_use_block
+                        content_block=tool_use_block,
+                        index=tool_block_index,
                     ).model_dump_json(exclude_none=True),
                 )
                 yield encode_anthropic_event(
                     event='content_block_stop',
-                    payload=build_anthropic_content_block_stop_event().model_dump_json(
-                        exclude_none=True
-                    ),
+                    payload=build_anthropic_content_block_stop_event(
+                        index=tool_block_index
+                    ).model_dump_json(exclude_none=True),
                 )
             if runtime_stream.session_id is not None:
                 _remember_pending_tool_use_batch(
@@ -544,7 +563,7 @@ def _pop_pending_session_id_from_tool_results(
     request: AnthropicMessagesCreateRequest,
     pending_sessions_by_tool_use_id: dict[str, str],
     pending_tool_use_batches_by_session_id: dict[str, frozenset[str]],
-) -> str | None:
+) -> tuple[str | None, frozenset[str]]:
     """Resolve a pending provider session from Anthropic ``tool_result`` blocks."""
     tool_use_ids: list[str] = []
     for message in request.messages:
@@ -558,13 +577,13 @@ def _pop_pending_session_id_from_tool_results(
                 tool_use_ids.append(tool_use_id)
 
     if not tool_use_ids:
-        return None
+        return None, frozenset()
 
-    matched_tool_use_ids = [
+    matched_tool_use_ids = frozenset(
         tool_use_id
         for tool_use_id in tool_use_ids
         if tool_use_id in pending_sessions_by_tool_use_id
-    ]
+    )
     if not matched_tool_use_ids:
         raise ProviderError(
             code='invalid_tool_result',
@@ -585,7 +604,7 @@ def _pop_pending_session_id_from_tool_results(
 
     session_id = next(iter(session_ids))
     _validate_full_tool_result_batch(
-        tool_use_ids=tool_use_ids,
+        tool_use_ids=matched_tool_use_ids,
         session_id=session_id,
         pending_tool_use_batches_by_session_id=pending_tool_use_batches_by_session_id,
     )
@@ -597,7 +616,7 @@ def _pop_pending_session_id_from_tool_results(
         session_id=session_id,
         pending_tool_use_session_count=len(pending_sessions_by_tool_use_id),
     )
-    return session_id
+    return session_id, matched_tool_use_ids
 
 
 def _remember_pending_tool_use_batch(
@@ -631,7 +650,7 @@ def _append_unique_tool_calls(
 
 def _validate_full_tool_result_batch(
     *,
-    tool_use_ids: list[str],
+    tool_use_ids: frozenset[str],
     session_id: str,
     pending_tool_use_batches_by_session_id: dict[str, frozenset[str]],
 ) -> None:
@@ -639,11 +658,7 @@ def _validate_full_tool_result_batch(
     outstanding_tool_use_ids = pending_tool_use_batches_by_session_id.get(session_id)
     if outstanding_tool_use_ids is None:
         return
-    submitted_tool_use_ids = frozenset(tool_use_ids)
-    if (
-        len(tool_use_ids) != len(outstanding_tool_use_ids)
-        or submitted_tool_use_ids != outstanding_tool_use_ids
-    ):
+    if tool_use_ids != outstanding_tool_use_ids:
         raise ProviderError(
             code='invalid_tool_result',
             message='Tool result blocks must provide the full pending tool-result batch.',

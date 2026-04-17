@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import structlog
 from copilot.generated.session_events import SessionEventType
@@ -10,7 +10,10 @@ from pydantic import BaseModel, ConfigDict
 
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.streaming.events import AssistantTextDeltaEvent
-from copilot_model_provider.streaming.translators import translate_session_event
+from copilot_model_provider.streaming.translators import (
+    assistant_message_has_tool_requests,
+    translate_session_events,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -94,14 +97,16 @@ async def iter_canonical_runtime_stream_events(
             )
             continue
 
-        stream_event = translate_session_event(event=event)
-        if stream_event is None:
-            continue
+        for stream_event in translate_session_events(
+            event=event,
+            suppress_aggregate_message_text=(
+                saw_text_delta and assistant_message_has_tool_requests(event=event)
+            ),
+        ):
+            if isinstance(stream_event, AssistantTextDeltaEvent):
+                saw_text_delta = True
 
-        if isinstance(stream_event, AssistantTextDeltaEvent):
-            saw_text_delta = True
-
-        yield stream_event
+            yield stream_event
 
 
 def normalize_optional_header_value(*, value: str | None) -> str | None:
@@ -307,7 +312,4 @@ def should_skip_aggregated_assistant_message(
 
 def _assistant_message_has_tool_requests(*, event: SessionEvent) -> bool:
     """Report whether one aggregated assistant message also carries tool requests."""
-    raw_tool_requests = getattr(event.data, 'tool_requests', None)
-    if not isinstance(raw_tool_requests, list):
-        return False
-    return len(cast('list[object]', raw_tool_requests)) > 0
+    return assistant_message_has_tool_requests(event=event)

@@ -983,6 +983,7 @@ async def test_copilot_runtime_deduplicates_replayed_tool_requests_in_one_turn()
         'report_intent',
         'read_file',
     ]
+    assert completion.output_text == 'Whole message'
 
     await runtime._discard_interactive_session(
         session_id='copilot-session-tool-dedupe',
@@ -1056,6 +1057,41 @@ async def test_copilot_runtime_waits_for_later_tool_results() -> None:
 
 
 @pytest.mark.asyncio
+async def test_copilot_runtime_unblocks_pending_waiters_when_session_is_discarded() -> (
+    None
+):
+    """Verify that discarding a session resolves pending tool waits as expired."""
+    runtime = CopilotRuntime()
+    runtime._interactive_sessions['copilot-session-tool'] = (
+        _build_interactive_session_state()
+    )
+
+    wait_task = asyncio.create_task(
+        runtime._wait_for_external_tool_result(
+            ToolInvocation(
+                session_id='copilot-session-tool',
+                tool_call_id='call_readme',
+                tool_name='read_file',
+                arguments={'path': 'README.md'},
+            )
+        )
+    )
+    await asyncio.sleep(0)
+
+    await runtime._discard_interactive_session(
+        session_id='copilot-session-tool',
+        disconnect=False,
+    )
+    tool_result = await wait_task
+
+    assert tool_result.result_type == 'failure'
+    assert tool_result.error == 'provider session expired'
+    assert tool_result.text_result_for_llm == (
+        'Provider session expired before the tool result arrived.'
+    )
+
+
+@pytest.mark.asyncio
 async def test_copilot_runtime_uses_pre_submitted_tool_results_immediately() -> None:
     """Verify that already-submitted tool results are returned without waiting."""
     runtime = CopilotRuntime()
@@ -1087,6 +1123,75 @@ async def test_copilot_runtime_uses_pre_submitted_tool_results_immediately() -> 
     assert tool_result.error == 'tool failed'
     assert (
         runtime._interactive_sessions['copilot-session-tool'].pending_tool_calls == {}
+    )
+
+
+@pytest.mark.asyncio
+async def test_copilot_runtime_keeps_tool_calls_from_mixed_aggregate_message_after_deltas() -> (
+    None
+):
+    """Verify that mixed aggregate assistant messages keep tools after prior deltas."""
+    session = _FakeSession(
+        session_id='copilot-session-tool-mixed',
+        stream_events=[
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000301',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.message_delta',
+                    'data': {'deltaContent': 'Whole message'},
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000302',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.message',
+                    'data': {
+                        'content': 'Whole message',
+                        'toolRequests': [
+                            {
+                                'toolCallId': 'call_readme',
+                                'name': 'read_file',
+                                'arguments': {'path': 'README.md'},
+                            }
+                        ],
+                    },
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000303',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.turn_end',
+                    'data': {
+                        'reason': 'tool_calls',
+                        'inputTokens': 0,
+                        'outputTokens': 0,
+                    },
+                }
+            ),
+        ],
+    )
+    runtime = CopilotRuntime(
+        client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
+    )
+
+    completion = await runtime.complete_chat(
+        request=_build_tool_aware_request(),
+        route=ResolvedRoute(runtime='copilot', runtime_model_id='copilot-default'),
+    )
+
+    assert completion.output_text == 'Whole message'
+    assert [tool_call.call_id for tool_call in completion.pending_tool_calls] == [
+        'call_readme'
+    ]
+    assert completion.prompt_tokens == 0
+    assert completion.completion_tokens == 0
+
+    await runtime._discard_interactive_session(
+        session_id='copilot-session-tool-mixed',
+        disconnect=True,
     )
 
 

@@ -150,7 +150,7 @@ def install_openai_responses_route(
             request=canonical_request,
             route=route,
         )
-        response_id = build_response_id(request_id=canonical_request.request_id)
+        response_id = build_response_id()
         if completion.pending_tool_calls and completion.session_id is not None:
             _remember_pending_response_tool_batch(
                 response_id=response_id,
@@ -207,7 +207,7 @@ async def _create_streaming_response(  # noqa: C901
             request=canonical_request,
             route=route,
         )
-        response_id = build_response_id(request_id=canonical_request.request_id)
+        response_id = build_response_id()
         created_at = int(time())
         _logger.info(
             'openai_responses_stream_started',

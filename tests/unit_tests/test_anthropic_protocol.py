@@ -53,3 +53,39 @@ def test_normalize_anthropic_messages_request_keeps_text_only_requests_stateless
 
     assert normalized.tool_routing_policy.mode == 'none'
     assert normalized.tool_routing_policy.guidance is None
+
+
+def test_normalize_anthropic_messages_request_filters_historical_tool_results() -> None:
+    """Verify that Anthropic normalization keeps only the accepted tool-result batch."""
+    normalized = normalize_anthropic_messages_request(
+        request=AnthropicMessagesCreateRequest(
+            model='claude-sonnet-4-20250514',
+            messages=[
+                AnthropicMessageInput(
+                    role='user',
+                    content=[
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': 'toolu_old',
+                            'content': 'old result',
+                        },
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': 'toolu_current',
+                            'content': 'current result',
+                        },
+                    ],
+                )
+            ],
+        ),
+        accepted_tool_result_ids={'toolu_current'},
+    )
+
+    assert [result.model_dump() for result in normalized.tool_results] == [
+        {
+            'call_id': 'toolu_current',
+            'output_text': 'current result',
+            'is_error': False,
+            'error_text': None,
+        }
+    ]

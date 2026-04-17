@@ -122,6 +122,33 @@ def test_translate_session_event_maps_aggregate_tool_requests_to_multi_tool_even
     )
 
 
+def test_translate_session_event_to_openai_chunks_preserves_text_from_mixed_aggregate_message() -> (
+    None
+):
+    """Verify that mixed aggregate assistant messages still expose their text chunk."""
+    chunks = translate_session_event_to_openai_chunks(
+        event=_build_session_event(
+            event_type='assistant.message',
+            data={
+                'content': 'Whole message',
+                'toolRequests': [
+                    {
+                        'toolCallId': 'call_readme',
+                        'name': 'read_file',
+                        'arguments': {'path': 'README.md'},
+                    }
+                ],
+            },
+        ),
+        completion_id='chatcmpl-test',
+        model='gpt-5.4',
+        emit_role=True,
+    )
+
+    assert [chunk.choices[0].delta.content for chunk in chunks] == ['Whole message']
+    assert chunks[0].choices[0].delta.role == 'assistant'
+
+
 @pytest.mark.parametrize(
     ('reason', 'expected'),
     [

@@ -584,6 +584,33 @@ async def test_post_responses_returns_openai_compatible_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_responses_generates_unique_response_ids_for_reused_client_request_id() -> (
+    None
+):
+    """Verify that public response ids stay unique even when the client reuses one header."""
+    async with build_async_client(runtime=_FakeResponsesRuntime()) as client:
+        first_response = await client.post(
+            '/openai/v1/responses',
+            headers={'x-client-request-id': 'shared-request-id'},
+            json={'model': 'gpt-5.4', 'input': 'Hello'},
+        )
+        second_response = await client.post(
+            '/openai/v1/responses',
+            headers={'x-client-request-id': 'shared-request-id'},
+            json={'model': 'gpt-5.4', 'input': 'Hello'},
+        )
+
+    first_payload = cast('dict[str, Any]', first_response.json())
+    second_payload = cast('dict[str, Any]', second_response.json())
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_payload['id'] != second_payload['id']
+    assert first_payload['id'].startswith('resp_')
+    assert second_payload['id'].startswith('resp_')
+
+
+@pytest.mark.asyncio
 async def test_post_responses_accepts_non_text_content_parts_without_422() -> None:
     """Verify that non-text content parts are ignored instead of rejected."""
     runtime = _FakeResponsesRuntime()

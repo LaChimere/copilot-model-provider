@@ -127,6 +127,44 @@ def translate_session_event(*, event: SessionEvent) -> CanonicalStreamingEvent |
     return None
 
 
+def translate_session_events(
+    *,
+    event: SessionEvent,
+    suppress_aggregate_message_text: bool = False,
+) -> tuple[CanonicalStreamingEvent, ...]:
+    """Translate one SDK event into zero or more canonical stream events.
+
+    Args:
+        event: Copilot SDK event emitted by a streaming session.
+        suppress_aggregate_message_text: Whether one aggregate
+            ``assistant.message`` should omit its visible text while still
+            preserving any co-located tool requests.
+
+    Returns:
+        A tuple of canonical events extracted from the SDK event. Aggregate
+        assistant messages can yield both text and tool-request events so
+        downstream runtimes preserve visible narration and tool metadata.
+
+    """
+    if (
+        event.type == SessionEventType.ASSISTANT_MESSAGE
+        and assistant_message_has_tool_requests(event=event)
+    ):
+        events: list[CanonicalStreamingEvent] = []
+        if not suppress_aggregate_message_text:
+            text_event = _build_assistant_message_text_event(event=event)
+            if text_event is not None:
+                events.append(text_event)
+
+        tool_event = _translate_tool_requested_event(event=event)
+        if tool_event is not None:
+            events.append(tool_event)
+        return tuple(events)
+
+    stream_event = translate_session_event(event=event)
+    return () if stream_event is None else (stream_event,)
+
+
 def translate_stream_event_to_openai_chunks(
     *,
     event: CanonicalStreamingEvent,
@@ -196,10 +234,7 @@ def _translate_text_event(*, event: SessionEvent) -> AssistantTextDeltaEvent | N
         return AssistantTextDeltaEvent(text=text) if text is not None else None
 
     if event.type == SessionEventType.ASSISTANT_MESSAGE:
-        if _assistant_message_has_tool_requests(event=event):
-            return None
-        text = _first_non_empty_text(data.content, data.transformed_content)
-        return AssistantTextDeltaEvent(text=text) if text is not None else None
+        return _build_assistant_message_text_event(event=event)
 
     return None
 
@@ -307,18 +342,23 @@ def translate_session_event_to_openai_chunks(
             handled outside the chunk translation path.
 
     """
-    stream_event = translate_session_event(event=event)
-    if stream_event is None:
-        return ()
+    chunks: list[OpenAIChatCompletionChunk] = []
+    should_emit_role = emit_role
+    for stream_event in translate_session_events(event=event):
+        chunks.extend(
+            translate_stream_event_to_openai_chunks(
+                event=stream_event,
+                completion_id=completion_id,
+                model=model,
+                emit_role=should_emit_role,
+                created=created,
+                choice_index=choice_index,
+            )
+        )
+        if chunks:
+            should_emit_role = False
 
-    return translate_stream_event_to_openai_chunks(
-        event=stream_event,
-        completion_id=completion_id,
-        model=model,
-        emit_role=emit_role,
-        created=created,
-        choice_index=choice_index,
-    )
+    return tuple(chunks)
 
 
 def _build_chunk(
@@ -345,7 +385,7 @@ def _build_chunk(
     )
 
 
-def _assistant_message_has_tool_requests(*, event: SessionEvent) -> bool:
+def assistant_message_has_tool_requests(*, event: SessionEvent) -> bool:
     """Report whether one assistant.message event also carries tool request metadata."""
     if event.type != SessionEventType.ASSISTANT_MESSAGE:
         return False
@@ -353,6 +393,18 @@ def _assistant_message_has_tool_requests(*, event: SessionEvent) -> bool:
     if not isinstance(raw_tool_requests, list):
         return False
     return len(cast('list[object]', raw_tool_requests)) > 0
+
+
+def _build_assistant_message_text_event(
+    *, event: SessionEvent
+) -> AssistantTextDeltaEvent | None:
+    """Build assistant text from one aggregate ``assistant.message`` event."""
+    if event.type != SessionEventType.ASSISTANT_MESSAGE:
+        return None
+
+    data = event.data
+    text = _first_non_empty_text(data.content, data.transformed_content)
+    return AssistantTextDeltaEvent(text=text) if text is not None else None
 
 
 def _build_tool_call_from_request_data(*, data: object) -> CanonicalToolCall | None:

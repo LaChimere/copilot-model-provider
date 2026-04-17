@@ -54,6 +54,10 @@
 - [x] Fix OpenAI Responses replay-history continuation handling so live Codex
       requests ignore historical `function_call_output` items and only submit
       the current pending batch.
+- [x] Resolve post-review protocol regressions across Anthropic replay/history
+      filtering, Anthropic streaming block indexes, OpenAI `response_id`
+      generation, mixed aggregate assistant-message tool routing, and runtime
+      zero-token / expired-session handling.
 - [x] Re-run final repo validation for the multi-tool batching slice.
 
 ### Verification

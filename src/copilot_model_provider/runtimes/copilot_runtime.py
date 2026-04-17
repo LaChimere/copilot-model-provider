@@ -47,7 +47,10 @@ from copilot_model_provider.streaming.events import (
     ToolCallRequestedEvent,
     ToolCallsRequestedEvent,
 )
-from copilot_model_provider.streaming.translators import translate_session_event
+from copilot_model_provider.streaming.translators import (
+    assistant_message_has_tool_requests,
+    translate_session_events,
+)
 
 if TYPE_CHECKING:
     from copilot.session import CopilotSession
@@ -603,98 +606,129 @@ class CopilotRuntime(RuntimeProtocol):
 
         session_id = session_state.active_session.session.session_id
 
-        async def _event_stream() -> AsyncIterator[SessionEvent]:
+        async def _event_stream() -> AsyncIterator[SessionEvent]:  # noqa: C901
             """Yield session events until a tool boundary or terminal turn is reached."""
             saw_visible_response = False
             continuation_prompt_sent = False
             saw_tool_call = False
-            while True:
-                wait_timeout = (
-                    _INTERACTIVE_TOOL_BATCH_QUIET_WINDOW_SECONDS
-                    if saw_tool_call
-                    else self._timeout_seconds
-                )
-                try:
-                    event = await asyncio.wait_for(
-                        session_state.event_queue.get(),
-                        timeout=wait_timeout,
+            saw_text_delta = False
+            preserve_session = False
+            try:
+                while True:
+                    wait_timeout = (
+                        _INTERACTIVE_TOOL_BATCH_QUIET_WINDOW_SECONDS
+                        if saw_tool_call
+                        else self._timeout_seconds
                     )
-                except TimeoutError as error:
-                    if saw_tool_call:
-                        _logger.info(
-                            'copilot_runtime_interactive_tool_batch_settled',
-                            session_id=session_id,
-                            pending_tool_call_count=len(
-                                session_state.pending_tool_calls
-                            ),
+                    try:
+                        event = await asyncio.wait_for(
+                            session_state.event_queue.get(),
+                            timeout=wait_timeout,
                         )
-                        break
-                    raise ProviderError(
-                        code='runtime_timeout',
-                        message='Timed out while waiting for Copilot streaming events.',
-                        status_code=504,
-                    ) from error
+                    except TimeoutError as error:
+                        if saw_tool_call:
+                            preserve_session = True
+                            _logger.info(
+                                'copilot_runtime_interactive_tool_batch_settled',
+                                session_id=session_id,
+                                pending_tool_call_count=len(
+                                    session_state.pending_tool_calls
+                                ),
+                            )
+                            break
+                        raise ProviderError(
+                            code='runtime_timeout',
+                            message='Timed out while waiting for Copilot streaming events.',
+                            status_code=504,
+                        ) from error
 
-                stream_event = translate_session_event(event=event)
-                if isinstance(
-                    stream_event,
-                    AssistantTextDeltaEvent
-                    | ToolCallRequestedEvent
-                    | ToolCallsRequestedEvent,
-                ):
-                    saw_visible_response = True
+                    stream_events = translate_session_events(
+                        event=event,
+                        suppress_aggregate_message_text=(
+                            saw_text_delta
+                            and assistant_message_has_tool_requests(event=event)
+                        ),
+                    )
+                    event_has_tool_call = False
+                    for stream_event in stream_events:
+                        if isinstance(
+                            stream_event,
+                            AssistantTextDeltaEvent
+                            | ToolCallRequestedEvent
+                            | ToolCallsRequestedEvent,
+                        ):
+                            saw_visible_response = True
+                        if isinstance(stream_event, AssistantTextDeltaEvent):
+                            saw_text_delta = True
+                        if isinstance(
+                            stream_event,
+                            ToolCallRequestedEvent | ToolCallsRequestedEvent,
+                        ):
+                            event_has_tool_call = True
 
-                if self._should_send_interactive_continuation_prompt(
-                    event=event,
-                    has_tool_results=bool(request.tool_results),
-                    saw_visible_response=saw_visible_response,
-                    continuation_prompt_sent=continuation_prompt_sent,
-                ):
-                    continuation_prompt_sent = True
-                    _logger.info(
-                        'copilot_runtime_interactive_continuation_prompt_sent',
-                        session_id=session_id,
-                        event_type=event.type,
-                    )
-                    await session_state.active_session.session.send(
-                        _INTERACTIVE_TOOL_CONTINUATION_PROMPT
-                    )
-                    continue
-
-                yield event
-                if event.type == SessionEventType.EXTERNAL_TOOL_REQUESTED:
-                    saw_tool_call = True
-                    _logger.info(
-                        'copilot_runtime_interactive_tool_boundary_reached',
-                        session_id=session_id,
-                        pending_tool_call_count=len(session_state.pending_tool_calls),
-                    )
-                    continue
-                if event.type in {
-                    SessionEventType.ASSISTANT_TURN_END,
-                    SessionEventType.SESSION_ERROR,
-                    SessionEventType.SESSION_IDLE,
-                }:
-                    if saw_tool_call and event.type != SessionEventType.SESSION_ERROR:
+                    if self._should_send_interactive_continuation_prompt(
+                        event=event,
+                        has_tool_results=bool(request.tool_results),
+                        saw_visible_response=saw_visible_response,
+                        continuation_prompt_sent=continuation_prompt_sent,
+                    ):
+                        continuation_prompt_sent = True
                         _logger.info(
-                            'copilot_runtime_interactive_tool_batch_completed',
+                            'copilot_runtime_interactive_continuation_prompt_sent',
                             session_id=session_id,
                             event_type=event.type,
+                        )
+                        await session_state.active_session.session.send(
+                            _INTERACTIVE_TOOL_CONTINUATION_PROMPT
+                        )
+                        continue
+
+                    yield event
+                    if event_has_tool_call:
+                        saw_tool_call = True
+                        _logger.info(
+                            'copilot_runtime_interactive_tool_boundary_reached',
+                            session_id=session_id,
                             pending_tool_call_count=len(
                                 session_state.pending_tool_calls
                             ),
                         )
+                        continue
+                    if event.type in {
+                        SessionEventType.ASSISTANT_TURN_END,
+                        SessionEventType.SESSION_ERROR,
+                        SessionEventType.SESSION_IDLE,
+                    }:
+                        if (
+                            saw_tool_call
+                            and event.type != SessionEventType.SESSION_ERROR
+                        ):
+                            preserve_session = True
+                            _logger.info(
+                                'copilot_runtime_interactive_tool_batch_completed',
+                                session_id=session_id,
+                                event_type=event.type,
+                                pending_tool_call_count=len(
+                                    session_state.pending_tool_calls
+                                ),
+                            )
+                            break
+                        _logger.info(
+                            'copilot_runtime_interactive_terminal_event',
+                            session_id=session_id,
+                            event_type=event.type,
+                        )
+                        await self._discard_interactive_session(
+                            session_id=session_id,
+                            disconnect=True,
+                        )
                         break
-                    _logger.info(
-                        'copilot_runtime_interactive_terminal_event',
-                        session_id=session_id,
-                        event_type=event.type,
-                    )
+            finally:
+                if not preserve_session:
                     await self._discard_interactive_session(
                         session_id=session_id,
                         disconnect=True,
                     )
-                    break
 
         async def _close() -> None:
             """Abort one persistent interactive session stream."""
@@ -716,71 +750,74 @@ class CopilotRuntime(RuntimeProtocol):
         state: _InteractiveCompletionState,
     ) -> bool:
         """Update aggregated completion state from one interactive session event."""
-        if state.saw_text_delta and event.type == SessionEventType.ASSISTANT_MESSAGE:
+        if (
+            state.saw_text_delta
+            and event.type == SessionEventType.ASSISTANT_MESSAGE
+            and not assistant_message_has_tool_requests(event=event)
+        ):
             return False
 
-        stream_event = translate_session_event(event=event)
-        if stream_event is None:
-            return False
-
-        if isinstance(stream_event, AssistantTextDeltaEvent):
-            if event.type in {
-                SessionEventType.ASSISTANT_MESSAGE_DELTA,
-                SessionEventType.ASSISTANT_STREAMING_DELTA,
-            }:
+        for stream_event in translate_session_events(
+            event=event,
+            suppress_aggregate_message_text=(
+                state.saw_text_delta
+                and assistant_message_has_tool_requests(event=event)
+            ),
+        ):
+            if isinstance(stream_event, AssistantTextDeltaEvent):
                 state.saw_text_delta = True
-            state.output_parts.append(stream_event.text)
-            return False
+                state.output_parts.append(stream_event.text)
+                continue
 
-        if isinstance(stream_event, AssistantUsageEvent):
-            if stream_event.prompt_tokens is not None:
-                state.prompt_tokens = stream_event.prompt_tokens
-            if stream_event.completion_tokens is not None:
-                state.completion_tokens = stream_event.completion_tokens
-            return False
+            if isinstance(stream_event, AssistantUsageEvent):
+                if stream_event.prompt_tokens is not None:
+                    state.prompt_tokens = stream_event.prompt_tokens
+                if stream_event.completion_tokens is not None:
+                    state.completion_tokens = stream_event.completion_tokens
+                continue
 
-        if isinstance(stream_event, ToolCallRequestedEvent):
-            self._record_pending_tool_calls(
-                state=state,
-                tool_calls=(stream_event.tool_call,),
-            )
-            _logger.info(
-                'copilot_runtime_interactive_completion_tool_call',
-                tool_call_id=stream_event.tool_call.call_id,
-                tool_name=stream_event.tool_call.name,
-                pending_tool_call_count=len(state.pending_tool_calls),
-            )
-            return False
+            if isinstance(stream_event, ToolCallRequestedEvent):
+                self._record_pending_tool_calls(
+                    state=state,
+                    tool_calls=(stream_event.tool_call,),
+                )
+                _logger.info(
+                    'copilot_runtime_interactive_completion_tool_call',
+                    tool_call_id=stream_event.tool_call.call_id,
+                    tool_name=stream_event.tool_call.name,
+                    pending_tool_call_count=len(state.pending_tool_calls),
+                )
+                continue
 
-        if isinstance(stream_event, ToolCallsRequestedEvent):
-            self._record_pending_tool_calls(
-                state=state,
-                tool_calls=stream_event.tool_calls,
-            )
-            _logger.info(
-                'copilot_runtime_interactive_completion_tool_calls',
-                tool_call_ids=[
-                    tool_call.call_id for tool_call in stream_event.tool_calls
-                ],
-                tool_call_names=[
-                    tool_call.name for tool_call in stream_event.tool_calls
-                ],
-                pending_tool_call_count=len(state.pending_tool_calls),
-            )
-            return False
+            if isinstance(stream_event, ToolCallsRequestedEvent):
+                self._record_pending_tool_calls(
+                    state=state,
+                    tool_calls=stream_event.tool_calls,
+                )
+                _logger.info(
+                    'copilot_runtime_interactive_completion_tool_calls',
+                    tool_call_ids=[
+                        tool_call.call_id for tool_call in stream_event.tool_calls
+                    ],
+                    tool_call_names=[
+                        tool_call.name for tool_call in stream_event.tool_calls
+                    ],
+                    pending_tool_call_count=len(state.pending_tool_calls),
+                )
+                continue
 
-        if isinstance(stream_event, AssistantTurnCompleteEvent):
-            state.prompt_tokens = stream_event.prompt_tokens or state.prompt_tokens
-            state.completion_tokens = (
-                stream_event.completion_tokens or state.completion_tokens
-            )
-            _logger.info(
-                'copilot_runtime_interactive_completion_finished',
-                output_text_chars=len(''.join(state.output_parts)),
-                prompt_tokens=state.prompt_tokens,
-                completion_tokens=state.completion_tokens,
-            )
-            return True
+            if isinstance(stream_event, AssistantTurnCompleteEvent):
+                if stream_event.prompt_tokens is not None:
+                    state.prompt_tokens = stream_event.prompt_tokens
+                if stream_event.completion_tokens is not None:
+                    state.completion_tokens = stream_event.completion_tokens
+                _logger.info(
+                    'copilot_runtime_interactive_completion_finished',
+                    output_text_chars=len(''.join(state.output_parts)),
+                    prompt_tokens=state.prompt_tokens,
+                    completion_tokens=state.completion_tokens,
+                )
+                return True
 
         return False
 
@@ -1029,6 +1066,12 @@ class CopilotRuntime(RuntimeProtocol):
             session_state = self._interactive_sessions.pop(session_id, None)
         if session_state is None:
             return
+
+        for pending_call in session_state.pending_tool_calls.values():
+            if pending_call.future is not None and not pending_call.future.done():
+                pending_call.future.set_result(
+                    self._build_expired_session_tool_result()
+                )
 
         _logger.info(
             'copilot_runtime_interactive_session_discarded',

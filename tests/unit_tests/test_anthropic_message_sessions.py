@@ -38,13 +38,14 @@ def test_pop_pending_session_id_from_tool_results_returns_matching_session() -> 
     """Verify that matched Anthropic tool results resolve and consume one session."""
     pending_sessions = {'toolu_1': 'session_123'}
 
-    session_id = _pop_pending_session_id_from_tool_results(
+    session_id, accepted_tool_result_ids = _pop_pending_session_id_from_tool_results(
         request=_build_tool_result_request('toolu_1'),
         pending_sessions_by_tool_use_id=pending_sessions,
         pending_tool_use_batches_by_session_id={'session_123': frozenset({'toolu_1'})},
     )
 
     assert session_id == 'session_123'
+    assert accepted_tool_result_ids == frozenset({'toolu_1'})
     assert pending_sessions == {}
 
 
