@@ -1032,6 +1032,76 @@ async def test_copilot_runtime_interactive_stream_closes_terminal_turns() -> Non
 
 
 @pytest.mark.asyncio
+async def test_copilot_runtime_interactive_stream_preserves_tool_turns_when_closed_early() -> (
+    None
+):
+    """Verify that closing a streamed tool turn after turn_end keeps the session alive."""
+    session = _FakeSession(
+        session_id='copilot-session-stream-tool',
+        stream_events=[
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000031',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.message_delta',
+                    'data': {'deltaContent': 'Plan'},
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000032',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'external_tool.requested',
+                    'data': {
+                        'requestId': 'tool-request-1',
+                        'toolName': 'read_file',
+                        'toolCallId': 'call_readme',
+                        'arguments': {'path': 'README.md'},
+                    },
+                }
+            ),
+            SessionEvent.from_dict(
+                {
+                    'id': '30000000-0000-0000-0000-000000000033',
+                    'timestamp': '2025-01-01T00:00:00Z',
+                    'type': 'assistant.turn_end',
+                    'data': {'reason': 'tool_calls'},
+                }
+            ),
+        ],
+    )
+    runtime = CopilotRuntime(
+        client_factory=lambda: cast('CopilotClient', _FakeClient(session=session))
+    )
+
+    runtime_stream = await runtime.stream_chat(
+        request=_build_tool_aware_request(stream=True),
+        route=ResolvedRoute(runtime='copilot', runtime_model_id='copilot-default'),
+    )
+    iterator = runtime_stream.events.__aiter__()
+    events = [
+        (await anext(iterator)).type.value,
+        (await anext(iterator)).type.value,
+        (await anext(iterator)).type.value,
+    ]
+    await cast('Any', runtime_stream.events).aclose()
+
+    assert events == [
+        'assistant.message_delta',
+        'external_tool.requested',
+        'assistant.turn_end',
+    ]
+    assert session.disconnected is False
+    assert 'copilot-session-stream-tool' in runtime._interactive_sessions
+
+    await runtime._discard_interactive_session(
+        session_id='copilot-session-stream-tool',
+        disconnect=True,
+    )
+    assert session.disconnected is True
+
+
+@pytest.mark.asyncio
 async def test_copilot_runtime_waits_for_later_tool_results() -> None:
     """Verify that pending tool handlers resume once the northbound client replies."""
     runtime = CopilotRuntime()

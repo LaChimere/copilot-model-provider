@@ -706,6 +706,30 @@ class CopilotRuntime(RuntimeProtocol):
                         )
                         continue
 
+                    completed_tool_batch = (
+                        saw_tool_call
+                        and event.type != SessionEventType.SESSION_ERROR
+                        and event.type
+                        in {
+                            SessionEventType.ASSISTANT_TURN_END,
+                            SessionEventType.SESSION_IDLE,
+                        }
+                    )
+                    if completed_tool_batch:
+                        preserve_session = True
+                        self._schedule_interactive_session_expiry(
+                            session_id=session_id,
+                            session_state=session_state,
+                        )
+                        _logger.info(
+                            'copilot_runtime_interactive_tool_batch_completed',
+                            session_id=session_id,
+                            event_type=event.type,
+                            pending_tool_call_count=len(
+                                session_state.pending_tool_calls
+                            ),
+                        )
+
                     yield event
                     if event_has_tool_call:
                         saw_tool_call = True
@@ -717,29 +741,13 @@ class CopilotRuntime(RuntimeProtocol):
                             ),
                         )
                         continue
+                    if completed_tool_batch:
+                        break
                     if event.type in {
                         SessionEventType.ASSISTANT_TURN_END,
                         SessionEventType.SESSION_ERROR,
                         SessionEventType.SESSION_IDLE,
                     }:
-                        if (
-                            saw_tool_call
-                            and event.type != SessionEventType.SESSION_ERROR
-                        ):
-                            preserve_session = True
-                            self._schedule_interactive_session_expiry(
-                                session_id=session_id,
-                                session_state=session_state,
-                            )
-                            _logger.info(
-                                'copilot_runtime_interactive_tool_batch_completed',
-                                session_id=session_id,
-                                event_type=event.type,
-                                pending_tool_call_count=len(
-                                    session_state.pending_tool_calls
-                                ),
-                            )
-                            break
                         _logger.info(
                             'copilot_runtime_interactive_terminal_event',
                             session_id=session_id,
