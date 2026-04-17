@@ -9,6 +9,7 @@ from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCallOutputItem,
+    OpenAIResponsesInputMessage,
 )
 
 
@@ -150,3 +151,33 @@ def test_pop_pending_session_id_rejects_duplicate_tool_result_call_ids() -> None
         error_info.value.message
         == 'Function call output items must not repeat the same call_id.'
     )
+
+
+def test_pop_pending_session_id_ignores_completed_historical_tool_outputs() -> None:
+    """Verify that a fresh user turn can replay completed historical tool outputs safely."""
+    session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
+        request=OpenAIResponsesCreateRequest(
+            model='gpt-5.4',
+            input=[
+                OpenAIResponsesInputMessage(
+                    role='user',
+                    content='Old question',
+                ),
+                OpenAIResponsesFunctionCallOutputItem(
+                    call_id='call_1',
+                    output='old result',
+                ),
+                OpenAIResponsesInputMessage(
+                    role='user',
+                    content='New question',
+                ),
+            ],
+        ),
+        pending_sessions_by_response_id={},
+        pending_sessions_by_tool_call_id={},
+        pending_tool_call_batches_by_session_id={},
+        previous_response_id=None,
+    )
+
+    assert session_id is None
+    assert accepted_tool_result_call_ids == frozenset()

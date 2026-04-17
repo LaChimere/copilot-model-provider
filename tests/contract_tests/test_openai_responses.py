@@ -513,6 +513,24 @@ class _FakeResponsesReplayHistoryRuntime(_FakeResponsesRuntime):
         )
 
 
+class _FakeResponsesCompletedReplayRuntime(_FakeResponsesToolRuntime):
+    """Fake runtime that treats replayed completed history as a fresh user turn."""
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Return a fresh answer when a new user turn replays old completed outputs."""
+        self.last_request = request
+        if request.messages and request.messages[-1].content == 'New question':
+            return RuntimeCompletion(output_text='Fresh turn.')
+
+        return await super().complete_chat(request=request, route=route)
+
+
 def _extract_completed_frame_data(*, payload: str) -> str:
     """Return the serialized ``response.completed`` SSE payload."""
     frames = parse_sse_frames(payload=payload)
@@ -860,6 +878,105 @@ async def test_post_responses_streaming_supports_function_call_continuation() ->
             'error_text': None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_post_responses_ignores_completed_historical_tool_outputs_on_new_turn() -> (
+    None
+):
+    """Verify that a fresh user turn can replay old completed tool outputs safely."""
+    runtime = _FakeResponsesCompletedReplayRuntime()
+    async with build_async_client(runtime=runtime) as client:
+        first_request_payload: dict[str, object] = {
+            'model': 'gpt-5.4',
+            'input': 'Open the readme',
+            'tools': [
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'read_file',
+                        'description': 'Read one file.',
+                        'parameters': {'type': 'object'},
+                    },
+                }
+            ],
+        }
+        first_response = await client.post(
+            '/openai/v1/responses',
+            json=first_request_payload,
+        )
+
+        first_payload = cast('dict[str, Any]', first_response.json())
+        function_call_item = _extract_function_call_item(
+            output=cast('list[dict[str, Any]]', first_payload['output'])
+        )
+        function_call_id = cast('str', function_call_item['call_id'])
+        function_call_name = cast('str', function_call_item['name'])
+        function_call_arguments = cast('object', function_call_item['arguments'])
+        second_request_payload: dict[str, object] = {
+            'model': 'gpt-5.4',
+            'input': [
+                {'type': 'message', 'role': 'user', 'content': 'Open the readme'},
+                {
+                    'type': 'message',
+                    'role': 'assistant',
+                    'content': 'I will check the README.',
+                },
+                {
+                    'type': 'function_call',
+                    'call_id': function_call_id,
+                    'name': function_call_name,
+                    'arguments': function_call_arguments,
+                },
+                {
+                    'type': 'function_call_output',
+                    'call_id': function_call_id,
+                    'output': 'README contents',
+                },
+            ],
+        }
+        second_response = await client.post(
+            '/openai/v1/responses',
+            json=second_request_payload,
+        )
+
+        third_request_payload: dict[str, object] = {
+            'model': 'gpt-5.4',
+            'input': [
+                {'type': 'message', 'role': 'user', 'content': 'Open the readme'},
+                {
+                    'type': 'message',
+                    'role': 'assistant',
+                    'content': 'I will check the README.',
+                },
+                {
+                    'type': 'function_call',
+                    'call_id': function_call_id,
+                    'name': function_call_name,
+                    'arguments': function_call_arguments,
+                },
+                {
+                    'type': 'function_call_output',
+                    'call_id': function_call_id,
+                    'output': 'README contents',
+                },
+                {'type': 'message', 'role': 'user', 'content': 'New question'},
+            ],
+        }
+        third_response = await client.post(
+            '/openai/v1/responses',
+            json=third_request_payload,
+        )
+
+    third_payload = cast('dict[str, Any]', third_response.json())
+    output = cast('list[dict[str, Any]]', third_payload['output'])
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert third_response.status_code == 200
+    assert output[0]['content'][0]['text'] == 'Fresh turn.'
+    assert runtime.last_request is not None
+    assert runtime.last_request.tool_results == []
+    assert runtime.last_request.messages[-1].content == 'New question'
 
 
 @pytest.mark.asyncio

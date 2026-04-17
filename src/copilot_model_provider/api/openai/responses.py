@@ -136,7 +136,7 @@ def install_openai_responses_route(
             request_id=request_id,
             session_id=session_id,
             runtime_auth_token=runtime_auth_token,
-            accepted_tool_result_call_ids=accepted_tool_result_call_ids or None,
+            accepted_tool_result_call_ids=accepted_tool_result_call_ids,
         )
         _logger.info(
             'openai_responses_request_normalized',
@@ -586,7 +586,7 @@ def _pop_pending_session_id(
     pending_sessions_by_tool_call_id: dict[str, str],
     pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
     previous_response_id: str | None,
-) -> tuple[str | None, frozenset[str]]:
+) -> tuple[str | None, frozenset[str] | None]:
     """Resolve and consume one pending session continuation id."""
     tool_result_call_ids = _extract_tool_result_call_ids(request=request)
     _validate_no_duplicate_tool_result_call_ids(
@@ -594,7 +594,7 @@ def _pop_pending_session_id(
     )
     if previous_response_id is None:
         if not tool_result_call_ids:
-            return None, frozenset()
+            return None, None
 
         matched_call_ids = frozenset(
             call_id
@@ -602,6 +602,8 @@ def _pop_pending_session_id(
             if call_id in pending_sessions_by_tool_call_id
         )
         if not matched_call_ids:
+            if _contains_historical_tool_result_replay(request=request):
+                return None, frozenset()
             raise ProviderError(
                 code='invalid_tool_result',
                 message='No pending provider session matched the supplied function_call_output items.',
@@ -688,6 +690,17 @@ def _pop_pending_session_id(
         pending_tool_call_session_count=len(pending_sessions_by_tool_call_id),
     )
     return session_id, matched_call_ids
+
+
+def _contains_historical_tool_result_replay(
+    *,
+    request: OpenAIResponsesCreateRequest,
+) -> bool:
+    """Report whether a request mixes unmatched tool outputs with replayed history."""
+    if not isinstance(request.input, list):
+        return False
+
+    return any(isinstance(item, OpenAIResponsesInputMessage) for item in request.input)
 
 
 def _extract_tool_result_call_ids(
