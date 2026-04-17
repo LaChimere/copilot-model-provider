@@ -252,6 +252,74 @@ async def test_request_logging_middleware_emits_structured_completion_event(
 
 
 @pytest.mark.asyncio
+async def test_request_validation_failures_emit_structured_body_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that request-validation failures log structural request details."""
+    import importlib
+
+    errors_module = importlib.import_module('copilot_model_provider.core.errors')
+
+    captured_logger = _CapturedLogger()
+    monkeypatch.setattr(errors_module, '_logger', captured_logger)
+    request_json: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'stream': True,
+        'previous_response_id': 'resp_test',
+        'input': [
+            {
+                'type': 'function_call_output',
+                'call_id': 'call_123',
+                'output': {'status': 'ok'},
+            },
+            {
+                'type': 'reasoning',
+                'summary': [],
+            },
+        ],
+    }
+
+    async with build_async_client(
+        runtime=_FakeModelsRuntime(),
+        model_router=_StaticModelRouter(),
+    ) as client:
+        response = await client.post(
+            '/openai/v1/responses',
+            json=request_json,
+        )
+
+    assert response.status_code == 422
+    validation_events = [
+        fields
+        for event, fields in captured_logger.events
+        if event == 'request_validation_failed'
+    ]
+    assert len(validation_events) == 1
+    assert validation_events[0]['path'] == '/openai/v1/responses'
+    assert validation_events[0]['body_summary'] == {
+        'body_type': 'dict',
+        'body_keys': ['input', 'model', 'previous_response_id', 'stream'],
+        'model': 'gpt-5.4',
+        'stream': True,
+        'previous_response_id': 'resp_test',
+        'instructions_kind': 'none',
+        'input_kind': 'list',
+        'input_item_types': ['function_call_output', 'reasoning'],
+        'input_item_keys': [
+            ['call_id', 'output', 'type'],
+            ['summary', 'type'],
+        ],
+        'tool_output_types': ['dict'],
+        'tool_count': None,
+    }
+    validation_errors = cast('list[dict[str, object]]', validation_events[0]['errors'])
+    assert any(
+        isinstance((loc := error.get('loc')), list) and loc[0:2] == ['body', 'input']
+        for error in validation_errors
+    )
+
+
+@pytest.mark.asyncio
 async def test_internal_health_handler_returns_scaffold_payload() -> None:
     """Verify that the internal health handler reports lazy Copilot state."""
     app = create_app(settings=ProviderSettings(environment='test'))

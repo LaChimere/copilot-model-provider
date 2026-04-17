@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import json
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from copilot.generated.session_events import SessionEvent
 
+import copilot_model_provider.api.anthropic.messages as anthropic_messages_api
 from copilot_model_provider.api.anthropic.protocol import (
     estimate_anthropic_input_tokens,
     estimate_anthropic_output_tokens,
@@ -17,6 +20,7 @@ from copilot_model_provider.core.compat import FieldHandling, ProtocolSurface
 from copilot_model_provider.core.models import (
     AnthropicMessagesCountTokensRequest,
     CanonicalChatRequest,
+    CanonicalToolCall,
     ResolvedRoute,
     RuntimeCompletion,
     RuntimeHealth,
@@ -30,6 +34,24 @@ from tests.harness import build_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+_ANTHROPIC_TOOL_SESSION_ID = 'anthropic-tool-session'
+_ANTHROPIC_TOOL_CALL_ID = 'toolu_123'
+_ANTHROPIC_READ_FILE_ARGUMENTS = {'path': 'README.md'}
+
+
+def _build_read_file_tool_definition() -> dict[str, object]:
+    """Return the Anthropic tool descriptor used for tool-loop coverage."""
+    return {
+        'name': 'read_file',
+        'description': 'Read one file.',
+        'input_schema': {'type': 'object'},
+    }
+
+
+def _extract_tool_use_blocks(*, content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return all ``tool_use`` blocks from one Anthropic message payload."""
+    return [block for block in content if block.get('type') == 'tool_use']
 
 
 class _CapturedLogger:
@@ -187,6 +209,246 @@ class _ZeroUsageAnthropicRuntime(_FakeAnthropicRuntime):
         return RuntimeEventStream(session_id=None, events=_events())
 
 
+class _FakeAnthropicToolRuntime(_FakeAnthropicRuntime):
+    """Fake runtime that pauses on tool use and resumes on tool results."""
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Return tool_use first, then final text after the tool result arrives."""
+        del route
+        self.last_request = request
+        if request.tool_results:
+            return RuntimeCompletion(
+                output_text='Final answer.',
+                session_id=request.session_id,
+                prompt_tokens=12,
+                completion_tokens=2,
+            )
+
+        return RuntimeCompletion(
+            output_text='Thinking...',
+            finish_reason='tool_calls',
+            session_id=_ANTHROPIC_TOOL_SESSION_ID,
+            pending_tool_calls=(
+                CanonicalToolCall(
+                    call_id=_ANTHROPIC_TOOL_CALL_ID,
+                    name='read_file',
+                    arguments=_ANTHROPIC_READ_FILE_ARGUMENTS,
+                ),
+            ),
+            prompt_tokens=8,
+            completion_tokens=2,
+        )
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit a tool_use block during streaming."""
+        del route
+        self.last_request = request
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield a tool-use turn."""
+            for event in (
+                SessionEvent.from_dict(
+                    {
+                        'id': '20000000-0000-0000-0000-000000000001',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.message_delta',
+                        'data': {'deltaContent': 'Think'},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '20000000-0000-0000-0000-000000000002',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'external_tool.requested',
+                        'data': {
+                            'requestId': 'anthropic-tool-request',
+                            'toolName': 'read_file',
+                            'toolCallId': _ANTHROPIC_TOOL_CALL_ID,
+                            'arguments': _ANTHROPIC_READ_FILE_ARGUMENTS,
+                        },
+                    }
+                ),
+            ):
+                yield event
+
+        return RuntimeEventStream(
+            session_id=_ANTHROPIC_TOOL_SESSION_ID, events=_events()
+        )
+
+
+class _FakeAnthropicMultiToolRuntime(_FakeAnthropicRuntime):
+    """Fake runtime that pauses on two tool_use blocks before resuming."""
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Return two tool_use blocks first, then final text after both results."""
+        del route
+        self.last_request = request
+        if request.tool_results:
+            return RuntimeCompletion(
+                output_text='Final multi-tool answer.',
+                session_id=request.session_id,
+                prompt_tokens=16,
+                completion_tokens=3,
+            )
+
+        return RuntimeCompletion(
+            output_text='Thinking...',
+            finish_reason='tool_calls',
+            session_id='anthropic-multi-tool-session',
+            pending_tool_calls=(
+                CanonicalToolCall(
+                    call_id='toolu_readme',
+                    name='read_file',
+                    arguments={'path': 'README.md'},
+                ),
+                CanonicalToolCall(
+                    call_id='toolu_docs',
+                    name='list_dir',
+                    arguments={'path': 'docs'},
+                ),
+            ),
+            prompt_tokens=10,
+            completion_tokens=2,
+        )
+
+    @override
+    async def stream_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeEventStream:
+        """Emit two tool_use blocks during streaming."""
+        del route
+        self.last_request = request
+
+        async def _events() -> AsyncIterator[SessionEvent]:
+            """Yield a multi-tool Anthropic turn."""
+            for event in (
+                SessionEvent.from_dict(
+                    {
+                        'id': '20000000-0000-0000-0000-000000000101',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.message_delta',
+                        'data': {'deltaContent': 'Think'},
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '20000000-0000-0000-0000-000000000102',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'external_tool.requested',
+                        'data': {
+                            'requestId': 'anthropic-tool-request-1',
+                            'toolName': 'read_file',
+                            'toolCallId': 'toolu_readme',
+                            'arguments': {'path': 'README.md'},
+                        },
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '20000000-0000-0000-0000-000000000103',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'external_tool.requested',
+                        'data': {
+                            'requestId': 'anthropic-tool-request-2',
+                            'toolName': 'list_dir',
+                            'toolCallId': 'toolu_docs',
+                            'arguments': {'path': 'docs'},
+                        },
+                    }
+                ),
+                SessionEvent.from_dict(
+                    {
+                        'id': '20000000-0000-0000-0000-000000000104',
+                        'timestamp': '2025-01-01T00:00:00Z',
+                        'type': 'assistant.turn_end',
+                        'data': {'reason': 'tool_calls'},
+                    }
+                ),
+            ):
+                yield event
+
+        return RuntimeEventStream(
+            session_id='anthropic-multi-tool-session',
+            events=_events(),
+        )
+
+
+class _FakeAnthropicReplayHistoryRuntime(_FakeAnthropicRuntime):
+    """Fake runtime that replays one old tool_result before a later tool batch."""
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Return one tool, then a second batch, then a final response."""
+        del route
+        self.last_request = request
+        tool_result_call_ids = [result.call_id for result in request.tool_results]
+        if not tool_result_call_ids:
+            return RuntimeCompletion(
+                output_text='Planning...',
+                finish_reason='tool_calls',
+                session_id='anthropic-replay-session',
+                pending_tool_calls=(
+                    CanonicalToolCall(
+                        call_id='toolu_skill',
+                        name='skill',
+                        arguments={'skill': 'research'},
+                    ),
+                ),
+            )
+        if tool_result_call_ids == ['toolu_skill']:
+            return RuntimeCompletion(
+                output_text='Investigating...',
+                finish_reason='tool_calls',
+                session_id='anthropic-replay-session',
+                pending_tool_calls=(
+                    CanonicalToolCall(
+                        call_id='toolu_readme',
+                        name='read_file',
+                        arguments={'path': 'README.md'},
+                    ),
+                    CanonicalToolCall(
+                        call_id='toolu_docs',
+                        name='list_dir',
+                        arguments={'path': 'docs'},
+                    ),
+                ),
+            )
+        if tool_result_call_ids == ['toolu_readme', 'toolu_docs']:
+            return RuntimeCompletion(
+                output_text='Replay-safe final answer.',
+                session_id=request.session_id,
+            )
+
+        msg = f'Unexpected tool results: {tool_result_call_ids!r}'
+        raise AssertionError(msg)
+
+
 @pytest.mark.asyncio
 async def test_post_messages_returns_anthropic_compatible_payload() -> None:
     """Verify that the route returns the expected non-streaming Anthropic payload."""
@@ -334,17 +596,15 @@ async def test_post_messages_logs_gateway_headers(
         )
 
     assert response.status_code == 200
-    assert captured_logger.events == [
-        (
-            'anthropic_gateway_headers',
-            {
-                'surface': 'messages',
-                'anthropic_version': '2023-06-01',
-                'anthropic_beta': 'tools-2025-01-01',
-                'claude_code_session_id': 'session-123',
-            },
-        )
-    ]
+    assert (
+        'anthropic_gateway_headers',
+        {
+            'surface': 'messages',
+            'anthropic_version': '2023-06-01',
+            'anthropic_beta': 'tools-2025-01-01',
+            'claude_code_session_id': 'session-123',
+        },
+    ) in captured_logger.events
 
 
 @pytest.mark.asyncio
@@ -419,6 +679,377 @@ async def test_post_messages_streams_anthropic_compatible_sse_frames() -> None:
     assert (
         '"usage":{"input_tokens":11,"output_tokens":2}' in message_delta_frame['data']
     )
+
+
+@pytest.mark.asyncio
+async def test_post_messages_supports_tool_result_continuation() -> None:
+    """Verify that non-streaming Anthropic tool_use turns can continue later."""
+    runtime = _FakeAnthropicToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Read the README'}],
+        'tools': [_build_read_file_tool_definition()],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        first_response = await client.post(
+            '/anthropic/v1/messages',
+            json=first_request_body,
+        )
+
+        first_payload = cast('dict[str, Any]', first_response.json())
+        tool_use_block = cast('dict[str, Any]', first_payload['content'][1])
+        follow_up_request_body: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': tool_use_block['id'],
+                            'content': 'README contents',
+                        }
+                    ],
+                }
+            ],
+        }
+        follow_up = await client.post(
+            '/anthropic/v1/messages',
+            json=follow_up_request_body,
+        )
+
+    follow_up_payload = cast('dict[str, Any]', follow_up.json())
+    assert first_response.status_code == 200
+    assert first_payload['stop_reason'] == 'tool_use'
+    assert tool_use_block['type'] == 'tool_use'
+    assert follow_up.status_code == 200
+    assert follow_up_payload['content'] == [{'type': 'text', 'text': 'Final answer.'}]
+    assert runtime.last_request is not None
+    assert runtime.last_request.session_id == _ANTHROPIC_TOOL_SESSION_ID
+    assert [result.model_dump() for result in runtime.last_request.tool_results] == [
+        {
+            'call_id': _ANTHROPIC_TOOL_CALL_ID,
+            'output_text': 'README contents',
+            'is_error': False,
+            'error_text': None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_messages_continuation_expires_after_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that abandoned Anthropic continuations expire instead of leaking forever."""
+    monkeypatch.setattr(
+        anthropic_messages_api,
+        '_PENDING_TOOL_USE_SESSION_TTL_SECONDS',
+        0.01,
+    )
+    runtime = _FakeAnthropicToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Read the README'}],
+        'tools': [_build_read_file_tool_definition()],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        first_response = await client.post(
+            '/anthropic/v1/messages',
+            json=first_request_body,
+        )
+
+        first_payload = cast('dict[str, Any]', first_response.json())
+        tool_use_block = cast('dict[str, Any]', first_payload['content'][1])
+        await asyncio.sleep(0.05)
+        follow_up_request_body: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': tool_use_block['id'],
+                            'content': 'README contents',
+                        }
+                    ],
+                }
+            ],
+        }
+        follow_up = await client.post(
+            '/anthropic/v1/messages',
+            json=follow_up_request_body,
+        )
+
+    follow_up_payload = cast('dict[str, Any]', follow_up.json())
+    assert first_response.status_code == 200
+    assert follow_up.status_code == 400
+    assert follow_up_payload['error']['message'] == (
+        'No pending provider session matched the supplied tool_result blocks.'
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_messages_require_full_tool_result_batch() -> None:
+    """Verify that Anthropic continuations must submit the full pending tool batch."""
+    runtime = _FakeAnthropicMultiToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Inspect the repo'}],
+        'tools': [
+            _build_read_file_tool_definition(),
+            {
+                'name': 'list_dir',
+                'description': 'List one directory.',
+                'input_schema': {'type': 'object'},
+            },
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        partial_follow_up_request: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': 'toolu_readme',
+                            'content': 'README contents',
+                        }
+                    ],
+                }
+            ],
+        }
+        full_follow_up_request: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': 'toolu_readme',
+                            'content': 'README contents',
+                        },
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': 'toolu_docs',
+                            'content': 'docs/',
+                        },
+                    ],
+                }
+            ],
+        }
+        first_response = await client.post(
+            '/anthropic/v1/messages',
+            json=first_request_body,
+        )
+
+        first_payload = cast('dict[str, Any]', first_response.json())
+        tool_use_blocks = _extract_tool_use_blocks(
+            content=cast('list[dict[str, Any]]', first_payload['content'])
+        )
+        partial_follow_up = await client.post(
+            '/anthropic/v1/messages',
+            json=partial_follow_up_request,
+        )
+        full_follow_up = await client.post(
+            '/anthropic/v1/messages',
+            json=full_follow_up_request,
+        )
+
+    assert first_response.status_code == 200
+    assert [block['id'] for block in tool_use_blocks] == ['toolu_readme', 'toolu_docs']
+    assert partial_follow_up.status_code == 400
+    partial_error_payload = cast('dict[str, Any]', partial_follow_up.json())
+    assert partial_error_payload['type'] == 'error'
+    assert partial_error_payload['error']['message'] == (
+        'Tool result blocks must provide the full pending tool-result batch.'
+    )
+    assert full_follow_up.status_code == 200
+    assert runtime.last_request is not None
+    assert runtime.last_request.session_id == 'anthropic-multi-tool-session'
+    assert [result.call_id for result in runtime.last_request.tool_results] == [
+        'toolu_readme',
+        'toolu_docs',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_messages_ignores_historical_tool_results_during_replay_continuation() -> (
+    None
+):
+    """Verify that Anthropic replay continuations keep only the current tool batch."""
+    runtime = _FakeAnthropicReplayHistoryRuntime()
+    async with build_async_client(runtime=runtime) as client:
+        first_request_body: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [{'role': 'user', 'content': 'Research the repo'}],
+            'tools': [
+                {
+                    'name': 'skill',
+                    'description': 'Run one skill.',
+                    'input_schema': {'type': 'object'},
+                },
+                _build_read_file_tool_definition(),
+                {
+                    'name': 'list_dir',
+                    'description': 'List one directory.',
+                    'input_schema': {'type': 'object'},
+                },
+            ],
+        }
+        first_response = await client.post(
+            '/anthropic/v1/messages',
+            json=first_request_body,
+        )
+        first_payload = cast('dict[str, Any]', first_response.json())
+        first_tool_use = _extract_tool_use_blocks(
+            content=cast('list[dict[str, Any]]', first_payload['content'])
+        )[0]
+
+        second_request_body: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': first_tool_use['id'],
+                            'content': 'skill finished',
+                        }
+                    ],
+                }
+            ],
+        }
+        second_response = await client.post(
+            '/anthropic/v1/messages',
+            json=second_request_body,
+        )
+        second_payload = cast('dict[str, Any]', second_response.json())
+        second_tool_uses = _extract_tool_use_blocks(
+            content=cast('list[dict[str, Any]]', second_payload['content'])
+        )
+
+        third_request_body: dict[str, object] = {
+            'model': 'claude-sonnet-4-20250514',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': first_tool_use['id'],
+                            'content': 'skill finished',
+                        },
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': 'toolu_readme',
+                            'content': 'README contents',
+                        },
+                        {
+                            'type': 'tool_result',
+                            'tool_use_id': 'toolu_docs',
+                            'content': 'docs/',
+                        },
+                    ],
+                }
+            ],
+        }
+        third_response = await client.post(
+            '/anthropic/v1/messages',
+            json=third_request_body,
+        )
+
+    third_payload = cast('dict[str, Any]', third_response.json())
+    assert first_response.status_code == 200
+    assert first_tool_use['id'] == 'toolu_skill'
+    assert second_response.status_code == 200
+    assert [block['id'] for block in second_tool_uses] == ['toolu_readme', 'toolu_docs']
+    assert third_response.status_code == 200
+    assert third_payload['content'] == [
+        {'type': 'text', 'text': 'Replay-safe final answer.'}
+    ]
+    assert runtime.last_request is not None
+    assert [result.call_id for result in runtime.last_request.tool_results] == [
+        'toolu_readme',
+        'toolu_docs',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_messages_streaming_emits_tool_use_blocks() -> None:
+    """Verify that Anthropic streaming can surface a tool_use turn."""
+    runtime = _FakeAnthropicToolRuntime()
+    request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'stream': True,
+        'messages': [{'role': 'user', 'content': 'Read the README'}],
+        'tools': [_build_read_file_tool_definition()],
+    }
+    async with (
+        build_async_client(runtime=runtime) as client,
+        client.stream(
+            'POST',
+            '/anthropic/v1/messages',
+            json=request_body,
+        ) as response,
+    ):
+        payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+    assert response.status_code == 200
+    assert 'event: content_block_start' in payload
+    assert '"type":"tool_use"' in payload
+    assert f'"id":"{_ANTHROPIC_TOOL_CALL_ID}"' in payload
+    assert '"stop_reason":"tool_use"' in payload
+
+
+@pytest.mark.asyncio
+async def test_post_messages_streaming_emits_multiple_tool_use_blocks() -> None:
+    """Verify that Anthropic streaming can surface multiple tool_use blocks."""
+    runtime = _FakeAnthropicMultiToolRuntime()
+    request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'stream': True,
+        'messages': [{'role': 'user', 'content': 'Inspect the repo'}],
+        'tools': [
+            _build_read_file_tool_definition(),
+            {
+                'name': 'list_dir',
+                'description': 'List one directory.',
+                'input_schema': {'type': 'object'},
+            },
+        ],
+    }
+    async with (
+        build_async_client(runtime=runtime) as client,
+        client.stream(
+            'POST',
+            '/anthropic/v1/messages',
+            json=request_body,
+        ) as response,
+    ):
+        payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+    assert response.status_code == 200
+    assert payload.count('"type":"tool_use"') == 2
+    assert '"id":"toolu_readme"' in payload
+    assert '"id":"toolu_docs"' in payload
+    assert '"stop_reason":"tool_use"' in payload
+
+    frames = parse_sse_frames(payload=payload)
+    content_block_frames = [
+        frame
+        for frame in frames
+        if frame.get('event') in {'content_block_start', 'content_block_stop'}
+    ]
+    frame_indexes = [
+        json.loads(frame['data'])['index'] for frame in content_block_frames
+    ]
+
+    assert frame_indexes == [0, 0, 1, 1, 2, 2]
 
 
 def test_estimate_anthropic_output_tokens_uses_count_tokens_heuristic() -> None:

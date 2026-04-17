@@ -8,18 +8,22 @@ import pytest
 from copilot.generated.session_events import ErrorClass, SessionEvent
 
 import copilot_model_provider.streaming.translators as streaming_translators
+from copilot_model_provider.core.models import CanonicalToolCall
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantTurnCompleteEvent,
     AssistantUsageEvent,
     StreamFinishReason,
     StreamingErrorEvent,
+    ToolCallRequestedEvent,
+    ToolCallsRequestedEvent,
 )
 from copilot_model_provider.streaming.translators import (
     build_finish_chunk,
     build_text_delta_chunk,
     translate_session_event,
     translate_session_event_to_openai_chunks,
+    translate_session_events,
 )
 
 
@@ -77,6 +81,106 @@ def test_translate_session_event_ignores_structured_content_in_favor_of_text() -
     )
 
     assert stream_event == AssistantTextDeltaEvent(text='Whole message')
+
+
+def test_translate_session_event_maps_aggregate_tool_requests_to_multi_tool_event() -> (
+    None
+):
+    """Verify that aggregated assistant messages can still surface batched tool calls."""
+    stream_event = translate_session_event(
+        event=_build_session_event(
+            event_type='assistant.message',
+            data={
+                'content': 'Whole message',
+                'toolRequests': [
+                    {
+                        'toolCallId': 'call_readme',
+                        'name': 'read_file',
+                        'arguments': {'path': 'README.md'},
+                    },
+                    {
+                        'toolCallId': 'call_docs',
+                        'name': 'list_dir',
+                        'arguments': {'path': 'docs'},
+                    },
+                ],
+            },
+        )
+    )
+
+    assert stream_event == ToolCallsRequestedEvent(
+        tool_calls=(
+            CanonicalToolCall(
+                call_id='call_readme',
+                name='read_file',
+                arguments={'path': 'README.md'},
+            ),
+            CanonicalToolCall(
+                call_id='call_docs',
+                name='list_dir',
+                arguments={'path': 'docs'},
+            ),
+        )
+    )
+
+
+def test_translate_session_event_to_openai_chunks_preserves_text_from_mixed_aggregate_message() -> (
+    None
+):
+    """Verify that mixed aggregate assistant messages still expose their text chunk."""
+    chunks = translate_session_event_to_openai_chunks(
+        event=_build_session_event(
+            event_type='assistant.message',
+            data={
+                'content': 'Whole message',
+                'toolRequests': [
+                    {
+                        'toolCallId': 'call_readme',
+                        'name': 'read_file',
+                        'arguments': {'path': 'README.md'},
+                    }
+                ],
+            },
+        ),
+        completion_id='chatcmpl-test',
+        model='gpt-5.4',
+        emit_role=True,
+    )
+
+    assert [chunk.choices[0].delta.content for chunk in chunks] == ['Whole message']
+    assert chunks[0].choices[0].delta.role == 'assistant'
+
+
+def test_translate_session_events_can_suppress_aggregate_text_while_preserving_tools() -> (
+    None
+):
+    """Verify that aggregate assistant-message text can be suppressed without losing tools."""
+    stream_events = translate_session_events(
+        event=_build_session_event(
+            event_type='assistant.message',
+            data={
+                'content': 'Whole message',
+                'toolRequests': [
+                    {
+                        'toolCallId': 'call_readme',
+                        'name': 'read_file',
+                        'arguments': {'path': 'README.md'},
+                    }
+                ],
+            },
+        ),
+        suppress_aggregate_message_text=True,
+    )
+
+    assert stream_events == (
+        ToolCallRequestedEvent(
+            tool_call=CanonicalToolCall(
+                call_id='call_readme',
+                name='read_file',
+                arguments={'path': 'README.md'},
+            )
+        ),
+    )
 
 
 @pytest.mark.parametrize(

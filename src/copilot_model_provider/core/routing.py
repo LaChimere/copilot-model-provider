@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, override, runtime_checkable
 
+import structlog
+
 from copilot_model_provider.core.catalog import build_live_model_catalog_from_models
 from copilot_model_provider.core.errors import ProviderError
 from copilot_model_provider.core.models import (
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
 
 DEFAULT_MODEL_CATALOG_TTL_SECONDS = 30.0
 DEFAULT_AUTH_CONTEXT_CACHE_KEY = '<default-auth-context>'
+_logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -158,10 +161,18 @@ class ModelRouter(ModelRouterProtocol):
                 status_code=404,
             )
 
-        return ResolvedRoute(
+        route = ResolvedRoute(
             runtime=entry.runtime,
             runtime_model_id=entry.runtime_model_id,
         )
+        _logger.info(
+            'model_router_model_resolved',
+            model_id=model_id,
+            route_runtime=route.runtime,
+            route_model_id=route.runtime_model_id,
+            auth_context_cache_key=self._build_cache_key(runtime_auth_token),
+        )
+        return route
 
     async def _build_model_catalog(
         self,
@@ -174,6 +185,11 @@ class ModelRouter(ModelRouterProtocol):
         self._prune_expired_cache(now)
         cached_entry = self._catalog_cache.get(cache_key)
         if cached_entry is not None and cached_entry.expires_at > now:
+            _logger.info(
+                'model_router_catalog_cache_hit',
+                auth_context_cache_key=cache_key,
+                model_count=len(cached_entry.catalog.list_entries()),
+            )
             return cached_entry.catalog
 
         build_lock = self._catalog_build_locks.setdefault(cache_key, asyncio.Lock())
@@ -182,6 +198,11 @@ class ModelRouter(ModelRouterProtocol):
             self._prune_expired_cache(now)
             cached_entry = self._catalog_cache.get(cache_key)
             if cached_entry is not None and cached_entry.expires_at > now:
+                _logger.info(
+                    'model_router_catalog_cache_hit',
+                    auth_context_cache_key=cache_key,
+                    model_count=len(cached_entry.catalog.list_entries()),
+                )
                 return cached_entry.catalog
 
             models = await self._runtime.list_models(
@@ -195,6 +216,12 @@ class ModelRouter(ModelRouterProtocol):
             self._catalog_cache[cache_key] = _CatalogCacheEntry(
                 catalog=catalog,
                 expires_at=self._time_factory() + self._catalog_ttl_seconds,
+            )
+            _logger.info(
+                'model_router_catalog_refreshed',
+                auth_context_cache_key=cache_key,
+                model_count=len(catalog.list_entries()),
+                catalog_ttl_seconds=self._catalog_ttl_seconds,
             )
             return catalog
 

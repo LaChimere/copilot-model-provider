@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from copilot_model_provider.core.models import (
+    CanonicalToolCall,
     OpenAIResponsesCreateRequest,
+    OpenAIResponsesFunctionCallOutputItem,
+    OpenAIResponsesFunctionCallReplayItem,
+    OpenAIResponsesInputContentPart,
     OpenAIResponsesInputMessage,
-    OpenAIResponsesInputTextPart,
+    OpenAIResponsesOutputMessage,
     RuntimeCompletion,
 )
 from copilot_model_provider.core.responses import (
@@ -27,7 +33,7 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
             OpenAIResponsesInputMessage(
                 role='developer',
                 content=[
-                    OpenAIResponsesInputTextPart(
+                    OpenAIResponsesInputContentPart(
                         type='input_text',
                         text='Developer context',
                     )
@@ -36,7 +42,7 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
             OpenAIResponsesInputMessage(
                 role='user',
                 content=[
-                    OpenAIResponsesInputTextPart(
+                    OpenAIResponsesInputContentPart(
                         type='input_text',
                         text='User prompt',
                     )
@@ -55,10 +61,36 @@ def test_normalize_openai_responses_request_maps_instructions_and_developer_mess
     assert normalized.request_id == 'req-123'
     assert normalized.conversation_id == 'conversation-1'
     assert normalized.stream is True
+    assert normalized.tool_routing_policy.mode == 'none'
     assert [message.model_dump() for message in normalized.messages] == [
         {'role': 'system', 'content': 'Top-level instructions'},
         {'role': 'system', 'content': 'Developer context'},
         {'role': 'user', 'content': 'User prompt'},
+    ]
+
+
+def test_normalize_openai_responses_request_ignores_non_text_content_parts() -> None:
+    """Verify that non-text Responses content parts do not fail normalization."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesInputMessage(
+                role='user',
+                content=[
+                    OpenAIResponsesInputContentPart(
+                        type='input_text', text='Describe this'
+                    ),
+                    OpenAIResponsesInputContentPart(type='input_image'),
+                    OpenAIResponsesInputContentPart(type='input_file'),
+                ],
+            )
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(request=request)
+
+    assert [message.model_dump() for message in normalized.messages] == [
+        {'role': 'user', 'content': 'Describe this'}
     ]
 
 
@@ -79,7 +111,8 @@ def test_build_openai_responses_response_from_completion_maps_usage() -> None:
     assert response.id == 'resp_req-456'
     assert response.status == 'completed'
     assert response.model == 'default'
-    assert response.output[0].content[0].text == 'Hi from runtime.'
+    output_message = cast('OpenAIResponsesOutputMessage', response.output[0])
+    assert output_message.content[0].text == 'Hi from runtime.'
     assert response.usage is not None
     assert response.usage.model_dump() == {
         'input_tokens': 11,
@@ -87,6 +120,237 @@ def test_build_openai_responses_response_from_completion_maps_usage() -> None:
         'total_tokens': 18,
     }
     assert response.conversation is None
+
+
+def test_build_openai_responses_response_from_completion_renders_multiple_function_calls() -> (
+    None
+):
+    """Verify that runtime completions can expose multiple function-call items."""
+    request = OpenAIResponsesCreateRequest(model='default', input='Hello')
+    response = build_openai_responses_response_from_completion(
+        request=request,
+        completion=RuntimeCompletion(
+            output_text='Plan:',
+            finish_reason='tool_calls',
+            pending_tool_calls=(
+                CanonicalToolCall(
+                    call_id='call_readme',
+                    name='read_file',
+                    arguments={'path': 'README.md'},
+                ),
+                CanonicalToolCall(
+                    call_id='call_docs',
+                    name='list_dir',
+                    arguments={'path': 'docs'},
+                ),
+            ),
+        ),
+        response_id=build_response_id(request_id='req-multi-tool'),
+    )
+
+    assert [item['type'] for item in response.model_dump()['output']] == [
+        'message',
+        'function_call',
+        'function_call',
+    ]
+    assert [item['call_id'] for item in response.model_dump()['output'][1:]] == [
+        'call_readme',
+        'call_docs',
+    ]
+
+
+def test_normalize_openai_responses_request_preserves_web_search_and_custom_tools() -> (
+    None
+):
+    """Verify that non-function Responses tools survive canonical normalization."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input='Research this topic',
+        tools=[
+            {'type': 'web_search'},
+            {
+                'type': 'custom',
+                'name': 'apply_patch',
+                'description': 'Apply a patch to local files.',
+            },
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(request=request)
+
+    assert [tool.name for tool in normalized.tool_definitions] == [
+        'web_search',
+        'apply_patch',
+    ]
+    assert normalized.tool_definitions[0].description
+    assert normalized.tool_definitions[0].parameters == {
+        'type': 'object',
+        'properties': {
+            'query': {
+                'type': 'string',
+                'description': 'Search query.',
+            }
+        },
+        'required': ['query'],
+        'additionalProperties': False,
+    }
+    assert normalized.tool_definitions[1].description == 'Apply a patch to local files.'
+    assert normalized.tool_routing_policy.mode == 'client_passthrough'
+    assert normalized.tool_routing_policy.hint is not None
+    assert normalized.tool_routing_policy.hint.surface == 'openai_responses'
+    assert normalized.tool_routing_policy.excluded_builtin_tools == (
+        'web_search',
+        'web_fetch',
+    )
+    assert normalized.tool_routing_policy.guidance is not None
+
+
+def test_normalize_openai_responses_request_preserves_routing_hints_on_continuation() -> (
+    None
+):
+    """Verify that continuation turns preserve the shared routing-policy hints."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_123',
+                output='Done',
+            )
+        ],
+        previous_response_id='resp_123',
+        tool_choice='required',
+        parallel_tool_calls=True,
+    )
+
+    normalized = normalize_openai_responses_request(
+        request=request,
+        session_id='provider-session-123',
+    )
+
+    assert normalized.tool_results[0].call_id == 'call_123'
+    assert normalized.tool_routing_policy.mode == 'client_passthrough'
+    assert normalized.tool_routing_policy.hint is not None
+    assert normalized.tool_routing_policy.hint.tool_choice == 'required'
+    assert normalized.tool_routing_policy.hint.parallel_tool_calls is True
+
+
+def test_normalize_openai_responses_request_ignores_replayed_function_call_items() -> (
+    None
+):
+    """Verify that replayed function-call items do not block tool-result normalization."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesInputMessage(
+                role='assistant',
+                content='I will use the read_file tool.',
+            ),
+            OpenAIResponsesFunctionCallReplayItem(
+                call_id='call_123',
+                name='read_file',
+                arguments='{"path":"README.md"}',
+            ),
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_123',
+                output='README contents',
+            ),
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(
+        request=request,
+        session_id='provider-session-123',
+    )
+
+    assert [message.model_dump() for message in normalized.messages] == [
+        {'role': 'assistant', 'content': 'I will use the read_file tool.'}
+    ]
+    assert [result.model_dump() for result in normalized.tool_results] == [
+        {
+            'call_id': 'call_123',
+            'output_text': 'README contents',
+            'is_error': False,
+            'error_text': None,
+        }
+    ]
+
+
+def test_normalize_openai_responses_request_filters_historical_tool_results() -> None:
+    """Verify that continuation normalization can ignore replayed historical outputs."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input=[
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_old',
+                output='previous result',
+            ),
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_current_1',
+                output='current result 1',
+            ),
+            OpenAIResponsesFunctionCallOutputItem(
+                call_id='call_current_2',
+                output='current result 2',
+            ),
+        ],
+    )
+
+    normalized = normalize_openai_responses_request(
+        request=request,
+        session_id='provider-session-123',
+        accepted_tool_result_call_ids={'call_current_1', 'call_current_2'},
+    )
+
+    assert [result.model_dump() for result in normalized.tool_results] == [
+        {
+            'call_id': 'call_current_1',
+            'output_text': 'current result 1',
+            'is_error': False,
+            'error_text': None,
+        },
+        {
+            'call_id': 'call_current_2',
+            'output_text': 'current result 2',
+            'is_error': False,
+            'error_text': None,
+        },
+    ]
+
+
+def test_build_openai_responses_response_from_completion_normalizes_web_search_tools() -> (
+    None
+):
+    """Verify that Responses payloads expose web search as a named function tool."""
+    request = OpenAIResponsesCreateRequest(
+        model='default',
+        input='Hello',
+        tools=[{'type': 'web_search'}],
+    )
+
+    response = build_openai_responses_response_from_completion(
+        request=request,
+        completion=RuntimeCompletion(output_text='Hi from runtime.'),
+        response_id=build_response_id(request_id='req-web-search'),
+    )
+
+    assert response.tools == [
+        {
+            'type': 'function',
+            'name': 'web_search',
+            'description': 'Search the web for recent information and official sources.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {
+                        'type': 'string',
+                        'description': 'Search query.',
+                    }
+                },
+                'required': ['query'],
+                'additionalProperties': False,
+            },
+        }
+    ]
 
 
 def test_build_openai_responses_response_from_text_can_render_in_progress_payload() -> (

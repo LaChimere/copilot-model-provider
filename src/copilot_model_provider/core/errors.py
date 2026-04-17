@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+import structlog
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from fastapi import FastAPI, Request
+
+_logger = structlog.get_logger(__name__)
 
 
 class ErrorDetail(BaseModel):
@@ -156,4 +160,140 @@ def install_error_handlers(app: FastAPI) -> None:
         ).model_dump(mode='json')
         return JSONResponse(status_code=error.status_code, content=payload)
 
+    async def _handle_request_validation_error(
+        request: Request,
+        error: Exception,
+    ) -> JSONResponse:
+        """Log request-validation failures and preserve FastAPI's 422 response body."""
+        if not isinstance(error, RequestValidationError):
+            msg = f'Unexpected exception type: {type(error)!r}'
+            raise TypeError(msg)
+
+        _logger.info(
+            'request_validation_failed',
+            method=request.method,
+            path=request.url.path,
+            query=request.url.query or None,
+            errors=_summarize_validation_errors(
+                errors=cast('list[object]', error.errors())
+            ),
+            body_summary=_summarize_validation_body(
+                path=request.url.path,
+                body=error.body,
+            ),
+        )
+        return JSONResponse(
+            status_code=422,
+            content={'detail': error.errors()},
+        )
+
     app.add_exception_handler(ProviderError, _handle_provider_error)
+    app.add_exception_handler(RequestValidationError, _handle_request_validation_error)
+
+
+def _summarize_validation_errors(*, errors: list[object]) -> list[dict[str, object]]:
+    """Return a compact, log-friendly summary of validation errors."""
+    summarized_errors: list[dict[str, object]] = []
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        typed_error = cast('dict[str, object]', error)
+        loc = typed_error.get('loc')
+        loc_summary: list[object]
+        if isinstance(loc, list):
+            loc_summary = list(cast('list[object]', loc))
+        elif isinstance(loc, tuple):
+            loc_summary = [*loc]
+        else:
+            loc_summary = []
+        summarized_errors.append(
+            {
+                'type': typed_error.get('type'),
+                'loc': loc_summary,
+                'msg': typed_error.get('msg'),
+            }
+        )
+    return summarized_errors
+
+
+def _summarize_validation_body(*, path: str, body: object) -> dict[str, object]:
+    """Return a structural summary of the rejected request body."""
+    if path == '/openai/v1/responses':
+        return _summarize_openai_responses_validation_body(body=body)
+    return _summarize_generic_validation_body(body=body)
+
+
+def _summarize_openai_responses_validation_body(*, body: object) -> dict[str, object]:
+    """Return a safe structural summary for invalid Responses request bodies."""
+    summary = _summarize_generic_validation_body(body=body)
+    if not isinstance(body, dict):
+        return summary
+
+    typed_body = cast('dict[str, object]', body)
+    input_value = typed_body.get('input')
+    input_item_types: list[object] = []
+    input_item_keys: list[list[str]] = []
+    tool_output_types: list[str | None] = []
+    if isinstance(input_value, list):
+        for item in cast('list[object]', input_value)[:20]:
+            if not isinstance(item, dict):
+                input_item_types.append(type(item).__name__)
+                continue
+            typed_item = cast('dict[str, object]', item)
+            input_item_types.append(typed_item.get('type'))
+            input_item_keys.append(sorted(typed_item))
+            if typed_item.get('type') == 'function_call_output':
+                output_value = typed_item.get('output')
+                tool_output_types.append(type(output_value).__name__)
+
+    tools_value = typed_body.get('tools')
+    input_kind = (
+        'list' if isinstance(input_value, list) else _classify_body_shape(input_value)
+    )
+    summary.update(
+        {
+            'model': typed_body.get('model'),
+            'stream': typed_body.get('stream'),
+            'previous_response_id': typed_body.get('previous_response_id'),
+            'instructions_kind': _classify_body_shape(typed_body.get('instructions')),
+            'input_kind': input_kind,
+            'input_item_types': input_item_types,
+            'input_item_keys': input_item_keys,
+            'tool_output_types': tool_output_types,
+            'tool_count': len(cast('list[object]', tools_value))
+            if isinstance(tools_value, list)
+            else None,
+        }
+    )
+    return summary
+
+
+def _summarize_generic_validation_body(*, body: object) -> dict[str, object]:
+    """Return a generic summary for invalid request bodies."""
+    if isinstance(body, dict):
+        typed_body = cast('dict[str, object]', body)
+        return {
+            'body_type': 'dict',
+            'body_keys': sorted(typed_body),
+        }
+    if isinstance(body, list):
+        return {
+            'body_type': 'list',
+            'body_length': len(cast('list[object]', body)),
+        }
+    if body is None:
+        return {'body_type': 'none'}
+    return {'body_type': type(body).__name__}
+
+
+def _classify_body_shape(value: object) -> str:
+    """Classify the top-level shape of one body field for diagnostic logging."""
+    if value is None:
+        return 'none'
+    if isinstance(value, str):
+        return 'string'
+    if isinstance(value, list):
+        return 'list'
+    if isinstance(value, dict):
+        return 'dict'
+    return type(value).__name__

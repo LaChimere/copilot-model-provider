@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import math
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Sequence
 
 from copilot_model_provider.core.models import (
     AnthropicContentBlockDeltaEvent,
@@ -26,12 +29,17 @@ from copilot_model_provider.core.models import (
     AnthropicStopReason,
     AnthropicTextContentBlock,
     AnthropicTextDelta,
+    AnthropicToolUseContentBlock,
     AnthropicUsage,
     CanonicalChatMessage,
     CanonicalChatRequest,
+    CanonicalToolCall,
+    CanonicalToolDefinition,
+    CanonicalToolResult,
     OpenAIModelCard,
     OpenAIModelListResponse,
     RuntimeCompletion,
+    derive_tool_routing_policy,
 )
 
 type AnthropicTokenCountableRequest = (
@@ -39,23 +47,48 @@ type AnthropicTokenCountableRequest = (
 )
 
 _DISPLAY_NAME_ACRONYM_MAX_LENGTH = 3
+_STOP_REASON_MAP: dict[str, AnthropicStopReason] = {
+    'length': 'max_tokens',
+    'max_tokens': 'max_tokens',
+    'tool_calls': 'tool_use',
+    'tool_use': 'tool_use',
+    'stop_sequence': 'stop_sequence',
+}
 
 
 def normalize_anthropic_messages_request(
     *,
     request: AnthropicMessagesCreateRequest,
     request_id: str | None = None,
+    session_id: str | None = None,
     runtime_auth_token: str | None = None,
+    accepted_tool_result_ids: Collection[str] | None = None,
 ) -> CanonicalChatRequest:
     """Normalize an Anthropic Messages request into the canonical provider shape."""
     messages: list[CanonicalChatMessage] = []
+    tool_results: list[CanonicalToolResult] = []
+    tool_definitions = _normalize_anthropic_tool_definitions(tools=request.tools)
     messages.extend(_normalize_anthropic_system_blocks(value=request.system))
-    messages.extend(_normalize_anthropic_messages(value=request.messages))
+    normalized_messages, normalized_tool_results = _normalize_anthropic_messages(
+        value=request.messages,
+        accepted_tool_result_ids=accepted_tool_result_ids,
+    )
+    messages.extend(normalized_messages)
+    tool_results.extend(normalized_tool_results)
     return CanonicalChatRequest(
         request_id=request_id,
+        session_id=session_id,
         runtime_auth_token=runtime_auth_token,
         model_id=request.model,
         messages=messages,
+        tool_definitions=tool_definitions,
+        tool_results=tool_results,
+        tool_routing_policy=derive_tool_routing_policy(
+            surface='anthropic_messages',
+            session_id=session_id,
+            tool_definitions=tool_definitions,
+            tool_results=tool_results,
+        ),
         stream=request.stream,
     )
 
@@ -66,15 +99,17 @@ def build_anthropic_message_response_from_completion(
     completion: RuntimeCompletion,
     message_id: str,
 ) -> AnthropicMessageResponse:
-    """Translate a runtime completion into a minimal Anthropic Messages payload."""
+    """Translate a runtime completion into an Anthropic Messages payload."""
     return build_anthropic_message_response_from_text(
         model=request.model,
         output_text=completion.output_text,
+        pending_tool_calls=completion.pending_tool_calls,
         message_id=message_id,
         usage=build_anthropic_usage(
             prompt_tokens=completion.prompt_tokens,
             completion_tokens=completion.completion_tokens,
         ),
+        stop_reason='tool_use' if completion.pending_tool_calls else 'end_turn',
     )
 
 
@@ -117,14 +152,19 @@ def build_anthropic_message_response_from_text(
     *,
     model: str,
     output_text: str | None,
+    pending_tool_calls: Sequence[CanonicalToolCall] = (),
     message_id: str,
     usage: AnthropicUsage | None = None,
     stop_reason: str | None = 'end_turn',
 ) -> AnthropicMessageResponse:
-    """Build a minimal Anthropic response body from assistant text."""
-    content: list[AnthropicTextContentBlock] = []
+    """Build an Anthropic response body from assistant text and tool-use blocks."""
+    content: list[AnthropicTextContentBlock | AnthropicToolUseContentBlock] = []
     if output_text is not None:
         content.append(AnthropicTextContentBlock(text=output_text))
+    content.extend(
+        build_anthropic_tool_use_content_block(tool_call=pending_tool_call)
+        for pending_tool_call in pending_tool_calls
+    )
     return AnthropicMessageResponse(
         id=message_id,
         model=model,
@@ -132,28 +172,6 @@ def build_anthropic_message_response_from_text(
         stop_reason=_normalize_stop_reason(stop_reason=stop_reason),
         usage=usage,
     )
-
-
-def _build_anthropic_max_input_tokens(*, model: OpenAIModelCard) -> int | None:
-    """Return Anthropic ``max_input_tokens`` derived from Copilot metadata.
-
-    Args:
-        model: Shared model-card entry produced by the live catalog router.
-
-    Returns:
-        The runtime-reported maximum context window for the model when available,
-        otherwise ``None`` so the field is omitted from Anthropic responses.
-
-    """
-    metadata = model.copilot
-    if metadata is None or metadata.capabilities is None:
-        return None
-
-    limits = metadata.capabilities.limits
-    if limits is None:
-        return None
-
-    return limits.max_context_window_tokens
 
 
 def build_anthropic_message_start_event(
@@ -174,24 +192,31 @@ def build_anthropic_message_start_event(
     )
 
 
-def build_anthropic_content_block_start_event() -> AnthropicContentBlockStartEvent:
-    """Build the event that starts the first Anthropic text content block."""
-    return AnthropicContentBlockStartEvent(
-        content_block=AnthropicTextContentBlock(text='')
-    )
+def build_anthropic_content_block_start_event(
+    *,
+    content_block: AnthropicTextContentBlock | AnthropicToolUseContentBlock,
+    index: int = 0,
+) -> AnthropicContentBlockStartEvent:
+    """Build the event that starts one Anthropic content block."""
+    return AnthropicContentBlockStartEvent(index=index, content_block=content_block)
 
 
 def build_anthropic_content_block_delta_event(
     *,
     text: str,
+    index: int = 0,
 ) -> AnthropicContentBlockDeltaEvent:
     """Build one Anthropic text-delta event."""
-    return AnthropicContentBlockDeltaEvent(delta=AnthropicTextDelta(text=text))
+    return AnthropicContentBlockDeltaEvent(
+        index=index, delta=AnthropicTextDelta(text=text)
+    )
 
 
-def build_anthropic_content_block_stop_event() -> AnthropicContentBlockStopEvent:
-    """Build the event that closes the first Anthropic text content block."""
-    return AnthropicContentBlockStopEvent()
+def build_anthropic_content_block_stop_event(
+    *, index: int = 0
+) -> AnthropicContentBlockStopEvent:
+    """Build the event that closes the current Anthropic content block."""
+    return AnthropicContentBlockStopEvent(index=index)
 
 
 def build_anthropic_message_delta_event(
@@ -218,6 +243,23 @@ def build_anthropic_message_id() -> str:
     return f'msg_{uuid4().hex}'
 
 
+def build_anthropic_tool_use_content_block(
+    *,
+    tool_call: CanonicalToolCall,
+) -> AnthropicToolUseContentBlock:
+    """Build an Anthropic tool-use content block from one runtime tool call."""
+    raw_arguments: object = tool_call.arguments
+    return AnthropicToolUseContentBlock(
+        id=tool_call.call_id,
+        name=tool_call.name,
+        input=(
+            dict(cast('dict[str, Any]', raw_arguments))
+            if isinstance(raw_arguments, dict)
+            else {}
+        ),
+    )
+
+
 def estimate_anthropic_input_tokens(
     *,
     request: AnthropicTokenCountableRequest,
@@ -233,16 +275,7 @@ def estimate_anthropic_input_tokens(
 
 
 def estimate_anthropic_output_tokens(*, output_text: str) -> int:
-    """Estimate Anthropic output tokens from assistant text using the same heuristic.
-
-    Args:
-        output_text: Assistant text emitted by the provider during one turn.
-
-    Returns:
-        A best-effort token estimate derived from UTF-8 byte length and the same
-        ``/4`` heuristic used by the count-tokens compatibility helper.
-
-    """
+    """Estimate Anthropic output tokens from assistant text using the same heuristic."""
     return max(1, math.ceil(len(output_text.encode('utf-8')) / 4))
 
 
@@ -251,17 +284,7 @@ def build_anthropic_usage(
     prompt_tokens: int | None,
     completion_tokens: int | None,
 ) -> AnthropicUsage | None:
-    """Build an Anthropic usage payload when token accounting is available.
-
-    Args:
-        prompt_tokens: Input token count, exact or estimated.
-        completion_tokens: Output token count, exact or estimated.
-
-    Returns:
-        An ``AnthropicUsage`` payload when both token counts are known; otherwise
-        ``None`` so callers can omit the usage object.
-
-    """
+    """Build an Anthropic usage payload when token accounting is available."""
     if prompt_tokens is None or completion_tokens is None:
         return None
 
@@ -313,35 +336,60 @@ def _normalize_anthropic_system_blocks(
 def _normalize_anthropic_messages(
     *,
     value: list[AnthropicMessageInput],
-) -> list[CanonicalChatMessage]:
-    """Normalize Anthropic input messages into canonical chat messages."""
+    accepted_tool_result_ids: Collection[str] | None = None,
+) -> tuple[list[CanonicalChatMessage], list[CanonicalToolResult]]:
+    """Normalize Anthropic input messages into canonical chat and tool-result items."""
     messages: list[CanonicalChatMessage] = []
+    tool_results: list[CanonicalToolResult] = []
     for message in value:
-        messages.extend(
+        normalized_messages, normalized_tool_results = (
             _normalize_anthropic_message_content(
                 role=message.role,
                 content=message.content,
+                accepted_tool_result_ids=accepted_tool_result_ids,
             )
         )
-    return messages
+        messages.extend(normalized_messages)
+        tool_results.extend(normalized_tool_results)
+    return messages, tool_results
 
 
 def _normalize_anthropic_message_content(
     *,
     role: Literal['user', 'assistant'],
     content: str | list[dict[str, Any]],
-) -> list[CanonicalChatMessage]:
+    accepted_tool_result_ids: Collection[str] | None = None,
+) -> tuple[list[CanonicalChatMessage], list[CanonicalToolResult]]:
     """Normalize one Anthropic message content payload."""
     if isinstance(content, str):
-        return [CanonicalChatMessage(role=role, content=content)]
+        return [CanonicalChatMessage(role=role, content=content)], []
 
     messages: list[CanonicalChatMessage] = []
+    tool_results: list[CanonicalToolResult] = []
     for block in content:
+        block_type = block.get('type')
+        if block_type == 'tool_result':
+            tool_use_id = block.get('tool_use_id')
+            if isinstance(tool_use_id, str) and tool_use_id:
+                if (
+                    accepted_tool_result_ids is not None
+                    and tool_use_id not in accepted_tool_result_ids
+                ):
+                    continue
+                tool_results.append(
+                    CanonicalToolResult(
+                        call_id=tool_use_id,
+                        output_text=_extract_tool_result_text(block=block),
+                        is_error=bool(block.get('is_error')),
+                    )
+                )
+            continue
+
         block_text = _extract_text_from_content_block(block=block)
         if block_text is None:
             continue
         messages.append(CanonicalChatMessage(role=role, content=block_text))
-    return messages
+    return messages, tool_results
 
 
 def _extract_text_from_content_block(*, block: dict[str, Any]) -> str | None:
@@ -354,22 +402,77 @@ def _extract_text_from_content_block(*, block: dict[str, Any]) -> str | None:
     return text
 
 
+def _extract_tool_result_text(*, block: dict[str, Any]) -> str:
+    """Normalize one Anthropic tool-result block into tool-result text."""
+    content = block.get('content')
+    if content is None:
+        return ''
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        normalized_parts: list[str] = []
+        for raw_entry in cast('list[object]', content):
+            entry = raw_entry
+            if not isinstance(entry, dict):
+                continue
+            typed_entry = cast('dict[str, Any]', entry)
+            if typed_entry.get('type') != 'text':
+                continue
+            text = typed_entry.get('text')
+            if isinstance(text, str):
+                normalized_parts.append(text)
+        if normalized_parts:
+            return ''.join(normalized_parts)
+    return json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+
+
+def _normalize_anthropic_tool_definitions(
+    *,
+    tools: list[dict[str, Any]],
+) -> list[CanonicalToolDefinition]:
+    """Normalize Anthropic tool definitions into the canonical tool contract."""
+    normalized_tools: list[CanonicalToolDefinition] = []
+    for tool in tools:
+        name = tool.get('name')
+        if not isinstance(name, str) or not name.strip():
+            continue
+        description = tool.get('description')
+        input_schema = tool.get('input_schema')
+        normalized_tools.append(
+            CanonicalToolDefinition(
+                name=name.strip(),
+                description=description if isinstance(description, str) else '',
+                parameters=(
+                    cast('dict[str, Any]', input_schema)
+                    if isinstance(input_schema, dict)
+                    else None
+                ),
+            )
+        )
+    return normalized_tools
+
+
 def _normalize_stop_reason(
     *,
     stop_reason: str | None,
 ) -> AnthropicStopReason | None:
     """Normalize runtime stop reasons into Anthropic-compatible message reasons."""
-    if stop_reason in {'length', 'max_tokens'}:
-        return 'max_tokens'
-    if stop_reason == 'tool_calls':
-        return 'tool_use'
-    if stop_reason == 'stop_sequence':
-        return 'stop_sequence'
-    if stop_reason == 'tool_use':
-        return 'tool_use'
     if stop_reason is None:
         return None
-    return 'end_turn'
+    return _STOP_REASON_MAP.get(stop_reason, 'end_turn')
+
+
+def _build_anthropic_max_input_tokens(*, model: OpenAIModelCard) -> int | None:
+    """Return Anthropic ``max_input_tokens`` derived from Copilot metadata."""
+    metadata = model.copilot
+    if metadata is None or metadata.capabilities is None:
+        return None
+
+    limits = metadata.capabilities.limits
+    if limits is None:
+        return None
+
+    return limits.max_context_window_tokens
 
 
 def _build_anthropic_display_name(*, model: OpenAIModelCard) -> str:

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from time import time
-from typing import Literal
+from typing import Literal, cast
 
 from copilot.generated.session_events import SessionEvent, SessionEventType
 
+from copilot_model_provider.core.models import CanonicalToolCall
 from copilot_model_provider.streaming.events import (
     AssistantTextDeltaEvent,
     AssistantTurnCompleteEvent,
@@ -17,6 +18,8 @@ from copilot_model_provider.streaming.events import (
     OpenAIChatCompletionChunkDelta,
     StreamFinishReason,
     StreamingErrorEvent,
+    ToolCallRequestedEvent,
+    ToolCallsRequestedEvent,
 )
 
 
@@ -98,58 +101,68 @@ def translate_session_event(*, event: SessionEvent) -> CanonicalStreamingEvent |
         transport surface.
 
     """
-    data = event.data
+    tool_event = _translate_tool_requested_event(event=event)
+    if tool_event is not None:
+        return tool_event
 
-    if event.type in {
-        SessionEventType.ASSISTANT_MESSAGE_DELTA,
-        SessionEventType.ASSISTANT_STREAMING_DELTA,
-    }:
-        text = _first_non_empty_text(data.delta_content, data.content)
-        if text is None:
-            return None
+    turn_end_event = _translate_turn_end_event(event=event)
+    if turn_end_event is not None:
+        return turn_end_event
 
-        return AssistantTextDeltaEvent(text=text)
+    usage_event = _translate_usage_event(event=event)
+    if usage_event is not None:
+        return usage_event
 
-    if event.type == SessionEventType.ASSISTANT_MESSAGE:
-        text = _first_non_empty_text(data.content, data.transformed_content)
-        if text is None:
-            return None
-
-        return AssistantTextDeltaEvent(text=text)
-
-    if event.type == SessionEventType.ASSISTANT_TURN_END:
-        return AssistantTurnCompleteEvent(
-            finish_reason=_normalize_finish_reason(reason=data.reason),
-            prompt_tokens=_normalize_optional_non_negative_int(
-                value=getattr(data, 'input_tokens', None)
-            ),
-            completion_tokens=_normalize_optional_non_negative_int(
-                value=getattr(data, 'output_tokens', None)
-            ),
-        )
-
-    if event.type == SessionEventType.ASSISTANT_USAGE:
-        prompt_tokens = _normalize_optional_non_negative_int(
-            value=getattr(data, 'input_tokens', None)
-        )
-        completion_tokens = _normalize_optional_non_negative_int(
-            value=getattr(data, 'output_tokens', None)
-        )
-        if prompt_tokens is None and completion_tokens is None:
-            return None
-
-        return AssistantUsageEvent(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
+    text_event = _translate_text_event(event=event)
+    if text_event is not None:
+        return text_event
 
     if event.type == SessionEventType.SESSION_ERROR:
+        data = event.data
         return StreamingErrorEvent(
             code=_normalize_error_field(value=data.error_type) or 'session_error',
             message=_extract_error_message(event=event),
         )
 
     return None
+
+
+def translate_session_events(
+    *,
+    event: SessionEvent,
+    suppress_aggregate_message_text: bool = False,
+) -> tuple[CanonicalStreamingEvent, ...]:
+    """Translate one SDK event into zero or more canonical stream events.
+
+    Args:
+        event: Copilot SDK event emitted by a streaming session.
+        suppress_aggregate_message_text: Whether one aggregate
+            ``assistant.message`` should omit its visible text while still
+            preserving any co-located tool requests.
+
+    Returns:
+        A tuple of canonical events extracted from the SDK event. Aggregate
+        assistant messages can yield both text and tool-request events so
+        downstream runtimes preserve visible narration and tool metadata.
+
+    """
+    if (
+        event.type == SessionEventType.ASSISTANT_MESSAGE
+        and assistant_message_has_tool_requests(event=event)
+    ):
+        events: list[CanonicalStreamingEvent] = []
+        if not suppress_aggregate_message_text:
+            text_event = _build_assistant_message_text_event(event=event)
+            if text_event is not None:
+                events.append(text_event)
+
+        tool_event = _translate_tool_requested_event(event=event)
+        if tool_event is not None:
+            events.append(tool_event)
+        return tuple(events)
+
+    stream_event = translate_session_event(event=event)
+    return () if stream_event is None else (stream_event,)
 
 
 def translate_stream_event_to_openai_chunks(
@@ -203,8 +216,101 @@ def translate_stream_event_to_openai_chunks(
             ),
         )
 
+    if isinstance(event, ToolCallRequestedEvent | ToolCallsRequestedEvent):
+        return ()
+
     message = 'Streaming error events do not have an OpenAI chat chunk representation.'
     raise ValueError(message)
+
+
+def _translate_text_event(*, event: SessionEvent) -> AssistantTextDeltaEvent | None:
+    """Translate SDK text-bearing events into canonical text deltas."""
+    data = event.data
+    if event.type in {
+        SessionEventType.ASSISTANT_MESSAGE_DELTA,
+        SessionEventType.ASSISTANT_STREAMING_DELTA,
+    }:
+        text = _first_non_empty_text(data.delta_content, data.content)
+        return AssistantTextDeltaEvent(text=text) if text is not None else None
+
+    if event.type == SessionEventType.ASSISTANT_MESSAGE:
+        return _build_assistant_message_text_event(event=event)
+
+    return None
+
+
+def _translate_turn_end_event(
+    *, event: SessionEvent
+) -> AssistantTurnCompleteEvent | None:
+    """Translate SDK turn-end events into canonical completion events."""
+    if event.type != SessionEventType.ASSISTANT_TURN_END:
+        return None
+
+    data = event.data
+    return AssistantTurnCompleteEvent(
+        finish_reason=_normalize_finish_reason(reason=data.reason),
+        prompt_tokens=_normalize_optional_non_negative_int(
+            value=getattr(data, 'input_tokens', None)
+        ),
+        completion_tokens=_normalize_optional_non_negative_int(
+            value=getattr(data, 'output_tokens', None)
+        ),
+    )
+
+
+def _translate_usage_event(*, event: SessionEvent) -> AssistantUsageEvent | None:
+    """Translate SDK usage events into canonical usage metadata."""
+    if event.type != SessionEventType.ASSISTANT_USAGE:
+        return None
+
+    data = event.data
+    prompt_tokens = _normalize_optional_non_negative_int(
+        value=getattr(data, 'input_tokens', None)
+    )
+    completion_tokens = _normalize_optional_non_negative_int(
+        value=getattr(data, 'output_tokens', None)
+    )
+    if prompt_tokens is None and completion_tokens is None:
+        return None
+
+    return AssistantUsageEvent(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+
+
+def _translate_tool_requested_event(
+    *, event: SessionEvent
+) -> ToolCallRequestedEvent | ToolCallsRequestedEvent | None:
+    """Translate SDK external-tool events into canonical tool-call requests."""
+    if event.type == SessionEventType.EXTERNAL_TOOL_REQUESTED:
+        tool_call = _build_tool_call_from_request_data(data=event.data)
+        return (
+            ToolCallRequestedEvent(tool_call=tool_call)
+            if tool_call is not None
+            else None
+        )
+    if event.type != SessionEventType.ASSISTANT_MESSAGE:
+        return None
+
+    data = event.data
+    raw_tool_requests = getattr(data, 'tool_requests', None)
+    if not isinstance(raw_tool_requests, list):
+        return None
+    tool_requests = cast('list[object]', raw_tool_requests)
+    tool_calls = tuple(
+        tool_call
+        for tool_call in (
+            _build_tool_call_from_request_data(data=tool_request)
+            for tool_request in tool_requests
+        )
+        if tool_call is not None
+    )
+    if not tool_calls:
+        return None
+    if len(tool_calls) == 1:
+        return ToolCallRequestedEvent(tool_call=tool_calls[0])
+    return ToolCallsRequestedEvent(tool_calls=tool_calls)
 
 
 def translate_session_event_to_openai_chunks(
@@ -236,18 +342,23 @@ def translate_session_event_to_openai_chunks(
             handled outside the chunk translation path.
 
     """
-    stream_event = translate_session_event(event=event)
-    if stream_event is None:
-        return ()
+    chunks: list[OpenAIChatCompletionChunk] = []
+    should_emit_role = emit_role
+    for stream_event in translate_session_events(event=event):
+        chunks.extend(
+            translate_stream_event_to_openai_chunks(
+                event=stream_event,
+                completion_id=completion_id,
+                model=model,
+                emit_role=should_emit_role,
+                created=created,
+                choice_index=choice_index,
+            )
+        )
+        if chunks:
+            should_emit_role = False
 
-    return translate_stream_event_to_openai_chunks(
-        event=stream_event,
-        completion_id=completion_id,
-        model=model,
-        emit_role=emit_role,
-        created=created,
-        choice_index=choice_index,
-    )
+    return tuple(chunks)
 
 
 def _build_chunk(
@@ -271,6 +382,45 @@ def _build_chunk(
                 finish_reason=finish_reason,
             )
         ],
+    )
+
+
+def assistant_message_has_tool_requests(*, event: SessionEvent) -> bool:
+    """Report whether one assistant.message event also carries tool request metadata."""
+    if event.type != SessionEventType.ASSISTANT_MESSAGE:
+        return False
+    raw_tool_requests = getattr(event.data, 'tool_requests', None)
+    if not isinstance(raw_tool_requests, list):
+        return False
+    return len(cast('list[object]', raw_tool_requests)) > 0
+
+
+def _build_assistant_message_text_event(
+    *, event: SessionEvent
+) -> AssistantTextDeltaEvent | None:
+    """Build assistant text from one aggregate ``assistant.message`` event."""
+    if event.type != SessionEventType.ASSISTANT_MESSAGE:
+        return None
+
+    data = event.data
+    text = _first_non_empty_text(data.content, data.transformed_content)
+    return AssistantTextDeltaEvent(text=text) if text is not None else None
+
+
+def _build_tool_call_from_request_data(*, data: object) -> CanonicalToolCall | None:
+    """Build one canonical tool call from SDK request metadata when available."""
+    tool_call_id = _normalize_error_field(value=getattr(data, 'tool_call_id', None))
+    tool_name = _normalize_error_field(value=getattr(data, 'tool_name', None))
+    if tool_call_id is None:
+        tool_call_id = _normalize_error_field(value=getattr(data, 'id', None))
+    if tool_name is None:
+        tool_name = _normalize_error_field(value=getattr(data, 'name', None))
+    if tool_call_id is None or tool_name is None:
+        return None
+    return CanonicalToolCall(
+        call_id=tool_call_id,
+        name=tool_name,
+        arguments=getattr(data, 'arguments', None),
     )
 
 
