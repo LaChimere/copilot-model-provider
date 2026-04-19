@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from copilot_model_provider.api.anthropic.messages import (
@@ -140,3 +142,62 @@ def test_pop_pending_session_id_from_tool_results_rejects_duplicate_tool_use_ids
         error_info.value.message
         == 'Tool result blocks must not repeat the same tool_use_id.'
     )
+
+
+def test_pop_pending_session_id_from_tool_results_rejects_sequential_duplicate_attempt() -> (
+    None
+):
+    """Verify one consumed Anthropic paused turn cannot be resumed twice sequentially."""
+    pending_sessions = {'toolu_1': 'session_123'}
+    pending_tool_use_batches_by_session_id = {'session_123': frozenset({'toolu_1'})}
+
+    session_id, accepted_tool_result_ids = _pop_pending_session_id_from_tool_results(
+        request=_build_tool_result_request('toolu_1'),
+        pending_sessions_by_tool_use_id=pending_sessions,
+        pending_tool_use_batches_by_session_id=pending_tool_use_batches_by_session_id,
+    )
+
+    assert session_id == 'session_123'
+    assert accepted_tool_result_ids == frozenset({'toolu_1'})
+
+    with pytest.raises(ProviderError) as error_info:
+        _pop_pending_session_id_from_tool_results(
+            request=_build_tool_result_request('toolu_1'),
+            pending_sessions_by_tool_use_id=pending_sessions,
+            pending_tool_use_batches_by_session_id=pending_tool_use_batches_by_session_id,
+        )
+
+    assert error_info.value.code == 'invalid_tool_result'
+
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_allows_only_one_concurrent_duplicate_attempt() -> (
+    None
+):
+    """Verify concurrent Anthropic duplicate attempts yield one winner and one rejection."""
+    pending_sessions = {'toolu_1': 'session_123'}
+    pending_tool_use_batches_by_session_id = {'session_123': frozenset({'toolu_1'})}
+    release_event = asyncio.Event()
+
+    async def _attempt_resume() -> tuple[str, str]:
+        """Attempt one duplicated Anthropic continuation after both contenders are ready."""
+        await release_event.wait()
+        try:
+            session_id, _ = _pop_pending_session_id_from_tool_results(
+                request=_build_tool_result_request('toolu_1'),
+                pending_sessions_by_tool_use_id=pending_sessions,
+                pending_tool_use_batches_by_session_id=(
+                    pending_tool_use_batches_by_session_id
+                ),
+            )
+        except ProviderError as error:
+            return 'error', error.code
+        return 'ok', session_id or ''
+
+    first_task = asyncio.create_task(_attempt_resume())
+    second_task = asyncio.create_task(_attempt_resume())
+    await asyncio.sleep(0)
+    release_event.set()
+    results = sorted(await asyncio.gather(first_task, second_task))
+
+    assert results == [('error', 'invalid_tool_result'), ('ok', 'session_123')]

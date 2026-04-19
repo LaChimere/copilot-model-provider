@@ -23,14 +23,14 @@
 
 ## Checklist
 ### Preparation
-- [ ] Reconfirm that the approved design still matches the repo before coding.
-- [ ] Reconfirm that deferred items stay out of scope:
+- [x] Reconfirm that the approved design still matches the repo before coding.
+- [x] Reconfirm that deferred items stay out of scope:
   - public partial-result continuation
   - durable backend implementation
   - broader failure-lifecycle expansion
-- [ ] Reconfirm the current Responses replay / Anthropic full-batch behavior with
+- [x] Reconfirm the current Responses replay / Anthropic full-batch behavior with
       targeted tests before changing route wiring.
-- [ ] Establish the current repeated/concurrent continuation baseline before the
+- [x] Establish the current repeated/concurrent continuation baseline before the
       shared-store refactor:
   - run a targeted sequential duplicate-attempt check against the same paused turn
   - run a targeted concurrent-attempt check against the same paused turn
@@ -44,7 +44,7 @@
     a discovered race in the current route-local path
 
 ### Implementation
-- [ ] PR 1: Shared paused-turn core and runtime seam
+- [x] PR 1: Shared paused-turn core and runtime seam
   - Acceptance criteria:
     - Shared paused-turn store protocol and in-memory implementation exist.
     - `PausedTurnRecord` preserves the base-slice continuation-affinity fields:
@@ -161,7 +161,7 @@ If any check fails:
 4. Stop and report with evidence if blocked.
 
 ### Verification
-- [ ] PR 1 targeted checks:
+- [x] PR 1 targeted checks:
   - `uv run ruff check .`
   - `uv run pyright`
   - `uv run ty check .`
@@ -199,10 +199,70 @@ If any check fails:
   - `uv run pytest -q`
 
 ## Evidence Log
-- (Fill during execution with command output, before/after behavior, and key file references.)
+- `src/copilot_model_provider/core/pending_turns.py` now defines the PR 1 shared
+  semantic core: `PausedTurnRecord`, `PausedTurnResolution`,
+  `PendingTurnStoreProtocol`, `InMemoryPendingTurnStore`,
+  `build_auth_context_fingerprint(...)`, and `build_paused_turn_record(...)`.
+  The shared record preserves the approved base-slice affinity fields:
+  `session_id`, `tool_ids`, `request_model_id`, `runtime_model_id`,
+  `auth_context_fingerprint`, and `expires_at`.
+- `src/copilot_model_provider/core/routing.py` now exposes
+  `build_auth_context_cache_key(...)`, and `ModelRouter._build_cache_key(...)`
+  delegates to it. `src/copilot_model_provider/core/pending_turns.py`
+  reuses that helper via `build_auth_context_fingerprint(...)`, so paused-turn
+  auth fingerprints stay aligned with the router's
+  `token:{sha256_hexdigest(runtime_auth_token)}` / default-sentinel shape
+  without persisting raw auth tokens.
+- `src/copilot_model_provider/runtimes/protocols/runtime.py` and
+  `src/copilot_model_provider/runtimes/copilot_runtime.py` now expose the
+  public `discard_interactive_session(session_id, disconnect)` seam required for
+  store-driven expiry cleanup. Contract/unit-test runtime fakes were updated to
+  satisfy the widened runtime protocol.
+- `docs/design.md` section 5.1 now matches the shipped canonical request shape:
+  `request_id`, `conversation_id`, `session_id`, `runtime_auth_token`,
+  `model_id`, `messages`, `tool_definitions`, `tool_results`,
+  `tool_routing_policy`, and `stream`.
+- Baseline route-local duplicate-attempt evidence was captured while OpenAI
+  Responses and Anthropic Messages still resolve continuations through their
+  existing helper functions in
+  `src/copilot_model_provider/api/openai/responses.py` and
+  `src/copilot_model_provider/api/anthropic/messages.py`.
+  New targeted tests in `tests/unit_tests/test_openai_response_sessions.py` and
+  `tests/unit_tests/test_anthropic_message_sessions.py` show that, in the
+  current single-process route-local path, the first successful continuation
+  synchronously consumes the pending bookkeeping and duplicate sequential or
+  concurrent attempts are rejected (`invalid_previous_response_id` for the
+  OpenAI `previous_response_id` retry path, `invalid_tool_result` for Anthropic).
+  No duplicate-resume race was observed in this baseline, so PR 1 records
+  atomic consume as preserving already-safe route-local behavior rather than as
+  explicit correctness hardening for a discovered race.
+- Dedicated shared-store atomicity coverage lives in
+  `tests/unit_tests/test_pending_turns.py`. It proves:
+  - one full-batch continuation resolves to `ready_to_resume` exactly once
+  - repeated consume attempts become `invalid`
+  - concurrent consume attempts produce exactly one `ready_to_resume` winner and
+    one `invalid` loser
+  - partial batches and expected-session mismatches do not consume state
+  - expiry invokes runtime cleanup through the shared seam
+  - historical replay can be reported as ignored when the route opts in
+- Ordinary northbound behavior remains on route-local wiring in PR 1. No route
+  migration landed yet; the shared store is foundation-only in this slice.
+  Verification:
+  - `uv run ruff check . && uv run pyright && uv run ty check .` -> all passed
+  - `uv run pytest -q tests/unit_tests` -> 180 passed, coverage 91.41%
+  - `uv run pytest -q tests/contract_tests/test_openai_responses.py tests/contract_tests/test_anthropic_messages.py`
+    -> 31 passed, coverage 91.30%
+  - `uv run pytest -q -o addopts='' -p no:cov tests/unit_tests/test_pending_turns.py tests/unit_tests/test_catalog.py tests/unit_tests/test_copilot_runtime.py tests/unit_tests/test_openai_response_sessions.py tests/unit_tests/test_anthropic_message_sessions.py tests/contract_tests/test_openai_responses.py tests/contract_tests/test_anthropic_messages.py tests/contract_tests/test_openai_chat_non_streaming.py tests/contract_tests/test_openai_chat_streaming.py tests/contract_tests/test_openai_models.py tests/contract_tests/test_anthropic_models.py tests/unit_tests/test_app_boot.py`
+    -> 114 passed
+- Deferred items remain out of scope in PR 1:
+  - no public partial-result continuation semantics
+  - no durable backend implementation
+  - no broader failure-lifecycle expansion
 
 ## Result
 - Outcome:
-  - Gate 2 approved; ready for execution.
+  - PR 1 is implemented and verified on the current branch; PR 2-PR 4 remain
+    pending.
 - Follow-ups:
-  - None yet; deferred items remain intentionally out of scope.
+  - Next slice is PR 2: move OpenAI Responses paused-turn bookkeeping onto the
+    shared store while preserving current replay and mismatch behavior.

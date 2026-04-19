@@ -72,6 +72,19 @@ class _FakeModelsRuntime(RuntimeProtocol):
         del kwargs
         raise AssertionError('stream_chat should not be called in this test')
 
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Reject unexpected runtime cleanup calls in app-boot tests."""
+        del session_id, disconnect
+        raise AssertionError(
+            'discard_interactive_session should not be called in this test'
+        )
+
 
 class _StaticModelRouter(ModelRouterProtocol):
     """Deterministic router used when app tests should avoid runtime discovery."""

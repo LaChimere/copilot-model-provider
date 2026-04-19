@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from copilot_model_provider.api.openai.responses import _pop_pending_session_id
@@ -151,6 +153,73 @@ def test_pop_pending_session_id_rejects_duplicate_tool_result_call_ids() -> None
         error_info.value.message
         == 'Function call output items must not repeat the same call_id.'
     )
+
+
+def test_pop_pending_session_id_rejects_sequential_duplicate_attempt() -> None:
+    """Verify one consumed Responses paused turn cannot be resumed twice sequentially."""
+    pending_sessions_by_response_id = {'resp_123': 'session_123'}
+    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
+    pending_tool_call_batches_by_session_id = {'session_123': frozenset({'call_1'})}
+
+    session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
+        request=_build_tool_result_request('call_1'),
+        pending_sessions_by_response_id=pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+        pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
+        previous_response_id='resp_123',
+    )
+
+    assert session_id == 'session_123'
+    assert accepted_tool_result_call_ids == frozenset({'call_1'})
+
+    with pytest.raises(ProviderError) as error_info:
+        _pop_pending_session_id(
+            request=_build_tool_result_request('call_1'),
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            pending_tool_call_batches_by_session_id=(
+                pending_tool_call_batches_by_session_id
+            ),
+            previous_response_id='resp_123',
+        )
+
+    assert error_info.value.code == 'invalid_previous_response_id'
+
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_allows_only_one_concurrent_duplicate_attempt() -> (
+    None
+):
+    """Verify concurrent Responses duplicate attempts yield one winner and one rejection."""
+    pending_sessions_by_response_id = {'resp_123': 'session_123'}
+    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
+    pending_tool_call_batches_by_session_id = {'session_123': frozenset({'call_1'})}
+    release_event = asyncio.Event()
+
+    async def _attempt_resume() -> tuple[str, str]:
+        """Attempt one duplicated continuation after both contenders are ready."""
+        await release_event.wait()
+        try:
+            session_id, _ = _pop_pending_session_id(
+                request=_build_tool_result_request('call_1'),
+                pending_sessions_by_response_id=pending_sessions_by_response_id,
+                pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+                pending_tool_call_batches_by_session_id=(
+                    pending_tool_call_batches_by_session_id
+                ),
+                previous_response_id='resp_123',
+            )
+        except ProviderError as error:
+            return 'error', error.code
+        return 'ok', session_id or ''
+
+    first_task = asyncio.create_task(_attempt_resume())
+    second_task = asyncio.create_task(_attempt_resume())
+    await asyncio.sleep(0)
+    release_event.set()
+    results = sorted(await asyncio.gather(first_task, second_task))
+
+    assert results == [('error', 'invalid_previous_response_id'), ('ok', 'session_123')]
 
 
 def test_pop_pending_session_id_ignores_completed_historical_tool_outputs() -> None:

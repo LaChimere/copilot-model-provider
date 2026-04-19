@@ -120,6 +120,19 @@ class _FakeResponsesRuntime(RuntimeProtocol):
 
         return RuntimeEventStream(session_id=None, events=_events())
 
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Reject unexpected runtime cleanup calls in Responses contract tests."""
+        del session_id, disconnect
+        raise AssertionError(
+            'discard_interactive_session should not be called in this test'
+        )
+
 
 class _FakeResponsesAggregateRuntime(_FakeResponsesRuntime):
     """Fake streaming runtime that emits a final aggregate assistant message."""

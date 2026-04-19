@@ -29,6 +29,25 @@ DEFAULT_AUTH_CONTEXT_CACHE_KEY = '<default-auth-context>'
 _logger = structlog.get_logger(__name__)
 
 
+def build_auth_context_cache_key(*, runtime_auth_token: str | None) -> str:
+    """Return the stable auth-context key shared by routing and paused-turn state.
+
+    Args:
+        runtime_auth_token: Request-scoped runtime auth token, if present.
+
+    Returns:
+        The default-auth sentinel when no request token is present, otherwise a
+        stable `token:{sha256_hexdigest(...)}` key that avoids storing the raw
+        bearer token in provider-owned state.
+
+    """
+    if runtime_auth_token is None:
+        return DEFAULT_AUTH_CONTEXT_CACHE_KEY
+
+    token_digest = hashlib.sha256(runtime_auth_token.encode('utf-8')).hexdigest()
+    return f'token:{token_digest}'
+
+
 @dataclass(frozen=True)
 class _CatalogCacheEntry:
     """One cached live-model catalog snapshot for a specific auth context.
@@ -227,11 +246,7 @@ class ModelRouter(ModelRouterProtocol):
 
     def _build_cache_key(self, runtime_auth_token: str | None) -> str:
         """Return a stable cache key for one auth context without storing raw tokens."""
-        if runtime_auth_token is None:
-            return DEFAULT_AUTH_CONTEXT_CACHE_KEY
-
-        token_digest = hashlib.sha256(runtime_auth_token.encode('utf-8')).hexdigest()
-        return f'token:{token_digest}'
+        return build_auth_context_cache_key(runtime_auth_token=runtime_auth_token)
 
     def _prune_expired_cache(self, now: float) -> None:
         """Drop expired cached catalogs before servicing a new lookup."""

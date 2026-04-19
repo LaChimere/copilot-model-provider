@@ -169,6 +169,19 @@ class _FakeAnthropicRuntime(RuntimeProtocol):
 
         return RuntimeEventStream(session_id=None, events=_events())
 
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Reject unexpected runtime cleanup calls in Anthropic contract tests."""
+        del session_id, disconnect
+        raise AssertionError(
+            'discard_interactive_session should not be called in this test'
+        )
+
 
 class _ZeroUsageAnthropicRuntime(_FakeAnthropicRuntime):
     """Fake Anthropic runtime that reports exact zero completion tokens."""
