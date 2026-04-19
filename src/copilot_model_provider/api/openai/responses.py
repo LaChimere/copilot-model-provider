@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from time import time
 from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
@@ -30,6 +29,11 @@ from copilot_model_provider.core.models import (
     OpenAIResponsesFunctionCallOutputItem,
     OpenAIResponsesInputMessage,
     ResolvedRoute,
+)
+from copilot_model_provider.core.pending_turns import (
+    InMemoryPendingTurnStore,
+    PendingTurnStoreProtocol,
+    build_paused_turn_record,
 )
 from copilot_model_provider.core.responses import (
     build_openai_responses_completed_event,
@@ -60,7 +64,7 @@ from copilot_model_provider.streaming.responses import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Collection, Sequence
 
     from copilot_model_provider.core.routing import ModelRouterProtocol
     from copilot_model_provider.runtimes.protocols import RuntimeProtocol
@@ -82,8 +86,32 @@ def install_openai_responses_route(
     """Install the OpenAI-compatible ``POST /openai/v1/responses`` route."""
     pending_sessions_by_response_id: dict[str, str] = {}
     pending_sessions_by_tool_call_id: dict[str, str] = {}
-    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]] = {}
-    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]] = {}
+
+    async def _expire_pending_response_session(session_id: str) -> None:
+        """Expire one pending Responses turn and discard its runtime session."""
+        cleared_response_ids = _pop_pending_response_ids_for_session(
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            session_id=session_id,
+        )
+        cleared_tool_call_ids = _pop_pending_tool_call_ids_for_session(
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            session_id=session_id,
+        )
+        await runtime.discard_interactive_session(
+            session_id=session_id,
+            disconnect=True,
+        )
+        _logger.info(
+            'openai_responses_pending_session_expired',
+            session_id=session_id,
+            cleared_response_ids=cleared_response_ids,
+            cleared_tool_call_ids=sorted(cleared_tool_call_ids),
+            ttl_seconds=_PENDING_RESPONSE_SESSION_TTL_SECONDS,
+        )
+
+    pending_turn_store = InMemoryPendingTurnStore(
+        on_expire=_expire_pending_response_session
+    )
 
     async def _create_response(
         request: OpenAIResponsesCreateRequest,
@@ -115,22 +143,13 @@ def install_openai_responses_route(
             model_id=request.model,
             runtime_auth_token=runtime_auth_token,
         )
-        session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
+        session_id, accepted_tool_result_call_ids = await _pop_pending_session_id(
             request=request,
+            pending_turn_store=pending_turn_store,
             pending_sessions_by_response_id=pending_sessions_by_response_id,
             pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-            pending_tool_call_batches_by_session_id=(
-                pending_tool_call_batches_by_session_id
-            ),
             previous_response_id=request.previous_response_id,
         )
-        if session_id is not None:
-            _cancel_pending_response_session_expiry(
-                session_id=session_id,
-                pending_session_expiry_tasks_by_session_id=(
-                    pending_session_expiry_tasks_by_session_id
-                ),
-            )
         canonical_request = normalize_openai_responses_request(
             request=request,
             request_id=request_id,
@@ -152,14 +171,9 @@ def install_openai_responses_route(
                 runtime=runtime,
                 route=route,
                 canonical_request=canonical_request,
+                pending_turn_store=pending_turn_store,
                 pending_sessions_by_response_id=pending_sessions_by_response_id,
                 pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-                pending_tool_call_batches_by_session_id=(
-                    pending_tool_call_batches_by_session_id
-                ),
-                pending_session_expiry_tasks_by_session_id=(
-                    pending_session_expiry_tasks_by_session_id
-                ),
             )
 
         completion = await runtime.complete_chat(
@@ -168,18 +182,16 @@ def install_openai_responses_route(
         )
         response_id = build_response_id()
         if completion.pending_tool_calls and completion.session_id is not None:
-            _remember_pending_response_tool_batch(
+            await _remember_pending_response_tool_batch(
                 response_id=response_id,
                 session_id=completion.session_id,
                 pending_tool_calls=completion.pending_tool_calls,
+                request_model_id=request.model,
+                runtime_model_id=route.runtime_model_id or request.model,
+                runtime_auth_token=runtime_auth_token,
+                pending_turn_store=pending_turn_store,
                 pending_sessions_by_response_id=pending_sessions_by_response_id,
                 pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-                pending_tool_call_batches_by_session_id=(
-                    pending_tool_call_batches_by_session_id
-                ),
-                pending_session_expiry_tasks_by_session_id=(
-                    pending_session_expiry_tasks_by_session_id
-                ),
             )
         _logger.info(
             'openai_responses_completion_ready',
@@ -214,10 +226,9 @@ async def _create_streaming_response(  # noqa: C901
     runtime: RuntimeProtocol,
     route: ResolvedRoute,
     canonical_request: CanonicalChatRequest,
+    pending_turn_store: PendingTurnStoreProtocol,
     pending_sessions_by_response_id: dict[str, str],
     pending_sessions_by_tool_call_id: dict[str, str],
-    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
-    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
 ) -> StreamingResponse:
     """Create a streaming OpenAI Responses-compatible SSE response."""
     runtime_stream = None
@@ -409,20 +420,16 @@ async def _create_streaming_response(  # noqa: C901
                     )
                     sequence_number += 1
                 if runtime_stream.session_id is not None:
-                    _remember_pending_response_tool_batch(
+                    await _remember_pending_response_tool_batch(
                         response_id=response_id,
                         session_id=runtime_stream.session_id,
                         pending_tool_calls=pending_tool_calls,
+                        request_model_id=request.model,
+                        runtime_model_id=route.runtime_model_id or request.model,
+                        runtime_auth_token=canonical_request.runtime_auth_token,
+                        pending_turn_store=pending_turn_store,
                         pending_sessions_by_response_id=pending_sessions_by_response_id,
-                        pending_sessions_by_tool_call_id=(
-                            pending_sessions_by_tool_call_id
-                        ),
-                        pending_tool_call_batches_by_session_id=(
-                            pending_tool_call_batches_by_session_id
-                        ),
-                        pending_session_expiry_tasks_by_session_id=(
-                            pending_session_expiry_tasks_by_session_id
-                        ),
+                        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
                     )
                 _logger.info(
                     'openai_responses_stream_tool_calls_requested',
@@ -539,20 +546,16 @@ async def _create_streaming_response(  # noqa: C901
                     )
                     sequence_number += 1
                 if runtime_stream.session_id is not None:
-                    _remember_pending_response_tool_batch(
+                    await _remember_pending_response_tool_batch(
                         response_id=response_id,
                         session_id=runtime_stream.session_id,
                         pending_tool_calls=pending_tool_calls,
+                        request_model_id=request.model,
+                        runtime_model_id=route.runtime_model_id or request.model,
+                        runtime_auth_token=canonical_request.runtime_auth_token,
+                        pending_turn_store=pending_turn_store,
                         pending_sessions_by_response_id=pending_sessions_by_response_id,
-                        pending_sessions_by_tool_call_id=(
-                            pending_sessions_by_tool_call_id
-                        ),
-                        pending_tool_call_batches_by_session_id=(
-                            pending_tool_call_batches_by_session_id
-                        ),
-                        pending_session_expiry_tasks_by_session_id=(
-                            pending_session_expiry_tasks_by_session_id
-                        ),
+                        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
                     )
             yield encode_openai_responses_event(
                 payload=build_openai_responses_completed_event(
@@ -579,12 +582,12 @@ async def _create_streaming_response(  # noqa: C901
     return StreamingResponse(_frame_stream(), media_type='text/event-stream')
 
 
-def _pop_pending_session_id(
+async def _pop_pending_session_id(  # noqa: C901
     *,
     request: OpenAIResponsesCreateRequest,
+    pending_turn_store: PendingTurnStoreProtocol,
     pending_sessions_by_response_id: dict[str, str],
     pending_sessions_by_tool_call_id: dict[str, str],
-    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
     previous_response_id: str | None,
 ) -> tuple[str | None, frozenset[str] | None]:
     """Resolve and consume one pending session continuation id."""
@@ -621,18 +624,42 @@ def _pop_pending_session_id(
             )
 
         session_id = next(iter(session_ids))
-        _validate_full_tool_result_batch(
-            tool_result_call_ids=matched_call_ids,
-            session_id=session_id,
-            pending_tool_call_batches_by_session_id=(
-                pending_tool_call_batches_by_session_id
-            ),
-        )
-        for call_id in matched_call_ids:
-            pending_sessions_by_tool_call_id.pop(call_id, None)
+        record = await pending_turn_store.get(session_id=session_id)
+        if record is None:
+            _pop_pending_tool_call_ids_for_session(
+                pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+                session_id=session_id,
+            )
+            _pop_pending_response_ids_for_session(
+                pending_sessions_by_response_id=pending_sessions_by_response_id,
+                session_id=session_id,
+            )
+            raise ProviderError(
+                code='invalid_tool_result',
+                message='No pending provider session matched the supplied function_call_output items.',
+                status_code=400,
+            )
+        if matched_call_ids != record.tool_ids:
+            raise ProviderError(
+                code='invalid_tool_result',
+                message='Function call output items must provide the full pending tool-result batch.',
+                status_code=400,
+            )
+        resolution = await pending_turn_store.resolve(tool_ids=matched_call_ids)
+        if resolution.status != 'ready_to_resume' or resolution.record is None:
+            raise ProviderError(
+                code='invalid_tool_result',
+                message='No pending provider session matched the supplied function_call_output items.',
+                status_code=400,
+            )
         cleared_response_ids = _pop_pending_response_ids_for_session(
             pending_sessions_by_response_id=pending_sessions_by_response_id,
             session_id=session_id,
+        )
+        _pop_pending_tool_call_ids_for_session(
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            session_id=session_id,
+            tool_call_ids=resolution.record.tool_ids,
         )
         _logger.info(
             'openai_responses_continuation_resolved',
@@ -653,14 +680,14 @@ def _pop_pending_session_id(
             status_code=400,
         )
 
-    matched_call_ids = frozenset(
+    known_call_ids = frozenset(
         call_id
         for call_id in tool_result_call_ids
         if call_id in pending_sessions_by_tool_call_id
     )
     mismatched_call_ids = [
         call_id
-        for call_id in matched_call_ids
+        for call_id in known_call_ids
         if pending_sessions_by_tool_call_id[call_id] != session_id
     ]
     if mismatched_call_ids:
@@ -669,17 +696,51 @@ def _pop_pending_session_id(
             message='Function call output items did not match the supplied previous_response_id.',
             status_code=400,
         )
-    _validate_full_tool_result_batch(
-        tool_result_call_ids=matched_call_ids,
-        session_id=session_id,
-        pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
+    matched_call_ids = frozenset(
+        call_id
+        for call_id in tool_result_call_ids
+        if pending_sessions_by_tool_call_id.get(call_id) == session_id
     )
+    record = await pending_turn_store.get(session_id=session_id)
+    if record is None:
+        _pop_pending_response_ids_for_session(
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            session_id=session_id,
+        )
+        _pop_pending_tool_call_ids_for_session(
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            session_id=session_id,
+        )
+        raise ProviderError(
+            code='invalid_previous_response_id',
+            message='No pending provider session matched the supplied previous_response_id.',
+            status_code=400,
+        )
+    if matched_call_ids != record.tool_ids:
+        raise ProviderError(
+            code='invalid_tool_result',
+            message='Function call output items must provide the full pending tool-result batch.',
+            status_code=400,
+        )
+    resolution = await pending_turn_store.resolve(
+        tool_ids=matched_call_ids,
+        expected_session_id=session_id,
+    )
+    if resolution.status != 'ready_to_resume' or resolution.record is None:
+        raise ProviderError(
+            code='invalid_previous_response_id',
+            message='No pending provider session matched the supplied previous_response_id.',
+            status_code=400,
+        )
     cleared_response_ids = _pop_pending_response_ids_for_session(
         pending_sessions_by_response_id=pending_sessions_by_response_id,
         session_id=session_id,
     )
-    for call_id in matched_call_ids:
-        pending_sessions_by_tool_call_id.pop(call_id, None)
+    _pop_pending_tool_call_ids_for_session(
+        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+        session_id=session_id,
+        tool_call_ids=resolution.record.tool_ids,
+    )
     _logger.info(
         'openai_responses_continuation_resolved',
         previous_response_id=previous_response_id,
@@ -732,111 +793,34 @@ def _validate_no_duplicate_tool_result_call_ids(
     )
 
 
-def _remember_pending_response_tool_batch(
+async def _remember_pending_response_tool_batch(
     *,
     response_id: str,
     session_id: str,
     pending_tool_calls: Sequence[CanonicalToolCall],
+    request_model_id: str,
+    runtime_model_id: str,
+    runtime_auth_token: str | None,
+    pending_turn_store: PendingTurnStoreProtocol,
     pending_sessions_by_response_id: dict[str, str],
     pending_sessions_by_tool_call_id: dict[str, str],
-    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
-    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
 ) -> None:
     """Record one paused Responses turn so continuation requests can resume it."""
-    pending_sessions_by_response_id[response_id] = session_id
-    pending_tool_call_batches_by_session_id[session_id] = frozenset(
-        pending_tool_call.call_id for pending_tool_call in pending_tool_calls
-    )
-    for pending_tool_call in pending_tool_calls:
-        pending_sessions_by_tool_call_id[pending_tool_call.call_id] = session_id
-    _schedule_pending_response_session_expiry(
-        session_id=session_id,
-        pending_sessions_by_response_id=pending_sessions_by_response_id,
-        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-        pending_tool_call_batches_by_session_id=(
-            pending_tool_call_batches_by_session_id
-        ),
-        pending_session_expiry_tasks_by_session_id=(
-            pending_session_expiry_tasks_by_session_id
-        ),
-    )
-
-
-def _cancel_pending_response_session_expiry(
-    *,
-    session_id: str,
-    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
-) -> None:
-    """Cancel the scheduled expiry task for one paused Responses continuation."""
-    expiry_task = pending_session_expiry_tasks_by_session_id.pop(session_id, None)
-    if expiry_task is None:
-        return
-
-    expiry_task.cancel()
-
-
-def _schedule_pending_response_session_expiry(
-    *,
-    session_id: str,
-    pending_sessions_by_response_id: dict[str, str],
-    pending_sessions_by_tool_call_id: dict[str, str],
-    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
-    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
-) -> None:
-    """Schedule automatic cleanup for one paused Responses continuation."""
-    _cancel_pending_response_session_expiry(
-        session_id=session_id,
-        pending_session_expiry_tasks_by_session_id=(
-            pending_session_expiry_tasks_by_session_id
-        ),
-    )
-    pending_session_expiry_tasks_by_session_id[session_id] = asyncio.create_task(
-        _expire_pending_response_session_after_ttl(
+    await pending_turn_store.remember(
+        record=build_paused_turn_record(
             session_id=session_id,
-            pending_sessions_by_response_id=pending_sessions_by_response_id,
-            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-            pending_tool_call_batches_by_session_id=(
-                pending_tool_call_batches_by_session_id
+            tool_ids=tuple(
+                pending_tool_call.call_id for pending_tool_call in pending_tool_calls
             ),
-            pending_session_expiry_tasks_by_session_id=(
-                pending_session_expiry_tasks_by_session_id
-            ),
+            request_model_id=request_model_id,
+            runtime_model_id=runtime_model_id,
+            runtime_auth_token=runtime_auth_token,
+            expires_at=time() + _PENDING_RESPONSE_SESSION_TTL_SECONDS,
         )
     )
-
-
-async def _expire_pending_response_session_after_ttl(
-    *,
-    session_id: str,
-    pending_sessions_by_response_id: dict[str, str],
-    pending_sessions_by_tool_call_id: dict[str, str],
-    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
-    pending_session_expiry_tasks_by_session_id: dict[str, asyncio.Task[None]],
-) -> None:
-    """Drop abandoned Responses continuation bookkeeping after the shared TTL."""
-    try:
-        await asyncio.sleep(_PENDING_RESPONSE_SESSION_TTL_SECONDS)
-    except asyncio.CancelledError:
-        return
-
-    cleared_response_ids = _pop_pending_response_ids_for_session(
-        pending_sessions_by_response_id=pending_sessions_by_response_id,
-        session_id=session_id,
-    )
-    outstanding_call_ids = pending_tool_call_batches_by_session_id.pop(
-        session_id,
-        frozenset(),
-    )
-    for call_id in outstanding_call_ids:
-        pending_sessions_by_tool_call_id.pop(call_id, None)
-    pending_session_expiry_tasks_by_session_id.pop(session_id, None)
-    _logger.info(
-        'openai_responses_pending_session_expired',
-        session_id=session_id,
-        cleared_response_ids=cleared_response_ids,
-        cleared_tool_call_ids=sorted(outstanding_call_ids),
-        ttl_seconds=_PENDING_RESPONSE_SESSION_TTL_SECONDS,
-    )
+    pending_sessions_by_response_id[response_id] = session_id
+    for pending_tool_call in pending_tool_calls:
+        pending_sessions_by_tool_call_id[pending_tool_call.call_id] = session_id
 
 
 def _append_unique_tool_calls(
@@ -853,25 +837,6 @@ def _append_unique_tool_calls(
         pending_tool_calls.append(tool_call)
 
 
-def _validate_full_tool_result_batch(
-    *,
-    tool_result_call_ids: frozenset[str],
-    session_id: str,
-    pending_tool_call_batches_by_session_id: dict[str, frozenset[str]],
-) -> None:
-    """Verify that one continuation submits the complete pending tool-result batch."""
-    outstanding_call_ids = pending_tool_call_batches_by_session_id.get(session_id)
-    if outstanding_call_ids is None:
-        return
-    if tool_result_call_ids != outstanding_call_ids:
-        raise ProviderError(
-            code='invalid_tool_result',
-            message='Function call output items must provide the full pending tool-result batch.',
-            status_code=400,
-        )
-    pending_tool_call_batches_by_session_id.pop(session_id, None)
-
-
 def _pop_pending_response_ids_for_session(
     *,
     pending_sessions_by_response_id: dict[str, str],
@@ -886,6 +851,31 @@ def _pop_pending_response_ids_for_session(
     for response_id in cleared_response_ids:
         pending_sessions_by_response_id.pop(response_id, None)
     return cleared_response_ids
+
+
+def _pop_pending_tool_call_ids_for_session(
+    *,
+    pending_sessions_by_tool_call_id: dict[str, str],
+    session_id: str,
+    tool_call_ids: Collection[str] | None = None,
+) -> list[str]:
+    """Remove tool-call ids that still point at the resolved interactive session."""
+    candidate_call_ids = (
+        list(tool_call_ids)
+        if tool_call_ids is not None
+        else [
+            call_id
+            for call_id, mapped_session_id in pending_sessions_by_tool_call_id.items()
+            if mapped_session_id == session_id
+        ]
+    )
+    cleared_call_ids: list[str] = []
+    for call_id in candidate_call_ids:
+        if pending_sessions_by_tool_call_id.get(call_id) != session_id:
+            continue
+        pending_sessions_by_tool_call_id.pop(call_id, None)
+        cleared_call_ids.append(call_id)
+    return cleared_call_ids
 
 
 def _summarize_openai_responses_request(

@@ -101,7 +101,7 @@
       Responses / Anthropic Messages behavior remains unchanged before route
       migration
 
-- [ ] PR 2: OpenAI Responses shared-store migration
+- [x] PR 2: OpenAI Responses shared-store migration
   - Acceptance criteria:
     - Responses uses the shared paused-turn store as its primary state source.
     - `previous_response_id` lookup is preserved.
@@ -177,7 +177,7 @@ If any check fails:
   - if the baseline exposed a duplicate-resume race, record PR 1 as intentional
     repeated/concurrent correctness hardening for that race case rather than as
     pure no-op preservation
-- [ ] PR 2 targeted checks:
+- [x] PR 2 targeted checks:
   - `uv run ruff check .`
   - `uv run pyright`
   - `uv run ty check .`
@@ -254,6 +254,43 @@ If any check fails:
     -> 31 passed, coverage 91.30%
   - `uv run pytest -q -o addopts='' -p no:cov tests/unit_tests/test_pending_turns.py tests/unit_tests/test_catalog.py tests/unit_tests/test_copilot_runtime.py tests/unit_tests/test_openai_response_sessions.py tests/unit_tests/test_anthropic_message_sessions.py tests/contract_tests/test_openai_responses.py tests/contract_tests/test_anthropic_messages.py tests/contract_tests/test_openai_chat_non_streaming.py tests/contract_tests/test_openai_chat_streaming.py tests/contract_tests/test_openai_models.py tests/contract_tests/test_anthropic_models.py tests/unit_tests/test_app_boot.py`
     -> 114 passed
+- `src/copilot_model_provider/api/openai/responses.py` now uses the shared
+  paused-turn store as the primary paused-turn state source for the OpenAI
+  Responses route. Route-local state is reduced to OpenAI-specific lookup
+  indexes (`previous_response_id` and tool-call-id -> session-id) while the
+  shared store owns the paused-turn record, full-batch validation source of
+  truth, atomic consume, and TTL expiry.
+- OpenAI expiry cleanup now runs through the shared store callback into the
+  runtime cleanup seam. When a paused turn expires, the route clears its
+  transport-specific lookup indexes and calls
+  `runtime.discard_interactive_session(session_id, disconnect=True)` instead of
+  owning a separate route-local TTL task implementation.
+- `tests/unit_tests/test_openai_response_sessions.py` now exercises the OpenAI
+  helper logic against `InMemoryPendingTurnStore`, preserving:
+  - `previous_response_id` lookup success
+  - missing-session rejection
+  - full-batch-only continuation
+  - historical replay ignore behavior
+  - duplicate tool-result rejection
+  - sequential and concurrent duplicate-continuation rejection after
+    shared-store migration
+- `tests/contract_tests/test_openai_responses.py` now covers repeated and
+  concurrent duplicate follow-ups at the HTTP layer. The concurrent duplicate
+  test uses a blocking fake runtime to prove only one continuation reaches
+  runtime reuse (`continuation_call_count == 1`) while the duplicate request
+  receives `invalid_previous_response_id`.
+- OpenAI Responses verification:
+  - `uv run ruff check . && uv run pyright && uv run ty check .` -> all passed
+  - `uv run pytest -q -o addopts='' -p no:cov tests/unit_tests/test_openai_response_sessions.py tests/contract_tests/test_openai_responses.py`
+    -> 25 passed
+  - `uv run pytest -q -o addopts='' -p no:cov tests/contract_tests/test_openai_responses.py tests/integration_tests/test_responses.py`
+    -> 21 passed
+  - the repo's default coverage plugin still makes narrow pytest subsets fail
+    unrelated to code correctness, so the targeted PR 2 pytest commands used the
+    established `-o addopts='' -p no:cov` workaround
+  - Docker-backed integration validation succeeded after starting the local
+    Docker daemon; the successful `tests/integration_tests/test_responses.py`
+    run confirms the migrated OpenAI route still works in the containerized path
 - Deferred items remain out of scope in PR 1:
   - no public partial-result continuation semantics
   - no durable backend implementation
@@ -261,8 +298,8 @@ If any check fails:
 
 ## Result
 - Outcome:
-  - PR 1 is implemented and verified on the current branch; PR 2-PR 4 remain
-    pending.
+  - PR 1 and PR 2 are implemented and verified on the current branch; PR 3 and
+    cleanup remain pending.
 - Follow-ups:
-  - Next slice is PR 2: move OpenAI Responses paused-turn bookkeeping onto the
-    shared store while preserving current replay and mismatch behavior.
+  - Next slice is PR 3: move Anthropic Messages paused-turn bookkeeping onto the
+    shared store while preserving current full-batch `tool_result` behavior.
