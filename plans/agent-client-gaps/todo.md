@@ -118,7 +118,7 @@
       mismatch rejection, historical replay ignore, and repeated/concurrent
       continuation cases
 
-- [ ] PR 3: Anthropic Messages shared-store migration
+- [x] PR 3: Anthropic Messages shared-store migration
   - Acceptance criteria:
     - Anthropic Messages uses the shared paused-turn store as its primary state source.
     - full pending tool-result batch requirement is preserved.
@@ -184,7 +184,7 @@ If any check fails:
   - `uv run pytest -q tests/contract_tests/test_openai_responses.py tests/integration_tests/test_responses.py`
   - verify the OpenAI suite includes repeated/concurrent continuation attempts
     against the same paused turn
-- [ ] PR 3 targeted checks:
+- [x] PR 3 targeted checks:
   - `uv run ruff check .`
   - `uv run pyright`
   - `uv run ty check .`
@@ -291,6 +291,38 @@ If any check fails:
   - Docker-backed integration validation succeeded after starting the local
     Docker daemon; the successful `tests/integration_tests/test_responses.py`
     run confirms the migrated OpenAI route still works in the containerized path
+- `src/copilot_model_provider/api/anthropic/messages.py` now uses the shared
+  paused-turn store as the primary paused-turn state source for the Anthropic
+  Messages route. Route-local state is reduced to Anthropic-specific
+  `tool_use_id -> session_id` lookup while the shared store owns the paused-turn
+  record, full-batch validation source of truth, atomic consume, and TTL expiry.
+- Anthropic expiry cleanup now runs through the shared store callback into the
+  runtime cleanup seam. When a paused turn expires, the route clears its
+  transport-specific `tool_use_id` lookup index and calls
+  `runtime.discard_interactive_session(session_id, disconnect=True)` instead of
+  owning a separate route-local TTL task implementation.
+- `tests/unit_tests/test_anthropic_message_sessions.py` now exercises the
+  Anthropic helper logic against `InMemoryPendingTurnStore`, preserving:
+  - missing-session rejection
+  - mismatched-session rejection
+  - full-batch-only continuation
+  - duplicate `tool_use_id` rejection
+  - sequential and concurrent duplicate-continuation rejection after
+    shared-store migration
+- `tests/contract_tests/test_anthropic_messages.py` now covers repeated and
+  concurrent duplicate Anthropic follow-ups at the HTTP layer. The concurrent
+  duplicate test uses a blocking fake runtime to prove only one continuation
+  reaches runtime reuse (`continuation_call_count == 1`) while the duplicate
+  request receives the same missing-session error payload.
+- Anthropic Messages verification:
+  - `uv run ruff check . && uv run pyright && uv run ty check .` -> all passed
+  - `uv run pytest -q -o addopts='' -p no:cov tests/unit_tests/test_anthropic_message_sessions.py tests/contract_tests/test_anthropic_messages.py`
+    -> 25 passed
+  - `uv run pytest -q -o addopts='' -p no:cov tests/contract_tests/test_anthropic_messages.py`
+    -> 18 passed
+  - the repo's default coverage plugin still makes narrow pytest subsets fail
+    unrelated to code correctness, so the targeted PR 3 pytest commands used the
+    established `-o addopts='' -p no:cov` workaround
 - Deferred items remain out of scope in PR 1:
   - no public partial-result continuation semantics
   - no durable backend implementation
@@ -298,8 +330,8 @@ If any check fails:
 
 ## Result
 - Outcome:
-  - PR 1 and PR 2 are implemented and verified on the current branch; PR 3 and
-    cleanup remain pending.
+  - PR 1, PR 2, and PR 3 are implemented and verified on the current branch;
+    cleanup remains pending.
 - Follow-ups:
-  - Next slice is PR 3: move Anthropic Messages paused-turn bookkeeping onto the
-    shared store while preserving current full-batch `tool_result` behavior.
+  - Next slice is the cleanup PR: remove leftover duplicated continuation helpers
+    and run final verification.

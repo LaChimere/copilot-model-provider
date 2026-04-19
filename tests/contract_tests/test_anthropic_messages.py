@@ -225,6 +225,11 @@ class _ZeroUsageAnthropicRuntime(_FakeAnthropicRuntime):
 class _FakeAnthropicToolRuntime(_FakeAnthropicRuntime):
     """Fake runtime that pauses on tool use and resumes on tool results."""
 
+    def __init__(self) -> None:
+        """Initialize the fake runtime state for Anthropic tool-loop tests."""
+        super().__init__()
+        self.discarded_sessions: list[tuple[str, bool]] = []
+
     @override
     async def complete_chat(
         self,
@@ -299,6 +304,39 @@ class _FakeAnthropicToolRuntime(_FakeAnthropicRuntime):
         return RuntimeEventStream(
             session_id=_ANTHROPIC_TOOL_SESSION_ID, events=_events()
         )
+
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Record runtime cleanup calls expected by Anthropic expiry tests."""
+        self.discarded_sessions.append((session_id, disconnect))
+
+
+class _BlockingAnthropicToolRuntime(_FakeAnthropicToolRuntime):
+    """Fake runtime that blocks a continuation so duplicate Anthropic follow-ups can race."""
+
+    def __init__(self) -> None:
+        """Initialize the blocking continuation controls used by concurrency tests."""
+        super().__init__()
+        self.release_continuation = asyncio.Event()
+        self.continuation_call_count = 0
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Block tool-result continuations so duplicate requests can overlap."""
+        if request.tool_results:
+            self.continuation_call_count += 1
+            await self.release_continuation.wait()
+        return await super().complete_chat(request=request, route=route)
 
 
 class _FakeAnthropicMultiToolRuntime(_FakeAnthropicRuntime):
@@ -750,6 +788,135 @@ async def test_post_messages_supports_tool_result_continuation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_messages_rejects_sequential_duplicate_tool_result_continuation() -> (
+    None
+):
+    """Verify one Anthropic paused turn cannot be resumed twice with the same tool result."""
+    runtime = _FakeAnthropicToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Read the README'}],
+        'tools': [_build_read_file_tool_definition()],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        first_response = await client.post(
+            '/anthropic/v1/messages',
+            json=first_request_body,
+        )
+
+        first_payload = cast('dict[str, Any]', first_response.json())
+        tool_use_block = cast('dict[str, Any]', first_payload['content'][1])
+        first_follow_up = await client.post(
+            '/anthropic/v1/messages',
+            json={
+                'model': 'claude-sonnet-4-20250514',
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': [
+                            {
+                                'type': 'tool_result',
+                                'tool_use_id': tool_use_block['id'],
+                                'content': 'README contents',
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        second_follow_up = await client.post(
+            '/anthropic/v1/messages',
+            json={
+                'model': 'claude-sonnet-4-20250514',
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': [
+                            {
+                                'type': 'tool_result',
+                                'tool_use_id': tool_use_block['id'],
+                                'content': 'README contents',
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    assert first_response.status_code == 200
+    assert first_follow_up.status_code == 200
+    assert second_follow_up.status_code == 400
+    second_error = cast('dict[str, Any]', second_follow_up.json())['error']
+    assert second_error['message'] == (
+        'No pending provider session matched the supplied tool_result blocks.'
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_messages_concurrent_duplicate_tool_result_continuations_resume_only_once() -> (
+    None
+):
+    """Verify concurrent Anthropic duplicate follow-ups cannot resume one turn twice."""
+    runtime = _BlockingAnthropicToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'claude-sonnet-4-20250514',
+        'messages': [{'role': 'user', 'content': 'Read the README'}],
+        'tools': [_build_read_file_tool_definition()],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        first_response = await client.post(
+            '/anthropic/v1/messages',
+            json=first_request_body,
+        )
+        first_payload = cast('dict[str, Any]', first_response.json())
+        tool_use_block = cast('dict[str, Any]', first_payload['content'][1])
+
+        async def _submit_follow_up() -> tuple[int, dict[str, Any]]:
+            """Submit one duplicated Anthropic continuation against the same tool use."""
+            response = await client.post(
+                '/anthropic/v1/messages',
+                json={
+                    'model': 'claude-sonnet-4-20250514',
+                    'messages': [
+                        {
+                            'role': 'user',
+                            'content': [
+                                {
+                                    'type': 'tool_result',
+                                    'tool_use_id': tool_use_block['id'],
+                                    'content': 'README contents',
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            return response.status_code, cast('dict[str, Any]', response.json())
+
+        first_follow_up_task = asyncio.create_task(_submit_follow_up())
+        await asyncio.sleep(0)
+        second_follow_up_task = asyncio.create_task(_submit_follow_up())
+        await asyncio.sleep(0)
+        runtime.release_continuation.set()
+        follow_up_results = await asyncio.gather(
+            first_follow_up_task,
+            second_follow_up_task,
+        )
+
+    statuses = sorted(status for status, _ in follow_up_results)
+    error_payload = next(
+        payload for status, payload in follow_up_results if status == 400
+    )
+
+    assert first_response.status_code == 200
+    assert statuses == [200, 400]
+    assert error_payload['error']['message'] == (
+        'No pending provider session matched the supplied tool_result blocks.'
+    )
+    assert runtime.continuation_call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_post_messages_continuation_expires_after_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -800,6 +967,7 @@ async def test_post_messages_continuation_expires_after_ttl(
     assert follow_up_payload['error']['message'] == (
         'No pending provider session matched the supplied tool_result blocks.'
     )
+    assert runtime.discarded_sessions == [(_ANTHROPIC_TOOL_SESSION_ID, True)]
 
 
 @pytest.mark.asyncio

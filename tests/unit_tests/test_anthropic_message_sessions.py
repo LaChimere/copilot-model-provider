@@ -14,6 +14,10 @@ from copilot_model_provider.core.models import (
     AnthropicMessageInput,
     AnthropicMessagesCreateRequest,
 )
+from copilot_model_provider.core.pending_turns import (
+    InMemoryPendingTurnStore,
+    PausedTurnRecord,
+)
 
 
 def _build_tool_result_request(*tool_use_ids: str) -> AnthropicMessagesCreateRequest:
@@ -36,28 +40,58 @@ def _build_tool_result_request(*tool_use_ids: str) -> AnthropicMessagesCreateReq
     )
 
 
-def test_pop_pending_session_id_from_tool_results_returns_matching_session() -> None:
-    """Verify that matched Anthropic tool results resolve and consume one session."""
-    pending_sessions = {'toolu_1': 'session_123'}
+async def _build_pending_turn_state(
+    *,
+    session_id: str = 'session_123',
+    tool_use_ids: tuple[str, ...] = ('toolu_1',),
+) -> tuple[InMemoryPendingTurnStore, dict[str, str]]:
+    """Build one pending-turn store plus Anthropic-specific lookup indexes for tests."""
+    store = InMemoryPendingTurnStore(time_factory=lambda: 1000.0)
+    await store.remember(
+        record=PausedTurnRecord(
+            session_id=session_id,
+            tool_ids=frozenset(tool_use_ids),
+            request_model_id='claude-sonnet-4-20250514',
+            runtime_model_id='copilot:claude-sonnet-4-20250514',
+            auth_context_fingerprint='token:test',
+            expires_at=1005.0,
+        )
+    )
+    return store, dict.fromkeys(tool_use_ids, session_id)
 
-    session_id, accepted_tool_result_ids = _pop_pending_session_id_from_tool_results(
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_returns_matching_session() -> (
+    None
+):
+    """Verify that matched Anthropic tool results resolve and consume one session."""
+    pending_turn_store, pending_sessions = await _build_pending_turn_state()
+
+    (
+        session_id,
+        accepted_tool_result_ids,
+    ) = await _pop_pending_session_id_from_tool_results(
         request=_build_tool_result_request('toolu_1'),
+        pending_turn_store=pending_turn_store,
         pending_sessions_by_tool_use_id=pending_sessions,
-        pending_tool_use_batches_by_session_id={'session_123': frozenset({'toolu_1'})},
     )
 
     assert session_id == 'session_123'
     assert accepted_tool_result_ids == frozenset({'toolu_1'})
     assert pending_sessions == {}
+    assert await pending_turn_store.get(session_id='session_123') is None
 
 
-def test_pop_pending_session_id_from_tool_results_rejects_missing_session() -> None:
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_rejects_missing_session() -> (
+    None
+):
     """Verify that unmatched Anthropic tool results fail with the missing-session error."""
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id_from_tool_results(
+        await _pop_pending_session_id_from_tool_results(
             request=_build_tool_result_request('toolu_missing'),
+            pending_turn_store=InMemoryPendingTurnStore(),
             pending_sessions_by_tool_use_id={},
-            pending_tool_use_batches_by_session_id={},
         )
 
     assert error_info.value.code == 'invalid_tool_result'
@@ -67,21 +101,27 @@ def test_pop_pending_session_id_from_tool_results_rejects_missing_session() -> N
     )
 
 
-def test_pop_pending_session_id_from_tool_results_rejects_mismatched_sessions() -> None:
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_rejects_mismatched_sessions() -> (
+    None
+):
     """Verify that Anthropic tool results cannot span multiple provider sessions."""
-    pending_sessions = {
-        'toolu_1': 'session_123',
-        'toolu_2': 'session_456',
-    }
+    first_store, first_pending_sessions = await _build_pending_turn_state(
+        session_id='session_123',
+        tool_use_ids=('toolu_1',),
+    )
+    second_store, second_pending_sessions = await _build_pending_turn_state(
+        session_id='session_456',
+        tool_use_ids=('toolu_2',),
+    )
+    del second_store
+    pending_sessions = first_pending_sessions | second_pending_sessions
 
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id_from_tool_results(
+        await _pop_pending_session_id_from_tool_results(
             request=_build_tool_result_request('toolu_1', 'toolu_2'),
+            pending_turn_store=first_store,
             pending_sessions_by_tool_use_id=pending_sessions,
-            pending_tool_use_batches_by_session_id={
-                'session_123': frozenset({'toolu_1'}),
-                'session_456': frozenset({'toolu_2'}),
-            },
         )
 
     assert error_info.value.code == 'invalid_tool_result'
@@ -95,20 +135,18 @@ def test_pop_pending_session_id_from_tool_results_rejects_mismatched_sessions() 
     }
 
 
-def test_pop_pending_session_id_from_tool_results_rejects_partial_batch() -> None:
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_rejects_partial_batch() -> None:
     """Verify that Anthropic continuations must submit the full pending tool batch."""
-    pending_sessions = {
-        'toolu_1': 'session_123',
-        'toolu_2': 'session_123',
-    }
+    pending_turn_store, pending_sessions = await _build_pending_turn_state(
+        tool_use_ids=('toolu_1', 'toolu_2')
+    )
 
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id_from_tool_results(
+        await _pop_pending_session_id_from_tool_results(
             request=_build_tool_result_request('toolu_1'),
+            pending_turn_store=pending_turn_store,
             pending_sessions_by_tool_use_id=pending_sessions,
-            pending_tool_use_batches_by_session_id={
-                'session_123': frozenset({'toolu_1', 'toolu_2'})
-            },
         )
 
     assert error_info.value.code == 'invalid_tool_result'
@@ -120,21 +158,21 @@ def test_pop_pending_session_id_from_tool_results_rejects_partial_batch() -> Non
         'toolu_1': 'session_123',
         'toolu_2': 'session_123',
     }
+    assert await pending_turn_store.get(session_id='session_123') is not None
 
 
-def test_pop_pending_session_id_from_tool_results_rejects_duplicate_tool_use_ids() -> (
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_rejects_duplicate_tool_use_ids() -> (
     None
 ):
     """Verify that duplicate Anthropic tool_result ids are rejected explicitly."""
-    pending_sessions = {'toolu_1': 'session_123'}
+    pending_turn_store, pending_sessions = await _build_pending_turn_state()
 
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id_from_tool_results(
+        await _pop_pending_session_id_from_tool_results(
             request=_build_tool_result_request('toolu_1', 'toolu_1'),
+            pending_turn_store=pending_turn_store,
             pending_sessions_by_tool_use_id=pending_sessions,
-            pending_tool_use_batches_by_session_id={
-                'session_123': frozenset({'toolu_1'})
-            },
         )
 
     assert error_info.value.code == 'invalid_tool_result'
@@ -144,27 +182,30 @@ def test_pop_pending_session_id_from_tool_results_rejects_duplicate_tool_use_ids
     )
 
 
-def test_pop_pending_session_id_from_tool_results_rejects_sequential_duplicate_attempt() -> (
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_rejects_sequential_duplicate_attempt() -> (
     None
 ):
     """Verify one consumed Anthropic paused turn cannot be resumed twice sequentially."""
-    pending_sessions = {'toolu_1': 'session_123'}
-    pending_tool_use_batches_by_session_id = {'session_123': frozenset({'toolu_1'})}
+    pending_turn_store, pending_sessions = await _build_pending_turn_state()
 
-    session_id, accepted_tool_result_ids = _pop_pending_session_id_from_tool_results(
+    (
+        session_id,
+        accepted_tool_result_ids,
+    ) = await _pop_pending_session_id_from_tool_results(
         request=_build_tool_result_request('toolu_1'),
+        pending_turn_store=pending_turn_store,
         pending_sessions_by_tool_use_id=pending_sessions,
-        pending_tool_use_batches_by_session_id=pending_tool_use_batches_by_session_id,
     )
 
     assert session_id == 'session_123'
     assert accepted_tool_result_ids == frozenset({'toolu_1'})
 
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id_from_tool_results(
+        await _pop_pending_session_id_from_tool_results(
             request=_build_tool_result_request('toolu_1'),
+            pending_turn_store=pending_turn_store,
             pending_sessions_by_tool_use_id=pending_sessions,
-            pending_tool_use_batches_by_session_id=pending_tool_use_batches_by_session_id,
         )
 
     assert error_info.value.code == 'invalid_tool_result'
@@ -175,20 +216,17 @@ async def test_pop_pending_session_id_from_tool_results_allows_only_one_concurre
     None
 ):
     """Verify concurrent Anthropic duplicate attempts yield one winner and one rejection."""
-    pending_sessions = {'toolu_1': 'session_123'}
-    pending_tool_use_batches_by_session_id = {'session_123': frozenset({'toolu_1'})}
+    pending_turn_store, pending_sessions = await _build_pending_turn_state()
     release_event = asyncio.Event()
 
     async def _attempt_resume() -> tuple[str, str]:
         """Attempt one duplicated Anthropic continuation after both contenders are ready."""
         await release_event.wait()
         try:
-            session_id, _ = _pop_pending_session_id_from_tool_results(
+            session_id, _ = await _pop_pending_session_id_from_tool_results(
                 request=_build_tool_result_request('toolu_1'),
+                pending_turn_store=pending_turn_store,
                 pending_sessions_by_tool_use_id=pending_sessions,
-                pending_tool_use_batches_by_session_id=(
-                    pending_tool_use_batches_by_session_id
-                ),
             )
         except ProviderError as error:
             return 'error', error.code
