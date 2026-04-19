@@ -196,6 +196,37 @@ async def test_pending_turn_store_expires_and_calls_runtime_cleanup_once() -> No
 
 
 @pytest.mark.asyncio
+async def test_pending_turn_store_returns_expired_when_cleanup_callback_fails() -> None:
+    """Verify expiry cleanup failures are logged without changing the expired result."""
+    current_time = 1001.0
+
+    async def _on_expire(session_id: str) -> None:
+        """Raise one cleanup failure for the expired paused turn."""
+        raise RuntimeError(f'cleanup failed for {session_id}')
+
+    store = InMemoryPendingTurnStore(
+        on_expire=_on_expire, time_factory=lambda: current_time
+    )
+    await store.remember(
+        record=PausedTurnRecord(
+            session_id='session_123',
+            tool_ids=frozenset({'call_1'}),
+            request_model_id='gpt-5.4',
+            runtime_model_id='copilot:gpt-5.4',
+            auth_context_fingerprint='token:test',
+            expires_at=1000.0,
+        )
+    )
+
+    resolution = await store.resolve(tool_ids=('call_1',))
+
+    assert resolution.status == 'expired'
+    assert resolution.record is not None
+    assert resolution.record.session_id == 'session_123'
+    assert await store.get(session_id='session_123') is None
+
+
+@pytest.mark.asyncio
 async def test_pending_turn_store_reports_historical_replay_when_enabled() -> None:
     """Verify unmatched tool ids can yield a replay-ignored resolution when allowed."""
     store = InMemoryPendingTurnStore()

@@ -134,7 +134,7 @@
       `tool_result`, duplicate-result rejection, and repeated/concurrent
       continuation cases
 
-- [ ] Cleanup PR: Shared continuation cleanup and verification closeout
+- [x] Cleanup PR: Shared continuation cleanup and verification closeout
   - Acceptance criteria:
     - leftover duplicated route-local continuation helpers are removed
     - docs/support surfaces match shipped shared-store behavior
@@ -146,13 +146,13 @@
     - final validation output
 
 ### Acceptance Gate (before proposing execution complete)
-- [ ] All planned PR acceptance criteria are met with evidence.
-- [ ] Deferred items remained out of scope:
+- [x] All planned PR acceptance criteria are met with evidence.
+- [x] Deferred items remained out of scope:
   - no public partial-result acknowledgement semantics were added
   - no durable backend/persistence layer was introduced as part of the shipped slice
   - no broader failure-lifecycle expansion was bundled into these PRs
-- [ ] Shared-store diff stayed consistent with the approved design.
-- [ ] Verification level executed for each landed slice and for final closeout.
+- [x] Shared-store diff stayed consistent with the approved design.
+- [x] Verification level executed for each landed slice and for final closeout.
 
 If any check fails:
 1. Fix directly if the approved plan still works.
@@ -191,7 +191,7 @@ If any check fails:
   - `uv run pytest -q tests/contract_tests/test_anthropic_messages.py`
   - verify the Anthropic suite includes repeated/concurrent continuation attempts
     against the same paused turn
-- [ ] Final closeout:
+- [x] Final closeout:
   - `uv run ruff format --check .`
   - `uv run ruff check .`
   - `uv run ty check .`
@@ -323,15 +323,37 @@ If any check fails:
   - the repo's default coverage plugin still makes narrow pytest subsets fail
     unrelated to code correctness, so the targeted PR 3 pytest commands used the
     established `-o addopts='' -p no:cov` workaround
-- Deferred items remain out of scope in PR 1:
+- Cleanup review over `aa04bdf`, `d4f3be0`, and `daa5593` found no blocking
+  design-alignment or correctness regressions before final closeout.
+- `src/copilot_model_provider/core/pending_turns.py` now treats expiry cleanup as
+  post-expiry best-effort cleanup: the store logs callback failures instead of
+  letting them convert an otherwise expired continuation into a 500 response
+  after the paused-turn bookkeeping has already been removed.
+- `tests/unit_tests/test_pending_turns.py` now covers the cleanup-hardening case,
+  proving an expired continuation still returns `expired` and clears store state
+  even when the expiry callback raises.
+- Cleanup audit confirmed that no route-local paused-turn bookkeeping remains as
+  the shipped source of truth. OpenAI keeps only transport-specific
+  `previous_response_id` / tool-call lookup indexes, Anthropic keeps only
+  `tool_use_id` lookup, and the shared store remains the sole owner of paused
+  turn records, atomic consume, and TTL expiry.
+- Cleanup doc sweep found no broader Markdown edits were required beyond this
+  slug status update: `README.md` already describes the thin-gateway Responses
+  scope, and `docs/design.md` already matches the shipped canonical request
+  shape and current provider boundary.
+- Final closeout verification:
+  - `uv run ruff format --check . && uv run ruff check . && uv run ty check . && uv run pyright`
+    -> all passed (`pyright` still reports 3 existing warnings in
+    `tests/contract_tests/test_anthropic_messages.py`, but no errors)
+  - `uv run pytest -q` -> 239 passed, 2 skipped, coverage 92.72%
+- Deferred items remained out of scope for the shipped slice:
   - no public partial-result continuation semantics
   - no durable backend implementation
   - no broader failure-lifecycle expansion
 
 ## Result
 - Outcome:
-  - PR 1, PR 2, and PR 3 are implemented and verified on the current branch;
-    cleanup remains pending.
+  - PR 1, PR 2, PR 3, and cleanup are implemented and verified on the current
+    branch.
 - Follow-ups:
-  - Next slice is the cleanup PR: remove leftover duplicated continuation helpers
-    and run final verification.
+  - `plans/agent-client-gaps/` execution scope is complete.

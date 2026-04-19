@@ -332,7 +332,19 @@ class InMemoryPendingTurnStore(PendingTurnStoreProtocol):
         return record
 
     async def _call_on_expire(self, *, session_id: str) -> None:
-        """Invoke the optional runtime cleanup callback for one expired session."""
+        """Invoke one expiry callback without letting cleanup failures poison expiry.
+
+        The store has already removed the expired record from its bookkeeping
+        before this callback runs, so a cleanup failure must not resurrect that
+        state or change the northbound expired outcome into an internal error.
+
+        """
         if self._on_expire is None:
             return
-        await self._on_expire(session_id)
+        try:
+            await self._on_expire(session_id)
+        except Exception:
+            _logger.exception(
+                'pending_turn_expiry_cleanup_failed',
+                session_id=session_id,
+            )
