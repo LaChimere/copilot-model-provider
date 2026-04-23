@@ -189,6 +189,106 @@ async def test_pop_pending_session_id_rejects_duplicate_tool_result_call_ids() -
 
 
 @pytest.mark.asyncio
+async def test_pop_pending_session_id_reports_expired_continuation_without_previous_response_id() -> (
+    None
+):
+    """Verify a matched Responses continuation reports expiry when it expires mid-resolution."""
+    current_time = 1000.0
+    pending_sessions_by_response_id = {'resp_123': 'session_123'}
+    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
+
+    async def _on_expire(session_id: str) -> None:
+        """Clear the OpenAI lookup indexes when the paused turn expires."""
+        assert session_id == 'session_123'
+        pending_sessions_by_response_id.clear()
+        pending_sessions_by_tool_call_id.clear()
+
+    pending_turn_store = InMemoryPendingTurnStore(
+        on_expire=_on_expire,
+        time_factory=lambda: current_time,
+    )
+    await pending_turn_store.remember(
+        record=PausedTurnRecord(
+            session_id='session_123',
+            tool_ids=frozenset({'call_1'}),
+            request_model_id='gpt-5.4',
+            runtime_model_id='copilot:gpt-5.4',
+            auth_context_fingerprint='token:test',
+            expires_at=1005.0,
+        )
+    )
+    current_time = 1006.0
+
+    with pytest.raises(ProviderError) as error_info:
+        await _pop_pending_session_id(
+            request=_build_tool_result_request('call_1'),
+            pending_turn_store=pending_turn_store,
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            previous_response_id=None,
+        )
+
+    assert error_info.value.code == 'continuation_expired'
+    assert (
+        error_info.value.message
+        == 'The pending provider session expired before the supplied function_call_output items were submitted.'
+    )
+    assert pending_sessions_by_response_id == {}
+    assert pending_sessions_by_tool_call_id == {}
+    assert await pending_turn_store.get(session_id='session_123') is None
+
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_reports_expired_previous_response_id_continuation() -> (
+    None
+):
+    """Verify a matched ``previous_response_id`` continuation reports expiry clearly."""
+    current_time = 1000.0
+    pending_sessions_by_response_id = {'resp_123': 'session_123'}
+    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
+
+    async def _on_expire(session_id: str) -> None:
+        """Clear the OpenAI lookup indexes when the paused turn expires."""
+        assert session_id == 'session_123'
+        pending_sessions_by_response_id.clear()
+        pending_sessions_by_tool_call_id.clear()
+
+    pending_turn_store = InMemoryPendingTurnStore(
+        on_expire=_on_expire,
+        time_factory=lambda: current_time,
+    )
+    await pending_turn_store.remember(
+        record=PausedTurnRecord(
+            session_id='session_123',
+            tool_ids=frozenset({'call_1'}),
+            request_model_id='gpt-5.4',
+            runtime_model_id='copilot:gpt-5.4',
+            auth_context_fingerprint='token:test',
+            expires_at=1005.0,
+        )
+    )
+    current_time = 1006.0
+
+    with pytest.raises(ProviderError) as error_info:
+        await _pop_pending_session_id(
+            request=_build_tool_result_request('call_1'),
+            pending_turn_store=pending_turn_store,
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            previous_response_id='resp_123',
+        )
+
+    assert error_info.value.code == 'continuation_expired'
+    assert (
+        error_info.value.message
+        == 'The pending provider session matched by the supplied previous_response_id expired before the function_call_output items were submitted.'
+    )
+    assert pending_sessions_by_response_id == {}
+    assert pending_sessions_by_tool_call_id == {}
+    assert await pending_turn_store.get(session_id='session_123') is None
+
+
+@pytest.mark.asyncio
 async def test_pop_pending_session_id_rejects_sequential_duplicate_attempt() -> None:
     """Verify one consumed Responses paused turn cannot be resumed twice sequentially."""
     (

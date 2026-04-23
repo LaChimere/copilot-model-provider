@@ -196,6 +196,46 @@ async def test_pending_turn_store_expires_and_calls_runtime_cleanup_once() -> No
 
 
 @pytest.mark.asyncio
+async def test_pending_turn_store_does_not_double_call_cleanup_during_expiry_race() -> (
+    None
+):
+    """Verify background expiry and a concurrent resolve do not invoke cleanup twice."""
+    expired_session_ids: list[str] = []
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def _on_expire(session_id: str) -> None:
+        """Block one expiry cleanup so a concurrent resolve can overlap it safely."""
+        expired_session_ids.append(session_id)
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    store = InMemoryPendingTurnStore(
+        on_expire=_on_expire,
+        time_factory=lambda: 1000.0,
+    )
+    await store.remember(
+        record=PausedTurnRecord(
+            session_id='session_123',
+            tool_ids=frozenset({'call_1'}),
+            request_model_id='gpt-5.4',
+            runtime_model_id='copilot:gpt-5.4',
+            auth_context_fingerprint='token:test',
+            expires_at=1000.0,
+        )
+    )
+
+    await cleanup_started.wait()
+    resolution = await store.resolve(tool_ids=('call_1',))
+    release_cleanup.set()
+    await asyncio.sleep(0)
+
+    assert resolution.status == 'invalid'
+    assert expired_session_ids == ['session_123']
+    assert await store.get(session_id='session_123') is None
+
+
+@pytest.mark.asyncio
 async def test_pending_turn_store_returns_expired_when_cleanup_callback_fails() -> None:
     """Verify expiry cleanup failures are logged without changing the expired result."""
     current_time = 1001.0

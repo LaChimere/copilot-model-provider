@@ -79,6 +79,16 @@ def test_map_provider_error_to_anthropic_type_uses_conservative_fallbacks() -> N
     assert (
         map_provider_error_to_anthropic_type(
             error=ProviderError(
+                code='continuation_expired',
+                message='Expired continuation',
+                status_code=400,
+            )
+        )
+        is AnthropicErrorType.INVALID_REQUEST
+    )
+    assert (
+        map_provider_error_to_anthropic_type(
+            error=ProviderError(
                 code='runtime_execution_failed',
                 message='Boom',
                 status_code=500,

@@ -346,6 +346,26 @@ If any check fails:
     -> all passed (`pyright` still reports 3 existing warnings in
     `tests/contract_tests/test_anthropic_messages.py`, but no errors)
   - `uv run pytest -q` -> 239 passed, 2 skipped, coverage 92.72%
+- Post-closeout review follow-up aligned the northbound expiry path with the
+  shared-store design: OpenAI Responses and Anthropic Messages now translate
+  `PausedTurnResolution(status='expired')` into explicit
+  `continuation_expired` 400 errors instead of falling through to generic
+  invalid/missing-session errors.
+- `tests/unit_tests/test_openai_response_sessions.py` and
+  `tests/unit_tests/test_anthropic_message_sessions.py` now cover matched
+  continuations that expire between route lookup and `resolve(...)`, while
+  `tests/unit_tests/test_pending_turns.py` covers the overlap between background
+  expiry cleanup and a concurrent `resolve(...)` attempt without double cleanup.
+- `tests/contract_tests/test_openai_responses.py` and
+  `tests/contract_tests/test_anthropic_messages.py` now use a controllable clock
+  to hit the inline expired-resolution path deterministically, so the contract
+  tests validate the intended `continuation_expired` surface without depending
+  on background task scheduling order.
+- Review follow-up verification:
+  - `uv run ruff check . && uv run ty check . && uv run pyright` -> all passed
+    (with the same 3 existing `test_anthropic_messages.py` warnings)
+  - `uv run pytest -q -o addopts='' -p no:cov tests/unit_tests/test_pending_turns.py tests/unit_tests/test_openai_response_sessions.py tests/unit_tests/test_anthropic_message_sessions.py tests/unit_tests/test_errors.py tests/contract_tests/test_openai_responses.py tests/contract_tests/test_anthropic_messages.py`
+    -> 69 passed
 - Deferred items remained out of scope for the shipped slice:
   - no public partial-result continuation semantics
   - no durable backend implementation

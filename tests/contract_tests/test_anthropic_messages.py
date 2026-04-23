@@ -25,6 +25,9 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
+from copilot_model_provider.core.pending_turns import (
+    InMemoryPendingTurnStore as SharedPendingTurnStore,
+)
 from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
@@ -920,12 +923,29 @@ async def test_post_messages_concurrent_duplicate_tool_result_continuations_resu
 async def test_post_messages_continuation_expires_after_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify that abandoned Anthropic continuations expire instead of leaking forever."""
+    """Verify that expired Anthropic continuations surface the explicit expiry error."""
+    current_time = 1000.0
+
+    def _build_pending_turn_store(
+        *, on_expire: object = None
+    ) -> SharedPendingTurnStore:
+        """Build one shared pending-turn store bound to the controllable test clock."""
+        return SharedPendingTurnStore(
+            on_expire=cast('Any', on_expire),
+            time_factory=lambda: current_time,
+        )
+
     monkeypatch.setattr(
         anthropic_messages_api,
         '_PENDING_TOOL_USE_SESSION_TTL_SECONDS',
-        0.01,
+        10.0,
     )
+    monkeypatch.setattr(
+        anthropic_messages_api,
+        'InMemoryPendingTurnStore',
+        _build_pending_turn_store,
+    )
+    monkeypatch.setattr(anthropic_messages_api, 'time', lambda: current_time)
     runtime = _FakeAnthropicToolRuntime()
     first_request_body: dict[str, object] = {
         'model': 'claude-sonnet-4-20250514',
@@ -940,7 +960,7 @@ async def test_post_messages_continuation_expires_after_ttl(
 
         first_payload = cast('dict[str, Any]', first_response.json())
         tool_use_block = cast('dict[str, Any]', first_payload['content'][1])
-        await asyncio.sleep(0.05)
+        current_time = 1011.0
         follow_up_request_body: dict[str, object] = {
             'model': 'claude-sonnet-4-20250514',
             'messages': [
@@ -964,8 +984,10 @@ async def test_post_messages_continuation_expires_after_ttl(
     follow_up_payload = cast('dict[str, Any]', follow_up.json())
     assert first_response.status_code == 200
     assert follow_up.status_code == 400
+    assert follow_up_payload['error']['type'] == 'invalid_request_error'
     assert follow_up_payload['error']['message'] == (
-        'No pending provider session matched the supplied tool_result blocks.'
+        'The pending provider session expired before the supplied tool_result '
+        'blocks were submitted.'
     )
     assert runtime.discarded_sessions == [(_ANTHROPIC_TOOL_SESSION_ID, True)]
 

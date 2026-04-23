@@ -98,7 +98,7 @@ def map_provider_error_to_anthropic_type(*, error: ProviderError) -> AnthropicEr
     if error.code == 'invalid_authorization_header':
         return AnthropicErrorType.AUTHENTICATION
 
-    if error.code == 'model_not_found':
+    if error.code in {'model_not_found', 'continuation_expired'}:
         return AnthropicErrorType.INVALID_REQUEST
 
     return AnthropicErrorType.API

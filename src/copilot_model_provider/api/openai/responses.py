@@ -646,6 +646,12 @@ async def _pop_pending_session_id(  # noqa: C901
                 status_code=400,
             )
         resolution = await pending_turn_store.resolve(tool_ids=matched_call_ids)
+        if resolution.status == 'expired':
+            raise ProviderError(
+                code='continuation_expired',
+                message='The pending provider session expired before the supplied function_call_output items were submitted.',
+                status_code=400,
+            )
         if resolution.status != 'ready_to_resume' or resolution.record is None:
             raise ProviderError(
                 code='invalid_tool_result',
@@ -726,6 +732,12 @@ async def _pop_pending_session_id(  # noqa: C901
         tool_ids=matched_call_ids,
         expected_session_id=session_id,
     )
+    if resolution.status == 'expired':
+        raise ProviderError(
+            code='continuation_expired',
+            message='The pending provider session matched by the supplied previous_response_id expired before the function_call_output items were submitted.',
+            status_code=400,
+        )
     if resolution.status != 'ready_to_resume' or resolution.record is None:
         raise ProviderError(
             code='invalid_previous_response_id',

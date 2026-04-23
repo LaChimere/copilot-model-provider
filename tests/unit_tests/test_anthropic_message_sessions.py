@@ -183,6 +183,51 @@ async def test_pop_pending_session_id_from_tool_results_rejects_duplicate_tool_u
 
 
 @pytest.mark.asyncio
+async def test_pop_pending_session_id_from_tool_results_reports_expired_continuation() -> (
+    None
+):
+    """Verify a matched Anthropic continuation reports expiry when it expires mid-resolution."""
+    current_time = 1000.0
+    pending_sessions_by_tool_use_id = {'toolu_1': 'session_123'}
+
+    async def _on_expire(session_id: str) -> None:
+        """Clear the Anthropic lookup index when the paused turn expires."""
+        assert session_id == 'session_123'
+        pending_sessions_by_tool_use_id.clear()
+
+    pending_turn_store = InMemoryPendingTurnStore(
+        on_expire=_on_expire,
+        time_factory=lambda: current_time,
+    )
+    await pending_turn_store.remember(
+        record=PausedTurnRecord(
+            session_id='session_123',
+            tool_ids=frozenset({'toolu_1'}),
+            request_model_id='claude-sonnet-4-20250514',
+            runtime_model_id='copilot:claude-sonnet-4-20250514',
+            auth_context_fingerprint='token:test',
+            expires_at=1005.0,
+        )
+    )
+    current_time = 1006.0
+
+    with pytest.raises(ProviderError) as error_info:
+        await _pop_pending_session_id_from_tool_results(
+            request=_build_tool_result_request('toolu_1'),
+            pending_turn_store=pending_turn_store,
+            pending_sessions_by_tool_use_id=pending_sessions_by_tool_use_id,
+        )
+
+    assert error_info.value.code == 'continuation_expired'
+    assert (
+        error_info.value.message
+        == 'The pending provider session expired before the supplied tool_result blocks were submitted.'
+    )
+    assert pending_sessions_by_tool_use_id == {}
+    assert await pending_turn_store.get(session_id='session_123') is None
+
+
+@pytest.mark.asyncio
 async def test_pop_pending_session_id_from_tool_results_rejects_sequential_duplicate_attempt() -> (
     None
 ):

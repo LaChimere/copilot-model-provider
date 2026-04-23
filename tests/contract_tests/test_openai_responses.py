@@ -19,6 +19,9 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
+from copilot_model_provider.core.pending_turns import (
+    InMemoryPendingTurnStore as SharedPendingTurnStore,
+)
 from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
@@ -1170,12 +1173,29 @@ async def test_post_responses_ignores_completed_historical_tool_outputs_on_new_t
 async def test_post_responses_continuation_expires_after_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify that abandoned Responses continuations expire instead of leaking forever."""
+    """Verify that expired Responses continuations surface ``continuation_expired``."""
+    current_time = 1000.0
+
+    def _build_pending_turn_store(
+        *, on_expire: object = None
+    ) -> SharedPendingTurnStore:
+        """Build one shared pending-turn store bound to the controllable test clock."""
+        return SharedPendingTurnStore(
+            on_expire=cast('Any', on_expire),
+            time_factory=lambda: current_time,
+        )
+
     monkeypatch.setattr(
         openai_responses_api,
         '_PENDING_RESPONSE_SESSION_TTL_SECONDS',
-        0.01,
+        10.0,
     )
+    monkeypatch.setattr(
+        openai_responses_api,
+        'InMemoryPendingTurnStore',
+        _build_pending_turn_store,
+    )
+    monkeypatch.setattr(openai_responses_api, 'time', lambda: current_time)
     runtime = _FakeResponsesToolRuntime()
     first_request_body: dict[str, object] = {
         'model': 'gpt-5.4',
@@ -1204,7 +1224,7 @@ async def test_post_responses_continuation_expires_after_ttl(
             'dict[str, Any]',
             json.loads(_extract_completed_frame_data(payload=first_payload)),
         )
-        await asyncio.sleep(0.05)
+        current_time = 1011.0
         follow_up_request_body: dict[str, object] = {
             'model': 'gpt-5.4',
             'previous_response_id': first_completed_payload['response']['id'],
@@ -1224,7 +1244,11 @@ async def test_post_responses_continuation_expires_after_ttl(
     follow_up_payload = cast('dict[str, Any]', follow_up.json())
     assert response.status_code == 200
     assert follow_up.status_code == 400
-    assert follow_up_payload['error']['code'] == 'invalid_previous_response_id'
+    assert follow_up_payload['error']['code'] == 'continuation_expired'
+    assert follow_up_payload['error']['message'] == (
+        'The pending provider session matched by the supplied previous_response_id '
+        'expired before the function_call_output items were submitted.'
+    )
     assert runtime.discarded_sessions == [('responses-tool-session', True)]
 
 
