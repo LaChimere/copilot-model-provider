@@ -113,6 +113,19 @@ class _FakeChatRuntime(RuntimeProtocol):
             events=_events(),
         )
 
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Reject unexpected runtime cleanup calls in non-streaming chat tests."""
+        del session_id, disconnect
+        raise AssertionError(
+            'discard_interactive_session should not be called in this test'
+        )
+
 
 class _FakeChatAggregateRuntime(_FakeChatRuntime):
     """Fake streaming runtime that emits a final aggregate assistant message."""

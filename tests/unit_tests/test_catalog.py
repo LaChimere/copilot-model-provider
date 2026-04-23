@@ -23,7 +23,11 @@ from copilot_model_provider.core.models import (
     RuntimeDiscoveredModel,
     RuntimeHealth,
 )
-from copilot_model_provider.core.routing import ModelRouter
+from copilot_model_provider.core.routing import (
+    DEFAULT_AUTH_CONTEXT_CACHE_KEY,
+    ModelRouter,
+    build_auth_context_cache_key,
+)
 from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
@@ -85,6 +89,19 @@ class _FakeRuntime(RuntimeProtocol):
         del kwargs
         raise AssertionError('stream_chat should not be called in this test')
 
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Reject unexpected interactive-session discards in router-only tests."""
+        del session_id, disconnect
+        raise AssertionError(
+            'discard_interactive_session should not be called in this test'
+        )
+
 
 class _FakeMetadataRuntime(_FakeRuntime):
     """Fake runtime that exposes metadata-rich model discovery."""
@@ -142,6 +159,24 @@ def test_live_catalog_exposes_same_name_public_model_ids() -> None:
         'catalog-test',
         'catalog-test',
     ]
+
+
+def test_build_auth_context_cache_key_uses_default_sentinel_without_token() -> None:
+    """Verify that missing auth context uses the shared default-auth sentinel."""
+    assert (
+        build_auth_context_cache_key(runtime_auth_token=None)
+        == DEFAULT_AUTH_CONTEXT_CACHE_KEY
+    )
+
+
+def test_build_auth_context_cache_key_hashes_tokens_without_storing_raw_value() -> None:
+    """Verify that auth-context keys hash the token into the shared key format."""
+    cache_key = build_auth_context_cache_key(
+        runtime_auth_token='ghu_test_token',  # noqa: S106
+    )
+
+    assert cache_key.startswith('token:')
+    assert cache_key != 'token:ghu_test_token'
 
 
 def test_live_catalog_from_models_preserves_copilot_metadata() -> None:

@@ -117,3 +117,19 @@ class RuntimeProtocol(Protocol):
     ) -> RuntimeEventStream:
         """Execute a normalized streaming chat request."""
         ...
+
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Discard one paused interactive session owned by the runtime backend.
+
+        Args:
+            session_id: Runtime-owned interactive session identifier to discard.
+            disconnect: Whether the runtime should also disconnect the underlying
+                backend session after removing provider-owned bookkeeping.
+
+        """
+        ...

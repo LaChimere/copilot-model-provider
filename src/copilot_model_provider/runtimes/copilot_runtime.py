@@ -184,6 +184,25 @@ class CopilotRuntime(RuntimeProtocol):
         return tuple(model.id for model in models)
 
     @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Discard one paused interactive session through the public runtime seam.
+
+        Args:
+            session_id: Runtime-owned interactive session identifier to remove.
+            disconnect: Whether the underlying Copilot session should also close.
+
+        """
+        await self._discard_interactive_session(
+            session_id=session_id,
+            disconnect=disconnect,
+        )
+
+    @override
     async def complete_chat(
         self,
         *,

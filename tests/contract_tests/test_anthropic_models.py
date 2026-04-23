@@ -63,6 +63,19 @@ class _FakeAnthropicModelsRuntime(RuntimeProtocol):
         del kwargs
         raise AssertionError('stream_chat should not be called in this test')
 
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Reject unexpected runtime cleanup calls in the models contract test."""
+        del session_id, disconnect
+        raise AssertionError(
+            'discard_interactive_session should not be called in this test'
+        )
+
 
 class _FakeAnthropicMetadataModelsRuntime(_FakeAnthropicModelsRuntime):
     """Deterministic runtime that exposes metadata-rich Anthropic model cards."""

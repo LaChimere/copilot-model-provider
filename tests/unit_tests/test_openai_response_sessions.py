@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from copilot_model_provider.api.openai.responses import _pop_pending_session_id
@@ -10,6 +12,10 @@ from copilot_model_provider.core.models import (
     OpenAIResponsesCreateRequest,
     OpenAIResponsesFunctionCallOutputItem,
     OpenAIResponsesInputMessage,
+)
+from copilot_model_provider.core.pending_turns import (
+    InMemoryPendingTurnStore,
+    PausedTurnRecord,
 )
 
 
@@ -27,17 +33,45 @@ def _build_tool_result_request(*call_ids: str) -> OpenAIResponsesCreateRequest:
     )
 
 
-def test_pop_pending_session_id_returns_matching_session() -> None:
-    """Verify that matched Responses tool results resolve and consume one session."""
-    pending_sessions_by_response_id = {'resp_123': 'session_123'}
-    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
-    pending_tool_call_batches_by_session_id = {'session_123': frozenset({'call_1'})}
+async def _build_pending_turn_state(
+    *,
+    response_id: str = 'resp_123',
+    session_id: str = 'session_123',
+    call_ids: tuple[str, ...] = ('call_1',),
+) -> tuple[InMemoryPendingTurnStore, dict[str, str], dict[str, str]]:
+    """Build one pending-turn store plus OpenAI-specific lookup indexes for tests."""
+    store = InMemoryPendingTurnStore(time_factory=lambda: 1000.0)
+    await store.remember(
+        record=PausedTurnRecord(
+            session_id=session_id,
+            tool_ids=frozenset(call_ids),
+            request_model_id='gpt-5.4',
+            runtime_model_id='copilot:gpt-5.4',
+            auth_context_fingerprint='token:test',
+            expires_at=1005.0,
+        )
+    )
+    return (
+        store,
+        {response_id: session_id},
+        dict.fromkeys(call_ids, session_id),
+    )
 
-    session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_returns_matching_session() -> None:
+    """Verify that matched Responses tool results resolve and consume one session."""
+    (
+        pending_turn_store,
+        pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id,
+    ) = await _build_pending_turn_state()
+
+    session_id, accepted_tool_result_call_ids = await _pop_pending_session_id(
         request=_build_tool_result_request('call_1'),
+        pending_turn_store=pending_turn_store,
         pending_sessions_by_response_id=pending_sessions_by_response_id,
         pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-        pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
         previous_response_id=None,
     )
 
@@ -45,17 +79,18 @@ def test_pop_pending_session_id_returns_matching_session() -> None:
     assert accepted_tool_result_call_ids == frozenset({'call_1'})
     assert pending_sessions_by_response_id == {}
     assert pending_sessions_by_tool_call_id == {}
-    assert pending_tool_call_batches_by_session_id == {}
+    assert await pending_turn_store.get(session_id='session_123') is None
 
 
-def test_pop_pending_session_id_rejects_missing_session() -> None:
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_rejects_missing_session() -> None:
     """Verify that unmatched Responses tool results fail with the missing-session error."""
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id(
+        await _pop_pending_session_id(
             request=_build_tool_result_request('call_missing'),
+            pending_turn_store=InMemoryPendingTurnStore(),
             pending_sessions_by_response_id={},
             pending_sessions_by_tool_call_id={},
-            pending_tool_call_batches_by_session_id={},
             previous_response_id=None,
         )
 
@@ -66,27 +101,23 @@ def test_pop_pending_session_id_rejects_missing_session() -> None:
     )
 
 
-def test_pop_pending_session_id_rejects_partial_batch_without_consuming_session() -> (
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_rejects_partial_batch_without_consuming_session() -> (
     None
 ):
     """Verify that partial Responses tool-result batches fail without clearing state."""
-    pending_sessions_by_response_id = {'resp_123': 'session_123'}
-    pending_sessions_by_tool_call_id = {
-        'call_1': 'session_123',
-        'call_2': 'session_123',
-    }
-    pending_tool_call_batches_by_session_id = {
-        'session_123': frozenset({'call_1', 'call_2'})
-    }
+    (
+        pending_turn_store,
+        pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id,
+    ) = await _build_pending_turn_state(call_ids=('call_1', 'call_2'))
 
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id(
+        await _pop_pending_session_id(
             request=_build_tool_result_request('call_1'),
+            pending_turn_store=pending_turn_store,
             pending_sessions_by_response_id=pending_sessions_by_response_id,
             pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-            pending_tool_call_batches_by_session_id=(
-                pending_tool_call_batches_by_session_id
-            ),
             previous_response_id='resp_123',
         )
 
@@ -100,27 +131,29 @@ def test_pop_pending_session_id_rejects_partial_batch_without_consuming_session(
         'call_1': 'session_123',
         'call_2': 'session_123',
     }
-    assert pending_tool_call_batches_by_session_id == {
-        'session_123': frozenset({'call_1', 'call_2'})
-    }
+    assert await pending_turn_store.get(session_id='session_123') is not None
 
 
-def test_pop_pending_session_id_ignores_historical_replayed_tool_results() -> None:
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_ignores_historical_replayed_tool_results() -> (
+    None
+):
     """Verify that replayed historical tool outputs do not break current batch recovery."""
-    pending_sessions_by_response_id = {'resp_456': 'session_456'}
-    pending_sessions_by_tool_call_id = {
-        'call_2': 'session_456',
-        'call_3': 'session_456',
-    }
-    pending_tool_call_batches_by_session_id = {
-        'session_456': frozenset({'call_2', 'call_3'})
-    }
+    (
+        pending_turn_store,
+        pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id,
+    ) = await _build_pending_turn_state(
+        response_id='resp_456',
+        session_id='session_456',
+        call_ids=('call_2', 'call_3'),
+    )
 
-    session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
+    session_id, accepted_tool_result_call_ids = await _pop_pending_session_id(
         request=_build_tool_result_request('call_1', 'call_2', 'call_3'),
+        pending_turn_store=pending_turn_store,
         pending_sessions_by_response_id=pending_sessions_by_response_id,
         pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-        pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
         previous_response_id=None,
     )
 
@@ -128,21 +161,23 @@ def test_pop_pending_session_id_ignores_historical_replayed_tool_results() -> No
     assert accepted_tool_result_call_ids == frozenset({'call_2', 'call_3'})
     assert pending_sessions_by_response_id == {}
     assert pending_sessions_by_tool_call_id == {}
-    assert pending_tool_call_batches_by_session_id == {}
 
 
-def test_pop_pending_session_id_rejects_duplicate_tool_result_call_ids() -> None:
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_rejects_duplicate_tool_result_call_ids() -> None:
     """Verify that duplicate function_call_output items are rejected explicitly."""
-    pending_sessions_by_response_id = {'resp_123': 'session_123'}
-    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
-    pending_tool_call_batches_by_session_id = {'session_123': frozenset({'call_1'})}
+    (
+        pending_turn_store,
+        pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id,
+    ) = await _build_pending_turn_state()
 
     with pytest.raises(ProviderError) as error_info:
-        _pop_pending_session_id(
+        await _pop_pending_session_id(
             request=_build_tool_result_request('call_1', 'call_1'),
+            pending_turn_store=pending_turn_store,
             pending_sessions_by_response_id=pending_sessions_by_response_id,
             pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
-            pending_tool_call_batches_by_session_id=pending_tool_call_batches_by_session_id,
             previous_response_id='resp_123',
         )
 
@@ -153,9 +188,180 @@ def test_pop_pending_session_id_rejects_duplicate_tool_result_call_ids() -> None
     )
 
 
-def test_pop_pending_session_id_ignores_completed_historical_tool_outputs() -> None:
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_reports_expired_continuation_without_previous_response_id() -> (
+    None
+):
+    """Verify a matched Responses continuation reports expiry when it expires mid-resolution."""
+    current_time = 1000.0
+    pending_sessions_by_response_id = {'resp_123': 'session_123'}
+    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
+
+    async def _on_expire(session_id: str) -> None:
+        """Clear the OpenAI lookup indexes when the paused turn expires."""
+        assert session_id == 'session_123'
+        pending_sessions_by_response_id.clear()
+        pending_sessions_by_tool_call_id.clear()
+
+    pending_turn_store = InMemoryPendingTurnStore(
+        on_expire=_on_expire,
+        time_factory=lambda: current_time,
+    )
+    await pending_turn_store.remember(
+        record=PausedTurnRecord(
+            session_id='session_123',
+            tool_ids=frozenset({'call_1'}),
+            request_model_id='gpt-5.4',
+            runtime_model_id='copilot:gpt-5.4',
+            auth_context_fingerprint='token:test',
+            expires_at=1005.0,
+        )
+    )
+    current_time = 1006.0
+
+    with pytest.raises(ProviderError) as error_info:
+        await _pop_pending_session_id(
+            request=_build_tool_result_request('call_1'),
+            pending_turn_store=pending_turn_store,
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            previous_response_id=None,
+        )
+
+    assert error_info.value.code == 'continuation_expired'
+    assert (
+        error_info.value.message
+        == 'The pending provider session expired before the supplied function_call_output items were submitted.'
+    )
+    assert pending_sessions_by_response_id == {}
+    assert pending_sessions_by_tool_call_id == {}
+    assert await pending_turn_store.get(session_id='session_123') is None
+
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_reports_expired_previous_response_id_continuation() -> (
+    None
+):
+    """Verify a matched ``previous_response_id`` continuation reports expiry clearly."""
+    current_time = 1000.0
+    pending_sessions_by_response_id = {'resp_123': 'session_123'}
+    pending_sessions_by_tool_call_id = {'call_1': 'session_123'}
+
+    async def _on_expire(session_id: str) -> None:
+        """Clear the OpenAI lookup indexes when the paused turn expires."""
+        assert session_id == 'session_123'
+        pending_sessions_by_response_id.clear()
+        pending_sessions_by_tool_call_id.clear()
+
+    pending_turn_store = InMemoryPendingTurnStore(
+        on_expire=_on_expire,
+        time_factory=lambda: current_time,
+    )
+    await pending_turn_store.remember(
+        record=PausedTurnRecord(
+            session_id='session_123',
+            tool_ids=frozenset({'call_1'}),
+            request_model_id='gpt-5.4',
+            runtime_model_id='copilot:gpt-5.4',
+            auth_context_fingerprint='token:test',
+            expires_at=1005.0,
+        )
+    )
+    current_time = 1006.0
+
+    with pytest.raises(ProviderError) as error_info:
+        await _pop_pending_session_id(
+            request=_build_tool_result_request('call_1'),
+            pending_turn_store=pending_turn_store,
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            previous_response_id='resp_123',
+        )
+
+    assert error_info.value.code == 'continuation_expired'
+    assert (
+        error_info.value.message
+        == 'The pending provider session matched by the supplied previous_response_id expired before the function_call_output items were submitted.'
+    )
+    assert pending_sessions_by_response_id == {}
+    assert pending_sessions_by_tool_call_id == {}
+    assert await pending_turn_store.get(session_id='session_123') is None
+
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_rejects_sequential_duplicate_attempt() -> None:
+    """Verify one consumed Responses paused turn cannot be resumed twice sequentially."""
+    (
+        pending_turn_store,
+        pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id,
+    ) = await _build_pending_turn_state()
+
+    session_id, accepted_tool_result_call_ids = await _pop_pending_session_id(
+        request=_build_tool_result_request('call_1'),
+        pending_turn_store=pending_turn_store,
+        pending_sessions_by_response_id=pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+        previous_response_id='resp_123',
+    )
+
+    assert session_id == 'session_123'
+    assert accepted_tool_result_call_ids == frozenset({'call_1'})
+
+    with pytest.raises(ProviderError) as error_info:
+        await _pop_pending_session_id(
+            request=_build_tool_result_request('call_1'),
+            pending_turn_store=pending_turn_store,
+            pending_sessions_by_response_id=pending_sessions_by_response_id,
+            pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+            previous_response_id='resp_123',
+        )
+
+    assert error_info.value.code == 'invalid_previous_response_id'
+
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_allows_only_one_concurrent_duplicate_attempt() -> (
+    None
+):
+    """Verify concurrent Responses duplicate attempts yield one winner and one rejection."""
+    (
+        pending_turn_store,
+        pending_sessions_by_response_id,
+        pending_sessions_by_tool_call_id,
+    ) = await _build_pending_turn_state()
+    release_event = asyncio.Event()
+
+    async def _attempt_resume() -> tuple[str, str]:
+        """Attempt one duplicated continuation after both contenders are ready."""
+        await release_event.wait()
+        try:
+            session_id, _ = await _pop_pending_session_id(
+                request=_build_tool_result_request('call_1'),
+                pending_turn_store=pending_turn_store,
+                pending_sessions_by_response_id=pending_sessions_by_response_id,
+                pending_sessions_by_tool_call_id=pending_sessions_by_tool_call_id,
+                previous_response_id='resp_123',
+            )
+        except ProviderError as error:
+            return 'error', error.code
+        return 'ok', session_id or ''
+
+    first_task = asyncio.create_task(_attempt_resume())
+    second_task = asyncio.create_task(_attempt_resume())
+    await asyncio.sleep(0)
+    release_event.set()
+    results = sorted(await asyncio.gather(first_task, second_task))
+
+    assert results == [('error', 'invalid_previous_response_id'), ('ok', 'session_123')]
+
+
+@pytest.mark.asyncio
+async def test_pop_pending_session_id_ignores_completed_historical_tool_outputs() -> (
+    None
+):
     """Verify that a fresh user turn can replay completed historical tool outputs safely."""
-    session_id, accepted_tool_result_call_ids = _pop_pending_session_id(
+    session_id, accepted_tool_result_call_ids = await _pop_pending_session_id(
         request=OpenAIResponsesCreateRequest(
             model='gpt-5.4',
             input=[
@@ -173,9 +379,9 @@ def test_pop_pending_session_id_ignores_completed_historical_tool_outputs() -> N
                 ),
             ],
         ),
+        pending_turn_store=InMemoryPendingTurnStore(),
         pending_sessions_by_response_id={},
         pending_sessions_by_tool_call_id={},
-        pending_tool_call_batches_by_session_id={},
         previous_response_id=None,
     )
 

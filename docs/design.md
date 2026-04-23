@@ -192,14 +192,23 @@ Current fields:
 
 - `request_id`
 - `conversation_id`
+- `session_id`
 - `runtime_auth_token`
 - `model_id`
 - `messages`
+- `tool_definitions`
+- `tool_results`
+- `tool_routing_policy`
 - `stream`
 
 Important note:
 
 - `conversation_id` may be present in normalized data, but the current implementation does **not** use it for provider-managed session persistence or resume
+- `session_id` is the provider-owned continuation identifier used when one
+  northbound request resumes a paused interactive runtime session
+- `tool_definitions`, `tool_results`, and `tool_routing_policy` carry the
+  normalized tool-aware request context used by the thin gateway's shared
+  runtime path; they do **not** mean the provider executes tools itself
 
 ### 5.2 Chat request normalization
 

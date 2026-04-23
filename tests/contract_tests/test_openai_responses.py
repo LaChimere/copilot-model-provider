@@ -19,6 +19,9 @@ from copilot_model_provider.core.models import (
     RuntimeCompletion,
     RuntimeHealth,
 )
+from copilot_model_provider.core.pending_turns import (
+    InMemoryPendingTurnStore as SharedPendingTurnStore,
+)
 from copilot_model_provider.runtimes.protocols import (
     RuntimeEventStream,
     RuntimeProtocol,
@@ -120,6 +123,19 @@ class _FakeResponsesRuntime(RuntimeProtocol):
 
         return RuntimeEventStream(session_id=None, events=_events())
 
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Reject unexpected runtime cleanup calls in Responses contract tests."""
+        del session_id, disconnect
+        raise AssertionError(
+            'discard_interactive_session should not be called in this test'
+        )
+
 
 class _FakeResponsesAggregateRuntime(_FakeResponsesRuntime):
     """Fake streaming runtime that emits a final aggregate assistant message."""
@@ -170,6 +186,11 @@ class _FakeResponsesAggregateRuntime(_FakeResponsesRuntime):
 
 class _FakeResponsesToolRuntime(_FakeResponsesRuntime):
     """Fake runtime that pauses on a function call and resumes on tool output."""
+
+    def __init__(self) -> None:
+        """Initialize the fake runtime state for tool-loop contract tests."""
+        super().__init__()
+        self.discarded_sessions: list[tuple[str, bool]] = []
 
     @override
     async def complete_chat(
@@ -269,6 +290,39 @@ class _FakeResponsesToolRuntime(_FakeResponsesRuntime):
                 yield event
 
         return RuntimeEventStream(session_id='responses-tool-session', events=_events())
+
+    @override
+    async def discard_interactive_session(
+        self,
+        *,
+        session_id: str,
+        disconnect: bool,
+    ) -> None:
+        """Record runtime cleanup calls expected by expiry-oriented Responses tests."""
+        self.discarded_sessions.append((session_id, disconnect))
+
+
+class _BlockingResponsesToolRuntime(_FakeResponsesToolRuntime):
+    """Fake runtime that blocks a continuation so duplicate requests can race."""
+
+    def __init__(self) -> None:
+        """Initialize the blocking continuation controls used by concurrency tests."""
+        super().__init__()
+        self.release_continuation = asyncio.Event()
+        self.continuation_call_count = 0
+
+    @override
+    async def complete_chat(
+        self,
+        *,
+        request: CanonicalChatRequest,
+        route: ResolvedRoute,
+    ) -> RuntimeCompletion:
+        """Block tool-result continuations so duplicate follow-ups can overlap."""
+        if request.tool_results:
+            self.continuation_call_count += 1
+            await self.release_continuation.wait()
+        return await super().complete_chat(request=request, route=route)
 
 
 class _FakeResponsesMultiToolRuntime(_FakeResponsesRuntime):
@@ -881,6 +935,142 @@ async def test_post_responses_streaming_supports_function_call_continuation() ->
 
 
 @pytest.mark.asyncio
+async def test_post_responses_rejects_sequential_duplicate_continuation() -> None:
+    """Verify one Responses paused turn cannot be resumed twice with the same response id."""
+    runtime = _FakeResponsesToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'stream': True,
+        'input': 'Open the readme',
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'read_file',
+                    'description': 'Read one file.',
+                    'parameters': {'type': 'object'},
+                },
+            }
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        async with client.stream(
+            'POST',
+            '/openai/v1/responses',
+            json=first_request_body,
+        ) as response:
+            first_payload = ''.join([chunk async for chunk in response.aiter_text()])
+
+        first_completed_payload = cast(
+            'dict[str, Any]',
+            json.loads(_extract_completed_frame_data(payload=first_payload)),
+        )
+        response_id = cast('str', first_completed_payload['response']['id'])
+
+        first_follow_up = await client.post(
+            '/openai/v1/responses',
+            json={
+                'model': 'gpt-5.4',
+                'previous_response_id': response_id,
+                'input': [
+                    {
+                        'type': 'function_call_output',
+                        'call_id': 'call_readme',
+                        'output': 'README contents',
+                    }
+                ],
+            },
+        )
+        second_follow_up = await client.post(
+            '/openai/v1/responses',
+            json={
+                'model': 'gpt-5.4',
+                'previous_response_id': response_id,
+                'input': [
+                    {
+                        'type': 'function_call_output',
+                        'call_id': 'call_readme',
+                        'output': 'README contents',
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert first_follow_up.status_code == 200
+    assert second_follow_up.status_code == 400
+    second_error = cast('dict[str, Any]', second_follow_up.json())['error']
+    assert second_error['code'] == 'invalid_previous_response_id'
+
+
+@pytest.mark.asyncio
+async def test_post_responses_concurrent_duplicate_continuations_resume_only_once() -> (
+    None
+):
+    """Verify concurrent duplicate follow-ups cannot resume one Responses turn twice."""
+    runtime = _BlockingResponsesToolRuntime()
+    first_request_body: dict[str, object] = {
+        'model': 'gpt-5.4',
+        'input': 'Open the readme',
+        'tools': [
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'read_file',
+                    'description': 'Read one file.',
+                    'parameters': {'type': 'object'},
+                },
+            }
+        ],
+    }
+    async with build_async_client(runtime=runtime) as client:
+        first_response = await client.post(
+            '/openai/v1/responses',
+            json=first_request_body,
+        )
+        first_payload = cast('dict[str, Any]', first_response.json())
+        response_id = cast('str', first_payload['id'])
+
+        async def _submit_follow_up() -> tuple[int, dict[str, Any]]:
+            """Submit one duplicated continuation request against the same response id."""
+            response = await client.post(
+                '/openai/v1/responses',
+                json={
+                    'model': 'gpt-5.4',
+                    'previous_response_id': response_id,
+                    'input': [
+                        {
+                            'type': 'function_call_output',
+                            'call_id': 'call_readme',
+                            'output': 'README contents',
+                        }
+                    ],
+                },
+            )
+            return response.status_code, cast('dict[str, Any]', response.json())
+
+        first_follow_up_task = asyncio.create_task(_submit_follow_up())
+        await asyncio.sleep(0)
+        second_follow_up_task = asyncio.create_task(_submit_follow_up())
+        await asyncio.sleep(0)
+        runtime.release_continuation.set()
+        follow_up_results = await asyncio.gather(
+            first_follow_up_task,
+            second_follow_up_task,
+        )
+
+    statuses = sorted(status for status, _ in follow_up_results)
+    error_payload = next(
+        payload for status, payload in follow_up_results if status == 400
+    )
+
+    assert first_response.status_code == 200
+    assert statuses == [200, 400]
+    assert error_payload['error']['code'] == 'invalid_previous_response_id'
+    assert runtime.continuation_call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_post_responses_ignores_completed_historical_tool_outputs_on_new_turn() -> (
     None
 ):
@@ -983,12 +1173,29 @@ async def test_post_responses_ignores_completed_historical_tool_outputs_on_new_t
 async def test_post_responses_continuation_expires_after_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify that abandoned Responses continuations expire instead of leaking forever."""
+    """Verify that expired Responses continuations surface ``continuation_expired``."""
+    current_time = 1000.0
+
+    def _build_pending_turn_store(
+        *, on_expire: object = None
+    ) -> SharedPendingTurnStore:
+        """Build one shared pending-turn store bound to the controllable test clock."""
+        return SharedPendingTurnStore(
+            on_expire=cast('Any', on_expire),
+            time_factory=lambda: current_time,
+        )
+
     monkeypatch.setattr(
         openai_responses_api,
         '_PENDING_RESPONSE_SESSION_TTL_SECONDS',
-        0.01,
+        10.0,
     )
+    monkeypatch.setattr(
+        openai_responses_api,
+        'InMemoryPendingTurnStore',
+        _build_pending_turn_store,
+    )
+    monkeypatch.setattr(openai_responses_api, 'time', lambda: current_time)
     runtime = _FakeResponsesToolRuntime()
     first_request_body: dict[str, object] = {
         'model': 'gpt-5.4',
@@ -1017,7 +1224,7 @@ async def test_post_responses_continuation_expires_after_ttl(
             'dict[str, Any]',
             json.loads(_extract_completed_frame_data(payload=first_payload)),
         )
-        await asyncio.sleep(0.05)
+        current_time = 1011.0
         follow_up_request_body: dict[str, object] = {
             'model': 'gpt-5.4',
             'previous_response_id': first_completed_payload['response']['id'],
@@ -1037,7 +1244,12 @@ async def test_post_responses_continuation_expires_after_ttl(
     follow_up_payload = cast('dict[str, Any]', follow_up.json())
     assert response.status_code == 200
     assert follow_up.status_code == 400
-    assert follow_up_payload['error']['code'] == 'invalid_previous_response_id'
+    assert follow_up_payload['error']['code'] == 'continuation_expired'
+    assert follow_up_payload['error']['message'] == (
+        'The pending provider session matched by the supplied previous_response_id '
+        'expired before the function_call_output items were submitted.'
+    )
+    assert runtime.discarded_sessions == [('responses-tool-session', True)]
 
 
 @pytest.mark.asyncio
